@@ -1,0 +1,141 @@
+# =========================================
+# OS
+# =========================================
+.DS_Store
+Thumbs.db
+
+# =========================================
+# VSCode / IDE
+# =========================================
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+
+# =========================================
+# Python
+# =========================================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# =========================================
+# Jupyter
+# =========================================
+.ipynb_checkpoints/
+
+# =========================================
+# Logs
+# =========================================
+logs/
+*.log
+
+# =========================================
+# Environment variables / secrets
+# =========================================
+.env
+.env.*
+!.env.example
+
+# API keys / credentials
+*.pem
+*.key
+*.crt
+secrets/
+credentials/
+
+# =========================================
+# Data files
+# =========================================
+data/
+datasets/
+raw_data/
+processed_data/
+
+# Large files
+*.csv
+*.parquet
+*.feather
+*.h5
+*.sqlite
+*.db
+
+# Models
+models/
+checkpoints/
+*.pt
+*.pth
+*.onnx
+*.pkl
+*.joblib
+
+# =========================================
+# Spark / Hadoop
+# =========================================
+spark-warehouse/
+metastore_db/
+derby.log
+
+# =========================================
+# Cache
+# =========================================
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# =========================================
+# Coverage
+# =========================================
+.coverage
+htmlcov/
+
+# =========================================
+# Node.js (frontend éventuel)
+# =========================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build frontend
+.next/
+out/
+dist/
+
+# =========================================
+# Docker
+# =========================================
+docker-compose.override.yml
+
+# =========================================
+# Terraform
+# =========================================
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# =========================================
+# Temporary files
+# =========================================
+tmp/
+temp/
+*.tmp
+
+# =========================================
+# Mac/Linux swap
+# =========================================
+*.swp
+*.swo
