@@ -1,0 +1,57 @@
+services:
+
+  spark-master:
+    build:
+      context: ./spark
+      dockerfile: master/Dockerfile
+
+    container_name: spark-master
+
+    hostname: spark-master
+
+    command: >
+      /opt/spark/bin/spark-class
+      org.apache.spark.deploy.master.Master
+
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs
+
+  spark-worker-1:
+    build:
+      context: ./spark
+      dockerfile: worker/Dockerfile
+
+    container_name: spark-worker-1
+
+    depends_on:
+      - spark-master
+
+    command: >
+      /opt/spark/bin/spark-class
+      org.apache.spark.deploy.worker.Worker
+      spark://spark-master:7077
+
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs
+
+  spark-worker-2:
+    build:
+      context: ./spark
+      dockerfile: worker/Dockerfile
+
+    container_name: spark-worker-2
+
+    depends_on:
+      - spark-master
+
+    command: >
+      /opt/spark/bin/spark-class
+      org.apache.spark.deploy.worker.Worker
+      spark://spark-master:7077
+
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs
