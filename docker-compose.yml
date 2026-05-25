@@ -1,5 +1,40 @@
 services:
 
+  kafka:
+    image: apache/kafka:3.7.0
+
+    container_name: kafka
+
+    environment:
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_CLUSTER_ID=Y2FmZGRyb3Bfa3JhZnRfY2x1c3Rlcg==
+
+    ports:
+      - "9092:9092"
+
+  kafdrop:
+    image: obsidiandynamics/kafdrop:4.0.1
+
+    container_name: kafdrop
+
+    depends_on:
+      - kafka
+
+    environment:
+      - KAFKA_BROKERCONNECT=kafka:9092
+      - JVM_OPTS=-Xms128M -Xmx256M
+
+    ports:
+      - "9000:9000"
+
   spark-master:
     build:
       context: ./spark
@@ -19,6 +54,7 @@ services:
 
     volumes:
       - ./spark/jobs:/opt/spark/jobs
+      - ./tests/spark:/opt/spark/tests
 
   spark-worker-1:
     build:
@@ -37,6 +73,7 @@ services:
 
     volumes:
       - ./spark/jobs:/opt/spark/jobs
+      - ./tests/spark:/opt/spark/tests
 
   spark-worker-2:
     build:
@@ -55,3 +92,4 @@ services:
 
     volumes:
       - ./spark/jobs:/opt/spark/jobs
+      - ./tests/spark:/opt/spark/tests
