@@ -1,5 +1,5 @@
 from pyspark.sql import Column
-from pyspark.sql.functions import col, regexp_replace, trim, length, when, lit
+from pyspark.sql.functions import regexp_replace, trim, length, when, lit
 
 
 # Regex patterns------
@@ -27,19 +27,13 @@ def clean_text(c: Column) -> Column:
 
 # Validity rules ------
 # After cleaning, decide if the record is still useful.
-MIN_TEXT_LEN = 3       
 MAX_TEXT_LEN = 10_000
-
-def is_valid_text(c: Column) -> Column:
-    n = length(c)
-    return (c.isNotNull()) & (n >= MIN_TEXT_LEN) & (n <= MAX_TEXT_LEN)
-
 
 def invalid_reason(c: Column) -> Column:
     n = length(c)
     return (
-        when(c.isNull(),         lit("text_null"))
-        .when(n < MIN_TEXT_LEN,  lit("text_too_short"))
+        when(c.isNull(),         lit("empty_after_clean"))
+        .when(n == 0,  lit("empty_after_clean"))
         .when(n > MAX_TEXT_LEN,  lit("text_too_long"))
         .otherwise(lit(None).cast("string"))
     )
