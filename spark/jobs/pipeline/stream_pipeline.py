@@ -36,7 +36,7 @@ def build_spark() -> SparkSession:
     )
 
 
-# --- Section 1: read raw bytes from Kafka -----------------------------------
+# --- Section 1: read raw bytes from Kafka ---
 def read_raw(spark: SparkSession):
     return (
         spark.readStream.format("kafka")
@@ -48,7 +48,7 @@ def read_raw(spark: SparkSession):
     )
 
 
-# --- Section 2: parse JSON with PERMISSIVE mode -----------------------------
+# --- Section 2: parse JSON with PERMISSIVE mode ---
 # PERMISSIVE adds a special column for malformed records so we can DLQ them.
 def parse_json(raw_df):
     schema_with_corrupt = YOUTUBE_SCHEMA.add("_corrupt_record", StringType(), nullable=True)
@@ -63,7 +63,7 @@ def parse_json(raw_df):
     ).select("_raw_value", "_parsed.*")
 
 
-# --- Section 3: tag each row valid / invalid (with reason) ------------------
+# --- Section 3: tag each row valid / invalid (with reason) ---
 def tag_invalid(parsed_df):
     reason = when(col("_corrupt_record").isNotNull(), lit("json_parse_failed"))
     for field in REQUIRED_FIELDS:
@@ -73,7 +73,7 @@ def tag_invalid(parsed_df):
     return parsed_df.withColumn("_invalid_reason", reason)
 
 
-# --- Section 4: clean text + final validity ---------------------------------
+# --- Section 4: clean text + final validity ---
 def clean_and_validate(tagged_df):
     # Only attempt to clean rows that passed schema validation.
     cleaned = tagged_df.withColumn(
@@ -90,7 +90,7 @@ def clean_and_validate(tagged_df):
     return cleaned
 
 
-# --- Section 5: split into clean stream + DLQ stream, write to Kafka --------
+# --- Section 5: split into clean stream + DLQ stream, write to Kafka ---
 # Output columns for clean topic (all 22 original fields + text_clean).
 CLEAN_OUTPUT_COLS = [f.name for f in YOUTUBE_SCHEMA.fields] + ["text_clean"]
 

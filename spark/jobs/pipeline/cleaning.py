@@ -23,3 +23,23 @@ def clean_text(c: Column) -> Column:
     c = regexp_replace(c, _WHITESPACE, " ")
     c = trim(c)
     return c
+
+
+# Validity rules ------
+# After cleaning, decide if the record is still useful.
+MIN_TEXT_LEN = 3       
+MAX_TEXT_LEN = 10_000
+
+def is_valid_text(c: Column) -> Column:
+    n = length(c)
+    return (c.isNotNull()) & (n >= MIN_TEXT_LEN) & (n <= MAX_TEXT_LEN)
+
+
+def invalid_reason(c: Column) -> Column:
+    n = length(c)
+    return (
+        when(c.isNull(),         lit("text_null"))
+        .when(n < MIN_TEXT_LEN,  lit("text_too_short"))
+        .when(n > MAX_TEXT_LEN,  lit("text_too_long"))
+        .otherwise(lit(None).cast("string"))
+    )
