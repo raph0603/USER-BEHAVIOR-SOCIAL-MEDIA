@@ -41,6 +41,8 @@ dist/
 # =========================================
 logs/
 *.log
+*.pid
+orchestrator/logs/
 
 # =========================================
 # Environment variables / secrets

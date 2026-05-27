@@ -1,0 +1,13 @@
+{
+  "type": "record",
+  "name": "PlaywrightEvent",
+  "namespace": "com.user_behavior",
+  "fields": [
+    { "name": "user_id", "type": "string" },
+    { "name": "url", "type": "string" },
+    { "name": "title", "type": ["null", "string"], "default": null },
+    { "name": "timestamp", "type": "string" },
+    { "name": "source", "type": "string" },
+    { "name": "error", "type": ["null", "string"], "default": null }
+  ]
+}

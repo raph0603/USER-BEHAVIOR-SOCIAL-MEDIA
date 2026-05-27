@@ -1,4 +1,57 @@
+name: user-behavior-social-media
+
+x-airflow-common: &airflow-common
+  build:
+    context: ./orchestrator/airflow
+
+  environment: &airflow-common-env
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
+    AIRFLOW__WEBSERVER__SECRET_KEY: local-dev-secret
+    AIRFLOW_UID: "0"
+
+  user: "0:0"
+
+  volumes:
+    - ${HOST_PROJECT_DIR:-.}/orchestrator/dags:/opt/airflow/dags:ro
+    - ${HOST_PROJECT_DIR:-.}/orchestrator/logs:/opt/airflow/logs
+    - ${HOST_PROJECT_DIR:-.}:/workspace
+    - /var/run/docker.sock:/var/run/docker.sock
+
 services:
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+
+    container_name: minio
+
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+
+    command: server /data --console-address ":9001"
+
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+    volumes:
+      - ${HOST_PROJECT_DIR:-.}/data/minio:/data
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+
+    depends_on:
+      - minio
+
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set lakehouse http://minio:9000 minioadmin minioadmin &&
+      /usr/bin/mc mb -p lakehouse/lakehouse || true
+      "
+
 
   kafka:
     image: apache/kafka:3.7.0
@@ -6,6 +59,7 @@ services:
     container_name: kafka
 
     environment:
+      - CLUSTER_ID=Y2FmZGRyb3Bfa3JhZnRfY2x1c3Rlcg==
       - KAFKA_NODE_ID=1
       - KAFKA_PROCESS_ROLES=broker,controller
       - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
@@ -15,10 +69,35 @@ services:
       - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
       - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
       - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
-      - KAFKA_CLUSTER_ID=Y2FmZGRyb3Bfa3JhZnRfY2x1c3Rlcg==
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS=1
+      - KAFKA_OFFSETS_TOPIC_MIN_ISR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_MIN_INSYNC_REPLICAS=1
+      - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
 
     ports:
       - "9092:9092"
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.1
+
+    container_name: schema-registry
+
+    depends_on:
+      - kafka
+
+    restart: unless-stopped
+
+    environment:
+      - SCHEMA_REGISTRY_HOST_NAME=schema-registry
+      - SCHEMA_REGISTRY_LISTENERS=http://0.0.0.0:8081
+      - SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS=PLAINTEXT://kafka:9092
+      - SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR=1
+
+    ports:
+      - "8081:8081"
 
   kafdrop:
     image: obsidiandynamics/kafdrop:4.0.1
@@ -33,7 +112,29 @@ services:
       - JVM_OPTS=-Xms128M -Xmx256M
 
     ports:
-      - "9000:9000"
+      - "9002:9000"
+
+  playwright-producer:
+    build:
+      context: ./playwright
+
+    depends_on:
+      - kafka
+      - schema-registry
+
+    environment:
+      - KAFKA_BOOTSTRAP=kafka:9092
+      - KAFKA_TOPIC=test-topic
+      - SCHEMA_REGISTRY_URL=http://schema-registry:8081
+      - SCHEMA_PATH=/app/schemas/playwright_event.avsc
+      - SCHEMA_REGISTRY_WAIT_SEC=180
+      - PRODUCER_MODE=synthetic
+      - PLAYWRIGHT_TARGET_URLS=https://example.com,https://example.org
+      - PLAYWRIGHT_USERS=3
+      - EVENT_INTERVAL_SEC=2
+
+    volumes:
+      - ${HOST_PROJECT_DIR:-.}/schemas:/app/schemas:ro
 
   spark-master:
     build:
@@ -52,9 +153,17 @@ services:
       - "8080:8080"
       - "7077:7077"
 
+    environment:
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_BUCKET=lakehouse
+      - PRIVACY_HASH_SALT=dev-privacy-salt
+
     volumes:
-      - ./spark/jobs:/opt/spark/jobs
-      - ./tests/spark:/opt/spark/tests
+      - ${HOST_PROJECT_DIR:-.}/spark/jobs:/opt/spark/jobs
+      - ${HOST_PROJECT_DIR:-.}/schemas:/opt/spark/schemas:ro
+      - ${HOST_PROJECT_DIR:-.}/tests/spark:/opt/spark/tests
 
   spark-worker-1:
     build:
@@ -71,9 +180,17 @@ services:
       org.apache.spark.deploy.worker.Worker
       spark://spark-master:7077
 
+    environment:
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_BUCKET=lakehouse
+      - PRIVACY_HASH_SALT=dev-privacy-salt
+
     volumes:
-      - ./spark/jobs:/opt/spark/jobs
-      - ./tests/spark:/opt/spark/tests
+      - ${HOST_PROJECT_DIR:-.}/spark/jobs:/opt/spark/jobs
+      - ${HOST_PROJECT_DIR:-.}/schemas:/opt/spark/schemas:ro
+      - ${HOST_PROJECT_DIR:-.}/tests/spark:/opt/spark/tests
 
   spark-worker-2:
     build:
@@ -90,6 +207,73 @@ services:
       org.apache.spark.deploy.worker.Worker
       spark://spark-master:7077
 
+    environment:
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_BUCKET=lakehouse
+      - PRIVACY_HASH_SALT=dev-privacy-salt
+
     volumes:
-      - ./spark/jobs:/opt/spark/jobs
-      - ./tests/spark:/opt/spark/tests
+      - ${HOST_PROJECT_DIR:-.}/spark/jobs:/opt/spark/jobs
+      - ${HOST_PROJECT_DIR:-.}/schemas:/opt/spark/schemas:ro
+      - ${HOST_PROJECT_DIR:-.}/tests/spark:/opt/spark/tests
+
+  airflow-postgres:
+    image: postgres:15-alpine
+
+    environment:
+      - POSTGRES_DB=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_USER=airflow
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+
+    volumes:
+      - ${HOST_PROJECT_DIR:-.}/data/airflow-postgres:/var/lib/postgresql/data
+
+  airflow-init:
+    <<: *airflow-common
+
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+
+    entrypoint: /bin/bash
+
+    command: >
+      -c "
+      airflow db migrate &&
+      airflow users create
+      --username admin
+      --password admin
+      --firstname Local
+      --lastname Admin
+      --role Admin
+      --email admin@example.com || true
+      "
+
+  airflow-webserver:
+    <<: *airflow-common
+
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+    command: webserver
+
+    ports:
+      - "8088:8080"
+
+  airflow-scheduler:
+    <<: *airflow-common
+
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+    command: scheduler
