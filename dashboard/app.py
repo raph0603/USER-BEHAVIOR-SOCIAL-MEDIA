@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from pathlib import Path
 
 from loaders import load_all_data
 
@@ -13,9 +14,13 @@ st.set_page_config(
 st.title("Social Media Crawling Dashboard")
 st.caption("Monitoring dashboard for Reddit, X/Twitter and YouTube crawled data")
 
-REDDIT_PATH = "data/reddit.csv"
-X_PATH = "data/x.csv"
-YOUTUBE_PATH = "data/youtube.csv"
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+
+REDDIT_PATH = DATA_DIR / "reddit.csv"
+X_PATH = DATA_DIR / "x.csv"
+YOUTUBE_PATH = DATA_DIR / "youtube.csv"
 
 
 @st.cache_data
