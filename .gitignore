@@ -161,3 +161,7 @@ data/x-edge-mode.txt
 
 API/yt_raw_json/
 API/video_list.txt
+
+# Allow dashboard data samples
+!dashboard/data/
+!dashboard/data/*.csv
