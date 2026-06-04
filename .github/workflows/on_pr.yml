@@ -38,6 +38,7 @@ jobs:
                   'build',
                   'ci',
                   'chore',
+                  'core',
                   'revert'
                 ]
               ],
