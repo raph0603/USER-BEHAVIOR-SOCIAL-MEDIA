@@ -4,6 +4,7 @@ from pathlib import Path
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.avro.functions import from_avro
 from pyspark.sql.functions import col, concat_ws, expr, lit, regexp_replace, sha2, to_timestamp, when
+from pyspark.sql.functions import struct, to_json
 
 
 def _env(name: str, default: str) -> str:
@@ -75,13 +76,17 @@ def _apply_privacy_gateway(events: DataFrame, hash_salt: str) -> DataFrame:
 
 def main() -> None:
     kafka_bootstrap = _env("KAFKA_BOOTSTRAP", "kafka:9092")
-    kafka_topic = _env("KAFKA_TOPIC", "test-topic")
+    kafka_topics = _env(
+        "KAFKA_TOPIC",
+        "youtube.raw.events,x.raw.events,reddit.raw.events",
+    )
     schema_path = _env("SCHEMA_PATH", "/opt/spark/schemas/playwright_event.avsc")
     bucket = _env("MINIO_BUCKET", "lakehouse")
     privacy_hash_salt = _env("PRIVACY_HASH_SALT", "dev-privacy-salt")
 
     warehouse = f"s3a://{bucket}/warehouse"
-    checkpoint = f"s3a://{bucket}/checkpoints/bronze/events"
+    checkpoint_key = kafka_topics.replace(",", "__")
+    checkpoint = f"s3a://{bucket}/checkpoints/bronze/events/{checkpoint_key}"
 
     spark = _build_spark("kafka-to-iceberg-bronze", warehouse)
 
@@ -104,11 +109,15 @@ def main() -> None:
         """
     )
 
+    starting_offsets = _env("KAFKA_STARTING_OFFSETS", "earliest")
+    fail_on_data_loss = _env("KAFKA_FAIL_ON_DATA_LOSS", "false")
+
     raw = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", kafka_bootstrap)
-        .option("subscribe", kafka_topic)
-        .option("startingOffsets", "earliest")
+        .option("subscribe", kafka_topics)
+        .option("startingOffsets", starting_offsets)
+        .option("failOnDataLoss", fail_on_data_loss)
         .load()
     )
 
@@ -120,14 +129,38 @@ def main() -> None:
     privacy_safe = _apply_privacy_gateway(decoded, privacy_hash_salt)
     enriched = privacy_safe.withColumn("event_ts", to_timestamp(col("timestamp")))
 
-    query = (
+    # trigger configuration for Bronze micro-batches
+    bronze_trigger = _env("BRONZE_TRIGGER", "10 seconds")
+
+    # write to Iceberg Bronze table (micro-batched)
+    iceberg_query = (
         enriched.writeStream.format("iceberg")
         .outputMode("append")
         .option("checkpointLocation", checkpoint)
+        .trigger(processingTime=bronze_trigger)
         .toTable("lakehouse.bronze.events")
     )
 
-    query.awaitTermination()
+    # Optionally publish a sanitized JSON representation to a Kafka topic for downstream jobs
+    kafka_out_topic = _env("BRONZE_KAFKA_OUT_TOPIC", "lakehouse.bronze.for_silver")
+    kafka_out_checkpoint = (
+        f"s3a://{bucket}/checkpoints/bronze/to_kafka/{checkpoint_key}"
+    )
+
+    kafka_payload = enriched.select(to_json(struct("user_id", "url", "title", "timestamp", "source", "error", "event_ts")).alias("value"))
+
+    kafka_query = (
+        kafka_payload.writeStream.format("kafka")
+        .option("kafka.bootstrap.servers", kafka_bootstrap)
+        .option("topic", kafka_out_topic)
+        .option("checkpointLocation", kafka_out_checkpoint)
+        .trigger(processingTime=bronze_trigger)
+        .start()
+    )
+
+    # keep both streams running
+    iceberg_query.awaitTermination()
+    kafka_query.awaitTermination()
 
 
 if __name__ == "__main__":

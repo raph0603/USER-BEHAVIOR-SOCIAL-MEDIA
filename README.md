@@ -1,4 +1,4 @@
-# USER-BEHAVIOR-SOCIAL-MEDIA
+# USER-BAHAVIOR-SOCIAL-MEDIA
 
 ## Lakehouse (Bronze/Silver on Iceberg)
 
@@ -18,10 +18,17 @@ Set `PRIVACY_HASH_SALT` to a non-default secret outside local development.
 
 The project includes a local Airflow orchestrator for the lakehouse flow.
 
-When Airflow runs Docker Compose through the Docker socket, bind mounts must use a host-visible path. Keep a local `.env` based on `.env.example`; on this Windows Docker Desktop setup it uses:
+When Airflow runs Docker Compose through the Docker socket, bind mounts must use a host-visible path. Keep local startup mounts relative, and configure a separate Docker Desktop path for Compose commands launched inside Airflow:
 
 ```bash
-HOST_PROJECT_DIR=/run/desktop/mnt/host/c/Users/rapha/OneDrive/Documents/USER-BEHAVIOR-SOCIAL-MEDIA
+HOST_PROJECT_DIR=.
+DOCKER_HOST_PROJECT_DIR=C:/Users/rapha/OneDrive/Documents/USER-BEHAVIOR-SOCIAL-MEDIA
+YOUTUBE_KAFKA_TOPIC=youtube.raw.events
+X_COLLECTION_ENABLED=true
+X_KAFKA_TOPIC=x.raw.events
+X_CDP_URL=http://host.docker.internal:9223
+REDDIT_COLLECTION_ENABLED=true
+REDDIT_KAFKA_TOPIC=reddit.raw.events
 ```
 
 ```bash
@@ -35,7 +42,9 @@ Default local login:
 - user: `admin`
 - password: `admin`
 
-The DAG `user_behavior_lakehouse` starts the core stack, runs the Spark/Kafka probe and Bronze stream in parallel, emits bounded synthetic events, then runs Silver as a batch step after Bronze has data.
+The DAG `user_behavior_lakehouse` starts the core stack, creates the
+`youtube.raw.events`, `x.raw.events` and `reddit.raw.events` Kafka topics,
+starts Bronze and Silver, then launches the enabled source collectors.
 
 ### Start services
 
@@ -56,3 +65,75 @@ docker compose exec spark-master /opt/spark/bin/spark-submit \
 docker compose exec spark-master /opt/spark/bin/spark-submit \
 	/opt/spark/jobs/batch/bronze_to_silver.py
 ```
+
+### Run YouTube collection
+
+Set `YOUTUBE_API_KEY` in your `.env`, then run:
+
+```bash
+docker compose run --rm youtube-collector
+```
+
+The collector writes raw JSON under `API/yt_raw_json/` and emits YouTube
+events to Kafka using the same event schema as the other producers.
+
+### Run X collection
+
+X is collected directly from the live website with Playwright. The collector
+connects to an authenticated Chrome or Edge session through CDP and publishes
+new posts to `x.raw.events`:
+
+```bash
+docker compose run --rm x-collector
+```
+
+Set `X_COLLECTION_ENABLED=true` to include this step in the Airflow DAG.
+Start the browser with remote debugging enabled before running the DAG:
+
+```powershell
+.\scripts\start_x_browser.ps1
+```
+
+Log in to X in that browser window. When triggering the DAG from the Airflow
+UI, set `x_post_count` to the maximum number of new X posts to collect
+(between 1 and 100). For a direct `docker compose run`, `X_MAX_EVENTS` in
+`.env` provides the limit. If fewer new posts are available, the collector
+publishes fewer events. When X collection is enabled, a crawler or CDP
+failure fails the Airflow task and the DAG.
+
+Authenticate to X with Google in the Edge window. The crawler reuses that
+authenticated browser session. If the X login page reappears, it clicks the
+Google login option and selects `X_GOOGLE_EMAIL` from the existing Edge
+session. Password, CAPTCHA and MFA challenges still require completion in the
+Edge window.
+
+### Run Reddit collection
+
+Reddit is collected directly from the live public pages with Playwright. New
+comments from the configured subreddits are published to `reddit.raw.events`:
+
+```bash
+docker compose run --rm reddit-collector
+```
+
+Set `REDDIT_COLLECTION_ENABLED=true` to include this step in Airflow.
+`REDDIT_SUBREDDITS`, `REDDIT_POST_LIMIT` and `REDDIT_MAX_EVENTS` control the
+online collection.
+
+Each collector stores processed source IDs in its own persistent SQLite file
+under `data/collector-state/`. Existing topic contents are imported into this
+state before collection, so previously processed posts, comments and videos
+are not republished.
+
+### Reset all pipeline data
+
+Run this before an end-to-end test to delete Kafka events and schemas, MinIO
+Bronze/Silver tables, collector deduplication state, and collected source
+files:
+
+```powershell
+.\scripts\reset_pipeline_data.ps1
+```
+
+The command preserves the X/Google browser profile, Airflow metadata, and
+Airflow logs. For non-interactive use, pass `-Force`.

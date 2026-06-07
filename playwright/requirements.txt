@@ -2,3 +2,5 @@ playwright==1.45.0
 confluent-kafka==2.5.0
 fastavro==1.9.5
 requests==2.32.3
+google-api-python-client==2.143.0
+tqdm==4.66.5

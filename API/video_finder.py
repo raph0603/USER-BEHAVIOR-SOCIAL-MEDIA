@@ -1,10 +1,11 @@
 from googleapiclient.discovery import build
+import os
 import time
 
 # =========================
 # CONFIGURATION
 # =========================
-API_KEY = "AIzaSyD3bF644EZvEanv2y1riymjOaSGgqRo_1A"  # Remplace par ta clé
+API_KEY = os.getenv("YOUTUBE_API_KEY")
 OUTPUT_FILE = "video_list.txt"
 
 # Liste de mots-clés pour trouver des vidéos pertinentes
@@ -26,6 +27,8 @@ SEARCH_QUERIES = [
 ]
 
 def get_youtube_service():
+    if not API_KEY:
+        raise RuntimeError("YOUTUBE_API_KEY is required")
     return build("youtube", "v3", developerKey=API_KEY)
 
 def search_videos(youtube, query, max_results=50):

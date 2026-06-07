@@ -2,6 +2,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from tqdm import tqdm
 import json
+import os
 import time
 from pathlib import Path
 import sys
@@ -9,12 +10,14 @@ import sys
 # =========================
 # CONFIGURATION
 # =========================
-API_KEY = "AIzaSyD3bF644EZvEanv2y1riymjOaSGgqRo_1A"  
+API_KEY = os.getenv("YOUTUBE_API_KEY")
 INPUT_FILE = "video_list.txt"
 OUTPUT_DIR = Path("yt_raw_json")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 def get_youtube_service():
+    if not API_KEY:
+        raise RuntimeError("YOUTUBE_API_KEY is required")
     return build("youtube", "v3", developerKey=API_KEY)
 
 def load_video_ids(filepath):
