@@ -136,6 +136,9 @@ tmp/
 temp/
 *.tmp
 
+# Local project reading notes for Codex/user context
+PROJECT_CONTEXT_NOTES.md
+
 # =========================================
 # Mac/Linux swap
 # =========================================
