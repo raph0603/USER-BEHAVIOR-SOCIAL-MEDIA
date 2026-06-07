@@ -154,3 +154,7 @@ PROJECT_CONTEXT_NOTES.md
 *.doc
 *.docx
 *.pdf
+
+# Local X browser process state
+data/x-edge.pid
+data/x-edge-mode.txt

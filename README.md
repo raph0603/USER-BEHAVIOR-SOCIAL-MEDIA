@@ -64,6 +64,37 @@ The DAG `user_behavior_lakehouse` runs the complete online pipeline:
 The separate `social_clean_pipeline` DAG is retained for replaying the legacy
 sample CSV files. It is not required for the online lakehouse flow.
 
+The online DAG runs automatically every 60 minutes by default. Configure the
+interval in `.env`:
+
+```env
+LAKEHOUSE_SCHEDULE_MINUTES=30
+```
+
+Use `LAKEHOUSE_SCHEDULE_MINUTES=0` to disable automatic runs. Airflow keeps at
+most one active run, so intervals shorter than the pipeline duration do not
+execute concurrently.
+
+When manually triggering `user_behavior_lakehouse` from the Airflow interface,
+the trigger form exposes three limits:
+
+- `youtube_event_count`: maximum number of new YouTube videos, from 1 to 50;
+- `x_event_count`: maximum number of new X posts, from 1 to 100;
+- `reddit_event_count`: maximum number of new Reddit comments, from 1 to 100.
+
+These are upper limits. A collector can return fewer events when the online
+search does not contain enough unprocessed results. Scheduled runs use the
+default value of 5 for each source.
+
+The trigger form also exposes `x_headless`:
+
+- `false`: Edge is visible, which is required to complete a Google login or
+  an X challenge;
+- `true`: Edge uses the same persistent profile without displaying a window.
+
+The Windows CDP proxy automatically restarts Edge when it has been closed.
+YouTube is API-based, and Reddit remains headless inside its Docker container.
+
 ### Start services
 
 ```bash

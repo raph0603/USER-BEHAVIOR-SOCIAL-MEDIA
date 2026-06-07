@@ -12,6 +12,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__WEBSERVER__SECRET_KEY: local-dev-secret
     AIRFLOW_UID: "0"
     DOCKER_HOST_PROJECT_DIR: ${DOCKER_HOST_PROJECT_DIR:-.}
+    LAKEHOUSE_SCHEDULE_MINUTES: ${LAKEHOUSE_SCHEDULE_MINUTES:-60}
     YOUTUBE_KAFKA_TOPIC: ${YOUTUBE_KAFKA_TOPIC:-youtube.raw.events}
     X_COLLECTION_ENABLED: ${X_COLLECTION_ENABLED:-false}
     X_KAFKA_TOPIC: ${X_KAFKA_TOPIC:-x.raw.events}
@@ -147,8 +148,8 @@ services:
       - YOUTUBE_OUTPUT_DIR=/app/api/yt_raw_json
       - YOUTUBE_SLEEP_SECONDS=0.5
       - YOUTUBE_SEARCH_QUERY=electric vehicle review
-      - YOUTUBE_SEARCH_MAX_RESULTS=10
-      - PRODUCER_MAX_EVENTS=5
+      - YOUTUBE_SEARCH_MAX_RESULTS=${YOUTUBE_SEARCH_MAX_RESULTS:-10}
+      - PRODUCER_MAX_EVENTS=${YOUTUBE_MAX_EVENTS:-5}
       - COLLECTOR_STATE_DB=/app/state/youtube.sqlite
       - BOOTSTRAP_STATE_FROM_KAFKA=true
 
@@ -174,6 +175,7 @@ services:
       - PRODUCER_MODE=x
       - X_CDP_URL=${X_CDP_URL:-http://host.docker.internal:9223}
       - X_CDP_WAIT_SECONDS=${X_CDP_WAIT_SECONDS:-90}
+      - X_HEADLESS=${X_HEADLESS:-false}
       - X_GOOGLE_EMAIL=${X_GOOGLE_EMAIL:-}
       - X_GOOGLE_LOGIN_WAIT_SECONDS=${X_GOOGLE_LOGIN_WAIT_SECONDS:-90}
       - X_SEARCH_QUERIES=${X_SEARCH_QUERIES:-(electric vehicle OR EV OR "electric car") lang:en -filter:replies||(Tesla OR "EV charging" OR "battery range") lang:en -filter:replies}

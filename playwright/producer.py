@@ -48,6 +48,13 @@ def _env_str(name: str, default: str) -> str:
     return value.strip() if value else default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _load_schema(schema_path: str) -> str:
     return Path(schema_path).read_text(encoding="utf-8")
 
@@ -411,6 +418,7 @@ def _resolve_x_cdp_url(cdp_url: str) -> str:
 def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
     cdp_url = _env_str("X_CDP_URL", "http://host.docker.internal:9222")
     cdp_wait_seconds = _env_int("X_CDP_WAIT_SECONDS", 60)
+    headless = _env_bool("X_HEADLESS", False)
     queries = [
         query.strip()
         for query in _env_str("X_SEARCH_QUERIES", "||".join(DEFAULT_X_QUERIES)).split("||")
@@ -426,6 +434,15 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
     discovered_statuses = 0
 
     try:
+        if cdp_url.startswith(("http://", "https://")):
+            control_response = requests.get(
+                f"{cdp_url.rstrip('/')}/__x_cdp__/ensure",
+                params={"headless": str(headless).lower()},
+                timeout=cdp_wait_seconds,
+            )
+            if control_response.status_code not in {200, 404}:
+                control_response.raise_for_status()
+
         deadline = time.time() + cdp_wait_seconds
         with sync_playwright() as playwright:
             browser = None

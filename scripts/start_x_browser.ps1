@@ -4,6 +4,8 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $profilePath = Join-Path $projectRoot "data\x-edge-profile"
 $proxyScript = Join-Path $PSScriptRoot "x_cdp_proxy.py"
 $proxyPidPath = Join-Path $projectRoot "data\x-cdp-proxy.pid"
+$edgePidPath = Join-Path $projectRoot "data\x-edge.pid"
+$edgeModePath = Join-Path $projectRoot "data\x-edge-mode.txt"
 $edgeCandidates = @(
     (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"),
     (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe")
@@ -51,6 +53,8 @@ if (-not (Wait-HttpEndpoint -Uri "http://127.0.0.1:9222/json/version" -TimeoutSe
         "--no-default-browser-check",
         "https://x.com/home"
     ) -PassThru
+    Set-Content -LiteralPath $edgePidPath -Value $edgeProcess.Id
+    Set-Content -LiteralPath $edgeModePath -Value "visible"
 }
 
 if (-not (Wait-HttpEndpoint -Uri "http://127.0.0.1:9222/json/version")) {
@@ -62,7 +66,7 @@ if (-not (Wait-HttpEndpoint -Uri "http://127.0.0.1:9222/json/version")) {
 }
 
 $proxyIsReady = Wait-HttpEndpoint `
-    -Uri "http://127.0.0.1:9223/json/version" `
+    -Uri "http://127.0.0.1:9223/__x_cdp__/ensure?headless=false" `
     -TimeoutSeconds 3 `
     -Headers @{ Host = "host.docker.internal:9223" }
 
@@ -80,13 +84,17 @@ if (-not $proxyIsReady) {
         "--listen-port",
         "9223",
         "--target-port",
-        "9222"
+        "9222",
+        "--edge-path",
+        "`"$edgePath`"",
+        "--profile-path",
+        "`"$profilePath`""
     ) -WindowStyle Hidden -PassThru
     Set-Content -LiteralPath $proxyPidPath -Value $proxyProcess.Id
 }
 
 if (-not (Wait-HttpEndpoint `
-    -Uri "http://127.0.0.1:9223/json/version" `
+    -Uri "http://127.0.0.1:9223/__x_cdp__/ensure?headless=false" `
     -Headers @{ Host = "host.docker.internal:9223" })) {
     throw "The X CDP proxy did not become ready on port 9223."
 }

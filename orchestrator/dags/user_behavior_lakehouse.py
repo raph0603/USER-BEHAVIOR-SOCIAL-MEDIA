@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import timedelta
 
 from airflow import DAG
@@ -10,6 +11,18 @@ from airflow.utils.trigger_rule import TriggerRule
 from pendulum import datetime
 
 PROJECT_DIR = "/workspace"
+
+
+def schedule_interval() -> timedelta | None:
+    raw_value = os.getenv("LAKEHOUSE_SCHEDULE_MINUTES", "60").strip()
+    try:
+        minutes = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(
+            "LAKEHOUSE_SCHEDULE_MINUTES must be an integer"
+        ) from exc
+
+    return timedelta(minutes=minutes) if minutes > 0 else None
 
 
 def docker_compose(command: str) -> str:
@@ -75,20 +88,50 @@ def wait_clean_command(
 with DAG(
     dag_id="user_behavior_lakehouse",
     start_date=datetime(2026, 1, 1, tz="UTC"),
-    schedule=None,
+    schedule=schedule_interval(),
     catchup=False,
     max_active_runs=1,
     max_active_tasks=8,
     default_args={"owner": "data-platform", "retries": 0},
     params={
-        "x_post_count": Param(
+        "youtube_event_count": Param(
+            5,
+            type="integer",
+            minimum=1,
+            maximum=50,
+            title="Nombre d'evenements YouTube",
+            description=(
+                "Nombre maximal de nouvelles videos YouTube a publier dans Kafka."
+            ),
+        ),
+        "x_event_count": Param(
             5,
             type="integer",
             minimum=1,
             maximum=100,
-            title="Nombre de posts X",
+            title="Nombre d'evenements X",
             description=(
                 "Nombre maximal de nouveaux posts X à publier dans Kafka."
+            ),
+        ),
+        "reddit_event_count": Param(
+            5,
+            type="integer",
+            minimum=1,
+            maximum=100,
+            title="Nombre d'evenements Reddit",
+            description=(
+                "Nombre maximal de nouveaux commentaires Reddit a publier "
+                "dans Kafka."
+            ),
+        ),
+        "x_headless": Param(
+            False,
+            type="boolean",
+            title="X en mode headless",
+            description=(
+                "Active Edge sans fenetre. Desactivez cette option pour voir "
+                "le navigateur et terminer une connexion Google."
             ),
         ),
     },
@@ -243,7 +286,12 @@ with DAG(
     )
     run_youtube_collection = BashOperator(
         task_id="run_youtube_collection",
-        bash_command=docker_compose("run --rm youtube-collector"),
+        bash_command=docker_compose(
+            "run --rm "
+            "-e PRODUCER_MAX_EVENTS={{ params.youtube_event_count }} "
+            "-e YOUTUBE_SEARCH_MAX_RESULTS={{ params.youtube_event_count }} "
+            "youtube-collector"
+        ),
     )
 
     run_x_collection = BashOperator(
@@ -258,7 +306,8 @@ with DAG(
         fi
         """ + docker_compose(
             "run --rm "
-            "-e PRODUCER_MAX_EVENTS={{ params.x_post_count }} "
+            "-e PRODUCER_MAX_EVENTS={{ params.x_event_count }} "
+            "-e X_HEADLESS={{ params.x_headless | lower }} "
             "x-collector"
         ),
     )
@@ -271,7 +320,11 @@ with DAG(
           echo "Reddit collection disabled; set REDDIT_COLLECTION_ENABLED=true to enable it"
           exit 0
         fi
-        """ + docker_compose("run --rm reddit-collector"),
+        """ + docker_compose(
+            "run --rm "
+            "-e PRODUCER_MAX_EVENTS={{ params.reddit_event_count }} "
+            "reddit-collector"
+        ),
     )
 
     wait_clean_youtube = BashOperator(
