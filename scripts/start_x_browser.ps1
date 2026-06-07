@@ -37,15 +37,27 @@ function Wait-HttpEndpoint {
 
 New-Item -ItemType Directory -Force -Path $profilePath | Out-Null
 
-if (-not (Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue)) {
-    Start-Process -FilePath $edgePath -ArgumentList @(
+if (-not (Wait-HttpEndpoint -Uri "http://127.0.0.1:9222/json/version" -TimeoutSeconds 3)) {
+    if (Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue) {
+        throw "Port 9222 is already in use by a process that is not an Edge CDP endpoint."
+    }
+
+    $edgeProcess = Start-Process -FilePath $edgePath -ArgumentList @(
+        "--remote-debugging-address=127.0.0.1",
         "--remote-debugging-port=9222",
+        "--remote-allow-origins=*",
         "--user-data-dir=$profilePath",
+        "--no-first-run",
+        "--no-default-browser-check",
         "https://x.com/home"
-    )
+    ) -PassThru
 }
 
 if (-not (Wait-HttpEndpoint -Uri "http://127.0.0.1:9222/json/version")) {
+    if ($edgeProcess -and $edgeProcess.HasExited) {
+        throw "Edge exited with code $($edgeProcess.ExitCode) before exposing its CDP endpoint on port 9222."
+    }
+
     throw "Edge did not expose its CDP endpoint on port 9222."
 }
 
