@@ -29,6 +29,8 @@ def _build_spark(app_name: str, warehouse: str) -> SparkSession:
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config("spark.sql.shuffle.partitions", "4")
+        .config("spark.default.parallelism", "4")
         .getOrCreate()
     )
 
@@ -47,9 +49,9 @@ def main() -> int:
     warehouse = f"s3a://{bucket}/warehouse"
 
     spark = _build_spark("lakehouse-check", warehouse)
-    count = spark.table(table).count()
+    count = spark.table(table).limit(min_count).count()
 
-    print(f"Table {table} has {count} rows")
+    print(f"Table {table} has at least {count} rows")
 
     if count < min_count:
         print(f"Expected at least {min_count} rows")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from airflow import DAG
 from airflow.models.param import Param
 from airflow.operators.bash import BashOperator
@@ -19,13 +21,64 @@ def docker_compose(command: str) -> str:
     )
 
 
+def clean_stream_command(
+    platform: str,
+    source_variable: str,
+    source_default: str,
+    clean_variable: str,
+    clean_default: str,
+    dlq_variable: str,
+    dlq_default: str,
+) -> str:
+    return f"""
+    set -euo pipefail
+    docker exec \\
+      -e PLATFORM={platform} \\
+      -e COLLECTOR_SOURCE_TOPIC="${{{source_variable}:-{source_default}}}" \\
+      -e CLEAN_KAFKA_TOPIC="${{{clean_variable}:-{clean_default}}}" \\
+      -e DLQ_KAFKA_TOPIC="${{{dlq_variable}:-{dlq_default}}}" \\
+      -e CLEAN_SOURCE_VALUE_FORMAT=avro \\
+      -e CLEAN_CHECKPOINT_VERSION=pre_bronze_v3 \\
+      -e CLEAN_TRIGGER_MODE=available_now \\
+      spark-master /bin/bash -lc "set -o pipefail; mkdir -p /tmp/user-behavior-lakehouse; /opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/jobs/pipeline/collector_stream_pipeline.py 2>&1 | tee /tmp/user-behavior-lakehouse/clean_{platform}.log"
+    """
+
+
+def wait_clean_command(
+    platform: str,
+    clean_variable: str,
+    clean_default: str,
+    dlq_variable: str,
+    dlq_default: str,
+    enabled_variable: str | None = None,
+) -> str:
+    enabled_check = ""
+    if enabled_variable:
+        enabled_check = f"""
+        if [[ "${{{enabled_variable}:-false}}" != "true" ]]; then
+          echo "{platform} collection disabled; no cleaned event required"
+          exit 0
+        fi
+        """
+
+    return f"""
+    set -euo pipefail
+    {enabled_check}
+    CLEAN_TOPIC="${{{clean_variable}:-{clean_default}}}"
+    DLQ_TOPIC="${{{dlq_variable}:-{dlq_default}}}"
+    CLEAN_TOTAL=$(docker exec kafka /opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server kafka:9092 --topic "$CLEAN_TOPIC" 2>/dev/null | awk -F: '{{s+=$3}} END{{print s+0}}')
+    DLQ_TOTAL=$(docker exec kafka /opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server kafka:9092 --topic "$DLQ_TOPIC" 2>/dev/null | awk -F: '{{s+=$3}} END{{print s+0}}')
+    echo "{platform} cleaning completed: clean=${{CLEAN_TOTAL:-0}}, dlq=${{DLQ_TOTAL:-0}}"
+    """
+
+
 with DAG(
     dag_id="user_behavior_lakehouse",
     start_date=datetime(2026, 1, 1, tz="UTC"),
     schedule=None,
     catchup=False,
     max_active_runs=1,
-    max_active_tasks=6,
+    max_active_tasks=8,
     default_args={"owner": "data-platform", "retries": 0},
     params={
         "x_post_count": Param(
@@ -39,7 +92,7 @@ with DAG(
             ),
         ),
     },
-    tags=["lakehouse", "spark", "realtime"],
+    tags=["collection", "clean", "lakehouse", "spark", "realtime"],
 ) as dag:
     start_stack = BashOperator(
         task_id="start_core_stack",
@@ -77,8 +130,8 @@ with DAG(
         task_id="cleanup_previous_spark_jobs",
         bash_command=r"""
         docker exec spark-master /bin/bash -lc "pkill -9 -f '[s]park-submit' || true"
-        docker exec spark-master /bin/bash -lc "pkill -9 -f '[k]afka_to_iceberg_bronze.py' || true; pkill -9 -f '[b]ronze_to_silver.py' || true; pkill -9 -f '[b]ronze_to_silver_from_kafka.py' || true; pkill -9 -f '[l]akehouse_check.py' || true"
-        docker exec spark-master /bin/bash -lc "rm -f /opt/spark/tests/lakehouse/bronze_stream.pid"
+        docker exec spark-master /bin/bash -lc "pkill -9 -f '[c]ollector_stream_pipeline.py' || true; pkill -9 -f '[k]afka_to_iceberg_bronze.py' || true; pkill -9 -f '[b]ronze_to_silver.py' || true; pkill -9 -f '[b]ronze_to_silver_from_kafka.py' || true; pkill -9 -f '[l]akehouse_check.py' || true"
+        docker exec spark-master /bin/bash -lc "rm -rf /tmp/user-behavior-lakehouse; mkdir -p /tmp/user-behavior-lakehouse"
         """,
     )
 
@@ -88,8 +141,17 @@ with DAG(
         YOUTUBE_TOPIC="${YOUTUBE_KAFKA_TOPIC:-youtube.raw.events}"
         X_TOPIC="${X_KAFKA_TOPIC:-x.raw.events}"
         REDDIT_TOPIC="${REDDIT_KAFKA_TOPIC:-reddit.raw.events}"
+        YOUTUBE_CLEAN_TOPIC="${YOUTUBE_CLEAN_KAFKA_TOPIC:-youtube.clean.events}"
+        X_CLEAN_TOPIC="${X_CLEAN_KAFKA_TOPIC:-x.clean.events}"
+        REDDIT_CLEAN_TOPIC="${REDDIT_CLEAN_KAFKA_TOPIC:-reddit.clean.events}"
+        YOUTUBE_DLQ_TOPIC="${YOUTUBE_DLQ_KAFKA_TOPIC:-youtube.dlq.events}"
+        X_DLQ_TOPIC="${X_DLQ_KAFKA_TOPIC:-x.dlq.events}"
+        REDDIT_DLQ_TOPIC="${REDDIT_DLQ_KAFKA_TOPIC:-reddit.dlq.events}"
         BRONZE_TOPIC="${BRONZE_KAFKA_OUT_TOPIC:-lakehouse.bronze.for_silver}"
-        for TOPIC in "$YOUTUBE_TOPIC" "$X_TOPIC" "$REDDIT_TOPIC"; do
+        for TOPIC in \
+          "$YOUTUBE_TOPIC" "$X_TOPIC" "$REDDIT_TOPIC" \
+          "$YOUTUBE_CLEAN_TOPIC" "$X_CLEAN_TOPIC" "$REDDIT_CLEAN_TOPIC" \
+          "$YOUTUBE_DLQ_TOPIC" "$X_DLQ_TOPIC" "$REDDIT_DLQ_TOPIC"; do
           docker exec kafka /opt/kafka/bin/kafka-topics.sh \
             --create \
             --if-not-exists \
@@ -115,17 +177,68 @@ with DAG(
         ),
     )
 
+    start_clean_youtube = BashOperator(
+        task_id="start_clean_youtube",
+        bash_command=clean_stream_command(
+            "youtube",
+            "YOUTUBE_KAFKA_TOPIC",
+            "youtube.raw.events",
+            "YOUTUBE_CLEAN_KAFKA_TOPIC",
+            "youtube.clean.events",
+            "YOUTUBE_DLQ_KAFKA_TOPIC",
+            "youtube.dlq.events",
+        ),
+    )
+
+    start_clean_x = BashOperator(
+        task_id="start_clean_x",
+        bash_command=clean_stream_command(
+            "x",
+            "X_KAFKA_TOPIC",
+            "x.raw.events",
+            "X_CLEAN_KAFKA_TOPIC",
+            "x.clean.events",
+            "X_DLQ_KAFKA_TOPIC",
+            "x.dlq.events",
+        ),
+    )
+
+    start_clean_reddit = BashOperator(
+        task_id="start_clean_reddit",
+        bash_command=clean_stream_command(
+            "reddit",
+            "REDDIT_KAFKA_TOPIC",
+            "reddit.raw.events",
+            "REDDIT_CLEAN_KAFKA_TOPIC",
+            "reddit.clean.events",
+            "REDDIT_DLQ_KAFKA_TOPIC",
+            "reddit.dlq.events",
+        ),
+    )
+
     start_bronze_stream = BashOperator(
         task_id="start_bronze_stream",
         bash_command=r"""
-        docker exec spark-master /bin/bash -lc "mkdir -p /opt/spark/tests/lakehouse; /opt/spark/bin/spark-submit --master spark://spark-master:7077 --conf spark.cores.max=2 --conf spark.executor.cores=1 /opt/spark/jobs/streaming/kafka_to_iceberg_bronze.py > /opt/spark/tests/lakehouse/bronze_stream.log 2>&1 & echo \$! > /opt/spark/tests/lakehouse/bronze_stream.pid"
+        set -euo pipefail
+        docker exec \
+          -e KAFKA_TOPIC="${YOUTUBE_CLEAN_KAFKA_TOPIC:-youtube.clean.events},${X_CLEAN_KAFKA_TOPIC:-x.clean.events},${REDDIT_CLEAN_KAFKA_TOPIC:-reddit.clean.events}" \
+          -e KAFKA_VALUE_FORMAT=json \
+          -e BRONZE_KAFKA_OUT_TOPIC="${BRONZE_KAFKA_OUT_TOPIC:-lakehouse.bronze.for_silver}" \
+          -e BRONZE_CHECKPOINT_VERSION=post_clean_v1 \
+          -e BRONZE_TRIGGER_MODE=available_now \
+          spark-master /bin/bash -lc "set -o pipefail; mkdir -p /tmp/user-behavior-lakehouse; /opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=2 --conf spark.executor.cores=1 /opt/spark/jobs/streaming/kafka_to_iceberg_bronze.py 2>&1 | tee /tmp/user-behavior-lakehouse/bronze_stream.log"
         """,
     )
 
     start_silver_stream = BashOperator(
         task_id="start_silver_stream",
         bash_command=r"""
-        docker exec spark-master /bin/bash -lc "mkdir -p /opt/spark/tests/lakehouse; /opt/spark/bin/spark-submit --master spark://spark-master:7077 --conf spark.cores.max=2 --conf spark.executor.cores=1 /opt/spark/jobs/batch/bronze_to_silver_from_kafka.py > /opt/spark/tests/lakehouse/silver_stream.log 2>&1 & echo \$! > /opt/spark/tests/lakehouse/silver_stream.pid"
+        set -euo pipefail
+        docker exec \
+          -e SILVER_KAFKA_TOPICS="${BRONZE_KAFKA_OUT_TOPIC:-lakehouse.bronze.for_silver}" \
+          -e SILVER_TRIGGER_MODE=available_now \
+          -e SILVER_CHECKPOINT_VERSION=post_clean_v1 \
+          spark-master /bin/bash -lc "set -o pipefail; mkdir -p /tmp/user-behavior-lakehouse; /opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=2 --conf spark.executor.cores=1 /opt/spark/jobs/batch/bronze_to_silver_from_kafka.py 2>&1 | tee /tmp/user-behavior-lakehouse/silver_stream.log"
         """,
     )
     run_youtube_collection = BashOperator(
@@ -135,6 +248,8 @@ with DAG(
 
     run_x_collection = BashOperator(
         task_id="run_x_collection",
+        retries=2,
+        retry_delay=timedelta(seconds=20),
         bash_command=r"""
         set -euo pipefail
         if [[ "${X_COLLECTION_ENABLED:-false}" != "true" ]]; then
@@ -159,23 +274,46 @@ with DAG(
         """ + docker_compose("run --rm reddit-collector"),
     )
 
+    wait_clean_youtube = BashOperator(
+        task_id="wait_clean_youtube",
+        bash_command=wait_clean_command(
+            "youtube",
+            "YOUTUBE_CLEAN_KAFKA_TOPIC",
+            "youtube.clean.events",
+            "YOUTUBE_DLQ_KAFKA_TOPIC",
+            "youtube.dlq.events",
+        ),
+    )
+
+    wait_clean_x = BashOperator(
+        task_id="wait_clean_x",
+        bash_command=wait_clean_command(
+            "x",
+            "X_CLEAN_KAFKA_TOPIC",
+            "x.clean.events",
+            "X_DLQ_KAFKA_TOPIC",
+            "x.dlq.events",
+            "X_COLLECTION_ENABLED",
+        ),
+    )
+
+    wait_clean_reddit = BashOperator(
+        task_id="wait_clean_reddit",
+        bash_command=wait_clean_command(
+            "reddit",
+            "REDDIT_CLEAN_KAFKA_TOPIC",
+            "reddit.clean.events",
+            "REDDIT_DLQ_KAFKA_TOPIC",
+            "reddit.dlq.events",
+            "REDDIT_COLLECTION_ENABLED",
+        ),
+    )
+
     wait_bronze = BashOperator(
         task_id="wait_bronze_rows",
         bash_command=r"""
         set -euo pipefail
-        for i in $(seq 1 24); do
-          if ! docker exec spark-master /bin/bash -lc 'pid="$(cat /opt/spark/tests/lakehouse/bronze_stream.pid 2>/dev/null)" && test -r "/proc/$pid/cmdline" && tr "\0" " " < "/proc/$pid/cmdline" | grep -Fq kafka_to_iceberg_bronze.py'; then
-            echo "Bronze stream stopped before validation"
-            docker exec spark-master /bin/bash -lc "tail -n 160 /opt/spark/tests/lakehouse/bronze_stream.log || true"
-            exit 1
-          fi
-          if docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --conf spark.cores.max=2 --conf spark.executor.cores=1 /opt/spark/tests/lakehouse/lakehouse_check.py lakehouse.bronze.events 1"; then
-            exit 0
-          fi
-          sleep 5
-        done
-        docker exec spark-master /bin/bash -lc "tail -n 160 /opt/spark/tests/lakehouse/bronze_stream.log || true"
-        exit 1
+        timeout 120s docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/tests/lakehouse/lakehouse_check.py lakehouse.bronze.events 1"
         """,
     )
 
@@ -183,18 +321,7 @@ with DAG(
         task_id="wait_silver_rows",
         bash_command=r"""
         set -euo pipefail
-        for i in $(seq 1 12); do
-          if ! docker exec spark-master /bin/bash -lc 'pid="$(cat /opt/spark/tests/lakehouse/silver_stream.pid 2>/dev/null)" && test -r "/proc/$pid/cmdline" && tr "\0" " " < "/proc/$pid/cmdline" | grep -Fq bronze_to_silver_from_kafka.py'; then
-            echo "Silver stream stopped before validation"
-            docker exec spark-master /bin/bash -lc "tail -n 160 /opt/spark/tests/lakehouse/silver_stream.log || true"
-            exit 1
-          fi
-          if docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --conf spark.cores.max=2 --conf spark.executor.cores=1 /opt/spark/tests/lakehouse/lakehouse_check.py lakehouse.silver.events 1"; then
-            exit 0
-          fi
-          sleep 5
-        done
-        exit 1
+        timeout 120s docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/tests/lakehouse/lakehouse_check.py lakehouse.silver.events 1"
         """,
     )
 
@@ -203,9 +330,7 @@ with DAG(
         trigger_rule=TriggerRule.ALL_DONE,
         bash_command=r"""
         if docker exec spark-master true >/dev/null 2>&1; then
-          docker exec spark-master /bin/bash -lc "if [[ -f /opt/spark/tests/lakehouse/bronze_stream.pid ]]; then cat /opt/spark/tests/lakehouse/bronze_stream.pid | xargs -r kill -9 || true; rm -f /opt/spark/tests/lakehouse/bronze_stream.pid; fi"
-          docker exec spark-master /bin/bash -lc "if [[ -f /opt/spark/tests/lakehouse/silver_stream.pid ]]; then cat /opt/spark/tests/lakehouse/silver_stream.pid | xargs -r kill -9 || true; rm -f /opt/spark/tests/lakehouse/silver_stream.pid; fi"
-          docker exec spark-master /bin/bash -lc "pkill -9 -f '[k]afka_to_iceberg_bronze.py' || true; pkill -9 -f '[b]ronze_to_silver_from_kafka.py' || true"
+          docker exec spark-master /bin/bash -lc "pkill -9 -f '[c]ollector_stream_pipeline.py' || true; pkill -9 -f '[k]afka_to_iceberg_bronze.py' || true; pkill -9 -f '[b]ronze_to_silver_from_kafka.py' || true"
         else
           echo "spark-master is not running; no realtime streams to stop"
         fi
@@ -219,19 +344,33 @@ with DAG(
 
     start_stack >> wait_services >> cleanup_spark
     cleanup_spark >> create_source_topics >> ensure_minio_bucket
-    ensure_minio_bucket >> [start_bronze_stream, start_silver_stream]
-    [start_bronze_stream, start_silver_stream] >> run_youtube_collection
-    [start_bronze_stream, start_silver_stream] >> run_x_collection
-    [start_bronze_stream, start_silver_stream] >> run_reddit_collection
-    run_youtube_collection >> wait_bronze
-    run_x_collection >> wait_bronze
-    run_reddit_collection >> wait_bronze
-    wait_bronze >> wait_silver
+    ensure_minio_bucket >> [
+        run_youtube_collection,
+        run_x_collection,
+        run_reddit_collection,
+    ]
+    run_youtube_collection >> start_clean_youtube
+    run_x_collection >> start_clean_x
+    run_reddit_collection >> start_clean_reddit
+    start_clean_youtube >> wait_clean_youtube
+    start_clean_x >> wait_clean_x
+    start_clean_reddit >> wait_clean_reddit
+    [
+        wait_clean_youtube,
+        wait_clean_x,
+        wait_clean_reddit,
+    ] >> start_bronze_stream
+    start_bronze_stream >> wait_bronze
+    wait_bronze >> start_silver_stream
+    start_silver_stream >> wait_silver
     wait_silver >> stop_realtime_streams
     [
         run_youtube_collection,
         run_x_collection,
         run_reddit_collection,
+        wait_clean_youtube,
+        wait_clean_x,
+        wait_clean_reddit,
         wait_bronze,
         wait_silver,
         stop_realtime_streams,

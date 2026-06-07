@@ -1,13 +1,21 @@
 import os
+import re
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, to_date, to_timestamp, from_json
+from pyspark.sql.functions import coalesce, col, from_json, to_date, to_timestamp
+from pyspark.storagelevel import StorageLevel
 from pyspark.sql.types import StructType, StructField, StringType, TimestampType
 
 
 def _env(name: str, default: str) -> str:
     value = os.getenv(name)
     return value if value else default
+
+
+def _trigger(writer, mode: str, interval: str):
+    if mode == "available_now":
+        return writer.trigger(availableNow=True)
+    return writer.trigger(processingTime=interval)
 
 
 def _build_spark(app_name: str, warehouse: str) -> SparkSession:
@@ -30,6 +38,8 @@ def _build_spark(app_name: str, warehouse: str) -> SparkSession:
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config("spark.sql.shuffle.partitions", _env("SPARK_SQL_SHUFFLE_PARTITIONS", "4"))
+        .config("spark.default.parallelism", _env("SPARK_DEFAULT_PARALLELISM", "4"))
         .getOrCreate()
     )
 
@@ -38,13 +48,19 @@ def _build_spark(app_name: str, warehouse: str) -> SparkSession:
 
 def main() -> None:
     kafka_bootstrap = _env("KAFKA_BOOTSTRAP", "kafka:9092")
-    kafka_topic = _env("BRONZE_KAFKA_OUT_TOPIC", "lakehouse.bronze.for_silver")
+    kafka_topics = _env(
+        "SILVER_KAFKA_TOPICS",
+        "lakehouse.bronze.for_silver",
+    )
     starting_offsets = _env("SILVER_STARTING_OFFSETS", "earliest")
+    trigger_mode = _env("SILVER_TRIGGER_MODE", "processing_time").lower()
+    trigger_interval = _env("PROCESSING_TRIGGER", "30 seconds")
     bucket = _env("MINIO_BUCKET", "lakehouse")
 
     warehouse = f"s3a://{bucket}/warehouse"
 
     spark = _build_spark("bronze-to-silver-from-kafka", warehouse)
+    spark.sparkContext.setLogLevel("WARN")
 
     silver_table = "lakehouse.silver.events"
     silver_columns = [
@@ -90,7 +106,7 @@ def main() -> None:
     raw = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", kafka_bootstrap)
-        .option("subscribe", kafka_topic)
+        .option("subscribe", kafka_topics)
         .option("startingOffsets", starting_offsets)
         .option("failOnDataLoss", "false")
         .load()
@@ -99,41 +115,63 @@ def main() -> None:
     parsed = raw.select(from_json(col("value").cast("string"), schema).alias("data")).select("data.*")
 
     updates = (
-        parsed.withColumn("event_ts", to_timestamp(col("event_ts")))
+        parsed.withColumn(
+            "event_ts",
+            coalesce(to_timestamp(col("event_ts")), to_timestamp(col("timestamp"))),
+        )
         .withColumn("event_date", to_date(col("event_ts")))
         .select(*silver_columns)
     )
 
     def _foreach_batch(df, epoch_id: int):
-        if df.rdd.isEmpty():
-            return
-        batch_df = df.dropDuplicates(["user_id", "url", "event_ts"])
-        temp_view = f"microbatch_{epoch_id}"
-        batch_df.createOrReplaceTempView(temp_view)
-        batch_spark = batch_df.sparkSession
-        cols = ", ".join(silver_columns)
-        merge_sql = f"""
-        MERGE INTO {silver_table} AS t
-        USING {temp_view} AS s
-        ON t.event_date = s.event_date
-           AND t.user_id = s.user_id
-           AND t.url = s.url
-           AND t.event_ts = s.event_ts
-        WHEN NOT MATCHED THEN
-          INSERT ({cols}) VALUES ({', '.join([f's.{c}' for c in silver_columns])})
-        """
-        batch_spark.sql(merge_sql)
+        cached = df.persist(StorageLevel.MEMORY_AND_DISK)
+        try:
+            input_rows = cached.count()
+            if input_rows == 0:
+                print(f"Silver epoch {epoch_id}: no input rows")
+                return
 
-    checkpoint = f"s3a://{bucket}/checkpoints/silver/events/kafka"
+            batch_df = cached.dropDuplicates(["user_id", "url", "event_ts"])
+            deduplicated_rows = batch_df.count()
+            temp_view = f"microbatch_{epoch_id}"
+            batch_df.createOrReplaceTempView(temp_view)
+            batch_spark = batch_df.sparkSession
+            cols = ", ".join(silver_columns)
+            merge_sql = f"""
+            MERGE INTO {silver_table} AS t
+            USING {temp_view} AS s
+            ON t.user_id = s.user_id
+               AND t.url = s.url
+               AND t.event_ts = s.event_ts
+            WHEN MATCHED THEN UPDATE SET
+              t.title = s.title,
+              t.source = s.source,
+              t.error = s.error
+            WHEN NOT MATCHED THEN
+              INSERT ({cols}) VALUES ({', '.join([f's.{c}' for c in silver_columns])})
+            """
+            batch_spark.sql(merge_sql)
+            print(
+                f"Silver epoch {epoch_id}: merged {deduplicated_rows} "
+                f"deduplicated rows from {input_rows} Kafka rows"
+            )
+        finally:
+            cached.unpersist()
 
-    query = (
+    checkpoint_key = re.sub(r"[^a-zA-Z0-9._-]+", "_", kafka_topics)
+    checkpoint_version = _env("SILVER_CHECKPOINT_VERSION", "v2")
+    checkpoint = (
+        f"s3a://{bucket}/checkpoints/silver/events/kafka/"
+        f"{checkpoint_version}/{checkpoint_key}"
+    )
+
+    writer = (
         updates.writeStream
         .outputMode("append")
         .option("checkpointLocation", checkpoint)
-        .trigger(processingTime=_env("PROCESSING_TRIGGER", "30 seconds"))
         .foreachBatch(_foreach_batch)
-        .start()
     )
+    query = _trigger(writer, trigger_mode, trigger_interval).start()
 
     query.awaitTermination()
 

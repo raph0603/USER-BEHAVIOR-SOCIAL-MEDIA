@@ -22,12 +22,14 @@ _EMAIL = r"[\w.+-]+@[\w-]+\.[\w.-]+"
 _MENTION = r"@\w+"
 
 _PHONE = r"(?<!\d)\+?\d[\d\-.()]{6,}\d(?!\d)"
+_IP = r"\b(?:\d{1,3}\.){3}\d{1,3}\b"
 
 
 def scrub_pii(c: Column) -> Column:
     c = regexp_replace(c, _EMAIL,   " <EMAIL> ")
     c = regexp_replace(c, _MENTION, " <USER> ")
     c = regexp_replace(c, _PHONE,   " <PHONE> ")
+    c = regexp_replace(c, _IP,      " <IP> ")
     return c
 
 def clean_text(c: Column) -> Column:

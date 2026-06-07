@@ -6,11 +6,15 @@ This stack includes MinIO (S3-compatible) and Spark jobs that write to Iceberg t
 
 ## Privacy gateway
 
-The Bronze streaming job applies privacy safeguards before data lands in Iceberg:
+The three source-specific cleaning jobs apply privacy safeguards before data
+lands in Bronze:
 
 - `user_id` is replaced by a deterministic SHA-256 hash salted with `PRIVACY_HASH_SALT`.
-- URL query strings and fragments are stripped.
-- Emails, phone numbers, and IP addresses are redacted from free-text fields.
+- URL fragments are stripped while useful query parameters such as YouTube
+  video IDs are preserved.
+- Emails, mentions, phone numbers, IP addresses, embedded URLs, HTML and
+  control characters are removed or replaced in free-text fields.
+- Invalid records are sent to a source-specific DLQ before Bronze.
 
 Set `PRIVACY_HASH_SALT` to a non-default secret outside local development.
 
@@ -29,6 +33,12 @@ X_KAFKA_TOPIC=x.raw.events
 X_CDP_URL=http://host.docker.internal:9223
 REDDIT_COLLECTION_ENABLED=true
 REDDIT_KAFKA_TOPIC=reddit.raw.events
+YOUTUBE_CLEAN_KAFKA_TOPIC=youtube.clean.events
+X_CLEAN_KAFKA_TOPIC=x.clean.events
+REDDIT_CLEAN_KAFKA_TOPIC=reddit.clean.events
+YOUTUBE_DLQ_KAFKA_TOPIC=youtube.dlq.events
+X_DLQ_KAFKA_TOPIC=x.dlq.events
+REDDIT_DLQ_KAFKA_TOPIC=reddit.dlq.events
 ```
 
 ```bash
@@ -42,9 +52,17 @@ Default local login:
 - user: `admin`
 - password: `admin`
 
-The DAG `user_behavior_lakehouse` starts the core stack, creates the
-`youtube.raw.events`, `x.raw.events` and `reddit.raw.events` Kafka topics,
-starts Bronze and Silver, then launches the enabled source collectors.
+The DAG `user_behavior_lakehouse` runs the complete online pipeline:
+
+1. collect YouTube, X and Reddit data into their raw Kafka topics;
+2. clean, validate and anonymize the three raw streams in parallel, with
+   separate clean topics, DLQ topics and checkpoints;
+3. merge only records marked `stage=clean` into Iceberg Bronze;
+4. publish the Bronze records to `lakehouse.bronze.for_silver`;
+5. deduplicate and merge those Bronze records into Iceberg Silver.
+
+The separate `social_clean_pipeline` DAG is retained for replaying the legacy
+sample CSV files. It is not required for the online lakehouse flow.
 
 ### Start services
 
