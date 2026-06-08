@@ -16,7 +16,14 @@ BASE_DIR = Path(__file__).resolve().parent
 INPUT_FILE = BASE_DIR / "x_urls.txt"
 OUTPUT_CSV = BASE_DIR / f"x_thread_parallel_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
-CDP_URL = "http://127.0.0.1:9222"
+
+def x_cdp_url() -> str:
+    port_file = BASE_DIR.parent / "data" / "x-runtime" / "edge-port.txt"
+    port = int(port_file.read_text(encoding="utf-8").strip())
+    return f"http://127.0.0.1:{port}"
+
+
+CDP_URL = x_cdp_url()
 
 NUM_WORKERS = 3
 MAX_SCROLL_ROUNDS = 80

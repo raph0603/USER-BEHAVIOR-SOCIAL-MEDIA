@@ -415,10 +415,37 @@ def _resolve_x_cdp_url(cdp_url: str) -> str:
     return connect_url
 
 
+def _x_cdp_url() -> str:
+    port_file_value = os.getenv("X_CDP_PORT_FILE")
+    if port_file_value:
+        port_file = Path(port_file_value)
+        if not port_file.is_file():
+            raise FileNotFoundError(
+                f"X CDP runtime port file not found: {port_file}. "
+                "Run scripts/start_x_browser.ps1 first."
+            )
+        try:
+            port = int(port_file.read_text(encoding="utf-8").strip())
+        except ValueError as exc:
+            raise ValueError(f"Invalid X CDP port in {port_file}") from exc
+        if not 1 <= port <= 65535:
+            raise ValueError(f"X CDP port out of range in {port_file}: {port}")
+        host = _env_str("X_CDP_HOST", "host.docker.internal")
+        return f"http://{host}:{port}"
+
+    cdp_url = os.getenv("X_CDP_URL", "").strip()
+    if not cdp_url:
+        raise RuntimeError(
+            "No X CDP endpoint configured. Run scripts/start_x_browser.ps1 "
+            "or set X_CDP_URL explicitly."
+        )
+    return cdp_url
+
+
 def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
-    cdp_url = _env_str("X_CDP_URL", "http://host.docker.internal:9222")
+    cdp_url = _x_cdp_url()
     cdp_wait_seconds = _env_int("X_CDP_WAIT_SECONDS", 60)
-    headless = _env_bool("X_HEADLESS", False)
+    headless = _env_bool("X_HEADLESS", True)
     queries = [
         query.strip()
         for query in _env_str("X_SEARCH_QUERIES", "||".join(DEFAULT_X_QUERIES)).split("||")

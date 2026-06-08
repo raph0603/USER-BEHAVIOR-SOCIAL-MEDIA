@@ -270,9 +270,9 @@ async def _handle_client(
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--listen-host", default="0.0.0.0")
-    parser.add_argument("--listen-port", type=int, default=9223)
+    parser.add_argument("--listen-port", type=int, required=True)
     parser.add_argument("--target-host", default="127.0.0.1")
-    parser.add_argument("--target-port", type=int, default=9222)
+    parser.add_argument("--target-port", type=int, required=True)
     parser.add_argument("--advertised-host", default="host.docker.internal")
     parser.add_argument("--advertised-port", type=int)
     parser.add_argument("--edge-path")

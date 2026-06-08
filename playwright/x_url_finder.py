@@ -11,7 +11,14 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_FILE = BASE_DIR / "x_urls.txt"
 
-CDP_URL = "http://127.0.0.1:9222"
+
+def x_cdp_url() -> str:
+    port_file = BASE_DIR.parent / "data" / "x-runtime" / "edge-port.txt"
+    port = int(port_file.read_text(encoding="utf-8").strip())
+    return f"http://127.0.0.1:{port}"
+
+
+CDP_URL = x_cdp_url()
 
 SCROLL_ROUNDS_PER_QUERY = 18
 SCROLL_PIXELS_MIN = 1600

@@ -13,6 +13,7 @@ x-airflow-common: &airflow-common
     AIRFLOW_UID: "0"
     DOCKER_HOST_PROJECT_DIR: ${DOCKER_HOST_PROJECT_DIR:-.}
     LAKEHOUSE_SCHEDULE_MINUTES: ${LAKEHOUSE_SCHEDULE_MINUTES:-60}
+    LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES: ${LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES:-60}
     YOUTUBE_KAFKA_TOPIC: ${YOUTUBE_KAFKA_TOPIC:-youtube.raw.events}
     X_COLLECTION_ENABLED: ${X_COLLECTION_ENABLED:-false}
     X_KAFKA_TOPIC: ${X_KAFKA_TOPIC:-x.raw.events}
@@ -173,9 +174,11 @@ services:
       - SCHEMA_PATH=/app/schemas/playwright_event.avsc
       - SCHEMA_REGISTRY_WAIT_SEC=180
       - PRODUCER_MODE=x
-      - X_CDP_URL=${X_CDP_URL:-http://host.docker.internal:9223}
+      - X_CDP_URL=${X_CDP_URL:-}
+      - X_CDP_HOST=${X_CDP_HOST:-host.docker.internal}
+      - X_CDP_PORT_FILE=/app/x-runtime/cdp-port.txt
       - X_CDP_WAIT_SECONDS=${X_CDP_WAIT_SECONDS:-90}
-      - X_HEADLESS=${X_HEADLESS:-false}
+      - X_HEADLESS=${X_HEADLESS:-true}
       - X_GOOGLE_EMAIL=${X_GOOGLE_EMAIL:-}
       - X_GOOGLE_LOGIN_WAIT_SECONDS=${X_GOOGLE_LOGIN_WAIT_SECONDS:-90}
       - X_SEARCH_QUERIES=${X_SEARCH_QUERIES:-(electric vehicle OR EV OR "electric car") lang:en -filter:replies||(Tesla OR "EV charging" OR "battery range") lang:en -filter:replies}
@@ -191,6 +194,7 @@ services:
     volumes:
       - ${HOST_PROJECT_DIR:-.}/schemas:/app/schemas:ro
       - ${HOST_PROJECT_DIR:-.}/data/collector-state:/app/state
+      - ${HOST_PROJECT_DIR:-.}/data/x-runtime:/app/x-runtime:ro
 
   reddit-collector:
     build:

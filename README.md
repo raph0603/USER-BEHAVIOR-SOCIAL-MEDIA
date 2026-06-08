@@ -30,7 +30,6 @@ DOCKER_HOST_PROJECT_DIR=C:/Users/rapha/OneDrive/Documents/USER-BEHAVIOR-SOCIAL-M
 YOUTUBE_KAFKA_TOPIC=youtube.raw.events
 X_COLLECTION_ENABLED=true
 X_KAFKA_TOPIC=x.raw.events
-X_CDP_URL=http://host.docker.internal:9223
 REDDIT_COLLECTION_ENABLED=true
 REDDIT_KAFKA_TOPIC=reddit.raw.events
 YOUTUBE_CLEAN_KAFKA_TOPIC=youtube.clean.events
@@ -75,6 +74,20 @@ Use `LAKEHOUSE_SCHEDULE_MINUTES=0` to disable automatic runs. Airflow keeps at
 most one active run, so intervals shorter than the pipeline duration do not
 execute concurrently.
 
+The `user_behavior_lakehouse_no_row_checks` DAG runs the same online pipeline
+without `wait_bronze_rows` or `wait_silver_rows`. It succeeds when collectors
+and Spark jobs finish without an execution error, even when a run produces no
+new Bronze or Silver row. It also runs every 60 minutes by default. Its
+schedule is configured separately:
+
+```env
+LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=30
+```
+
+Both online DAGs use a shared pipeline lock. If their scheduled or manual runs
+overlap, the second run waits before cleanup and Spark processing instead of
+starting concurrent streams on the same checkpoints.
+
 When manually triggering `user_behavior_lakehouse` from the Airflow interface,
 the trigger form exposes three limits:
 
@@ -88,9 +101,10 @@ default value of 5 for each source.
 
 The trigger form also exposes `x_headless`:
 
+- `true` (default): Edge uses the persistent profile without displaying a
+  window;
 - `false`: Edge is visible, which is required to complete a Google login or
-  an X challenge;
-- `true`: Edge uses the same persistent profile without displaying a window.
+  an X challenge.
 
 The Windows CDP proxy automatically restarts Edge when it has been closed.
 YouTube is API-based, and Reddit remains headless inside its Docker container.
@@ -142,6 +156,12 @@ Start the browser with remote debugging enabled before running the DAG:
 ```powershell
 .\scripts\start_x_browser.ps1
 ```
+
+The script selects free ports for Edge and its Docker-accessible CDP proxy,
+then writes the selected proxy port to `data/x-runtime/cdp-port.txt`. The
+`x-collector` container reads that file automatically, so no fixed X port is
+required in `.env` or Airflow. `X_CDP_URL` remains available only as a fallback
+for an externally managed CDP endpoint.
 
 Log in to X in that browser window. When triggering the DAG from the Airflow
 UI, set `x_post_count` to the maximum number of new X posts to collect
