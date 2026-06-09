@@ -442,6 +442,40 @@ def _x_cdp_url() -> str:
     return cdp_url
 
 
+def _load_x_full_tweet_text(context, tweet_url: str, fallback_text: str) -> str:
+    detail_page = None
+    try:
+        detail_page = context.new_page()
+        detail_page.goto(
+            tweet_url,
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+        article = detail_page.locator('article[data-testid="tweet"]').first
+        article.wait_for(state="visible", timeout=15000)
+
+        show_more = article.locator(
+            '[data-testid="tweet-text-show-more-link"]'
+        )
+        if show_more.count():
+            show_more.first.click(timeout=3000)
+            detail_page.wait_for_timeout(500)
+
+        text_locator = article.locator('[data-testid="tweetText"]').first
+        text_locator.wait_for(state="visible", timeout=10000)
+        full_text = _clean_text(text_locator.inner_text(timeout=5000))
+        return full_text or fallback_text
+    except (PlaywrightTimeoutError, PlaywrightError) as exc:
+        print(f"Unable to load full X post text from {tweet_url}: {exc}")
+        return fallback_text
+    finally:
+        if detail_page is not None:
+            try:
+                detail_page.close()
+            except PlaywrightError:
+                pass
+
+
 def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
     cdp_url = _x_cdp_url()
     cdp_wait_seconds = _env_int("X_CDP_WAIT_SECONDS", 60)
@@ -566,6 +600,11 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                             if not text:
                                 continue
 
+                            text = _load_x_full_tweet_text(
+                                context,
+                                tweet_url,
+                                text,
+                            )
                             user_locator = article.locator(
                                 'div[data-testid="User-Name"]'
                             )
