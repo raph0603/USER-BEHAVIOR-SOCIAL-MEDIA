@@ -193,7 +193,7 @@ with DAG(
     ],
 ) as dag:
     start_stack = BashOperator(
-        task_id="start_core_stack",
+        task_id="initialize_core_services",
         bash_command=docker_compose(
             "up -d --scale spark-worker=${SPARK_WORKER_COUNT:-4} "
             "minio kafka schema-registry kafdrop spark-master spark-worker"
@@ -201,7 +201,7 @@ with DAG(
     )
 
     wait_services = BashOperator(
-        task_id="wait_services",
+        task_id="verify_core_services",
         bash_command=r"""
         set -euo pipefail
         wait_for() {
@@ -231,7 +231,7 @@ with DAG(
     )
 
     cleanup_spark = BashOperator(
-        task_id="cleanup_previous_spark_jobs",
+        task_id="terminate_stale_spark_jobs",
         bash_command=r"""
         docker exec spark-master /bin/bash -lc "pkill -9 -f '[s]park-submit' || true"
         docker exec spark-master /bin/bash -lc "pkill -9 -f '[c]ollector_stream_pipeline.py' || true; pkill -9 -f '[k]afka_to_iceberg_bronze.py' || true; pkill -9 -f '[b]ronze_to_silver.py' || true; pkill -9 -f '[b]ronze_to_silver_from_kafka.py' || true; pkill -9 -f '[l]akehouse_check.py' || true"
@@ -240,7 +240,7 @@ with DAG(
     )
 
     create_source_topics = BashOperator(
-        task_id="create_source_topics",
+        task_id="provision_kafka_pipeline_topics",
         bash_command=r"""
         YOUTUBE_TOPIC="${YOUTUBE_KAFKA_TOPIC:-youtube.raw.events}"
         X_TOPIC="${X_KAFKA_TOPIC:-x.raw.events}"
@@ -275,14 +275,14 @@ with DAG(
     )
 
     ensure_minio_bucket = BashOperator(
-        task_id="ensure_minio_bucket",
+        task_id="initialize_lakehouse_storage",
         bash_command=docker_compose(
             "run --rm minio-init"
         ),
     )
 
     start_clean_youtube = BashOperator(
-        task_id="start_clean_youtube",
+        task_id="sha256_hash_pii_redact_validate_youtube",
         bash_command=clean_stream_command(
             "youtube",
             "YOUTUBE_KAFKA_TOPIC",
@@ -295,7 +295,7 @@ with DAG(
     )
 
     start_clean_x = BashOperator(
-        task_id="start_clean_x",
+        task_id="sha256_hash_pii_redact_validate_x",
         bash_command=clean_stream_command(
             "x",
             "X_KAFKA_TOPIC",
@@ -308,7 +308,7 @@ with DAG(
     )
 
     start_clean_reddit = BashOperator(
-        task_id="start_clean_reddit",
+        task_id="sha256_hash_pii_redact_validate_reddit",
         bash_command=clean_stream_command(
             "reddit",
             "REDDIT_KAFKA_TOPIC",
@@ -321,7 +321,7 @@ with DAG(
     )
 
     start_bronze_stream = BashOperator(
-        task_id="start_bronze_stream",
+        task_id="merge_clean_events_to_bronze",
         bash_command=r"""
         set -euo pipefail
         docker exec \
@@ -335,7 +335,7 @@ with DAG(
     )
 
     start_silver_stream = BashOperator(
-        task_id="start_silver_stream",
+        task_id="transmit_bronze_to_silver",
         bash_command=r"""
         set -euo pipefail
         docker exec \
@@ -346,7 +346,7 @@ with DAG(
         """,
     )
     run_youtube_collection = BashOperator(
-        task_id="run_youtube_collection",
+        task_id="collect_youtube_api_events",
         bash_command=docker_compose(
             "run --rm "
             "-e PRODUCER_MAX_EVENTS={{ params.youtube_event_count }} "
@@ -356,7 +356,7 @@ with DAG(
     )
 
     run_x_collection = BashOperator(
-        task_id="run_x_collection",
+        task_id="collect_x_playwright_events",
         retries=2,
         retry_delay=timedelta(seconds=20),
         bash_command=r"""
@@ -374,7 +374,7 @@ with DAG(
     )
 
     run_reddit_collection = BashOperator(
-        task_id="run_reddit_collection",
+        task_id="collect_reddit_online_events",
         bash_command=r"""
         set -euo pipefail
         if [[ "${REDDIT_COLLECTION_ENABLED:-false}" != "true" ]]; then
@@ -389,7 +389,7 @@ with DAG(
     )
 
     wait_clean_youtube = BashOperator(
-        task_id="wait_clean_youtube",
+        task_id="report_youtube_clean_dlq_offsets",
         bash_command=wait_clean_command(
             "youtube",
             "YOUTUBE_CLEAN_KAFKA_TOPIC",
@@ -400,7 +400,7 @@ with DAG(
     )
 
     wait_clean_x = BashOperator(
-        task_id="wait_clean_x",
+        task_id="report_x_clean_dlq_offsets",
         bash_command=wait_clean_command(
             "x",
             "X_CLEAN_KAFKA_TOPIC",
@@ -412,7 +412,7 @@ with DAG(
     )
 
     wait_clean_reddit = BashOperator(
-        task_id="wait_clean_reddit",
+        task_id="report_reddit_clean_dlq_offsets",
         bash_command=wait_clean_command(
             "reddit",
             "REDDIT_CLEAN_KAFKA_TOPIC",
@@ -424,7 +424,7 @@ with DAG(
     )
 
     stop_realtime_streams = BashOperator(
-        task_id="stop_realtime_streams",
+        task_id="terminate_pipeline_spark_jobs",
         trigger_rule=TriggerRule.ALL_DONE,
         bash_command=r"""
         if docker exec spark-master true >/dev/null 2>&1; then
@@ -442,7 +442,7 @@ with DAG(
     )
 
     pipeline_done = EmptyOperator(
-        task_id="pipeline_done",
+        task_id="lakehouse_pipeline_complete",
         trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
     )
 
