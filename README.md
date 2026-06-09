@@ -58,7 +58,12 @@ The DAG `user_behavior_lakehouse` runs the complete online pipeline:
    separate clean topics, DLQ topics and checkpoints;
 3. merge only records marked `stage=clean` into Iceberg Bronze;
 4. publish the Bronze records to `lakehouse.bronze.for_silver`;
-5. deduplicate and merge those Bronze records into Iceberg Silver.
+5. transmit and process those Bronze records into Iceberg Silver.
+
+The Airflow task names describe the implemented transformations. In
+particular, `sha256_hash_pii_redact_validate_*` applies salted SHA-256 user
+hashing, regex-based PII redaction, text normalization, validation and DLQ
+routing. This pipeline does not currently run a NER model.
 
 The separate `social_clean_pipeline` DAG is retained for replaying the legacy
 sample CSV files. It is not required for the online lakehouse flow.
@@ -87,6 +92,26 @@ LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=30
 Both online DAGs use a shared pipeline lock. If their scheduled or manual runs
 overlap, the second run waits before cleanup and Spark processing instead of
 starting concurrent streams on the same checkpoints.
+
+The independent `iceberg_parquet_compaction` DAG compacts the Parquet files
+managed by the Bronze and Silver Iceberg tables. It runs every six hours by
+default:
+
+```env
+ICEBERG_COMPACTION_SCHEDULE_MINUTES=360
+ICEBERG_COMPACTION_TABLES=lakehouse.bronze.events,lakehouse.silver.events
+ICEBERG_COMPACTION_RETRIES=3
+```
+
+Set the schedule to `0` to keep this DAG manual. Its trigger form exposes
+`target_file_size_mb` (128 MB by default) and `min_input_files` (2 by default).
+Iceberg uses `rewrite-all=false`, so files already compacted are skipped.
+
+Each table rewrite is an atomic Iceberg snapshot transaction with partial
+progress disabled. A failed attempt leaves the previous snapshot readable.
+The job verifies that the record count is unchanged and retries three times by
+default. The shared lock prevents compaction from overlapping Bronze or Silver
+writes without creating a dependency between DAGs.
 
 When manually triggering `user_behavior_lakehouse` from the Airflow interface,
 the trigger form exposes three limits:
