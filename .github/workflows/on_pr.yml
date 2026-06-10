@@ -2,10 +2,14 @@ name: Commit & PR Lint
 
 on:
   pull_request:
+    branches:
+      - main
     types: [opened, edited, synchronize, reopened]
+  workflow_dispatch:
 
 jobs:
   lint:
+    name: Commit Lint Check
     runs-on: ubuntu-latest
 
     steps:
