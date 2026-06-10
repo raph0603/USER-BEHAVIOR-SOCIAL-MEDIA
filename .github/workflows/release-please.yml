@@ -10,6 +10,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  actions: write
 
 jobs:
   release:
@@ -24,7 +25,8 @@ jobs:
           target-branch: production
           release-type: simple
 
-      - name: Enable auto-merge for Release Please PR
+      - name: Find Release Please PR
+        id: release_pr
         if: ${{ steps.release.outputs.prs_created == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -42,10 +44,59 @@ jobs:
 
           if [ -z "$PR_NUMBER" ]; then
             echo "No Release Please PR found."
+            echo "number=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Enable auto-merge for Release Please PR
+        if: ${{ steps.release_pr.outputs.number != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.release_pr.outputs.number }}
+        run: |
+          set -e
 
           gh pr merge "$PR_NUMBER" \
             --repo "$REPO" \
             --squash \
             --auto
+
+      - name: Wait for Release Please PR merge
+        if: ${{ steps.release_pr.outputs.number != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.release_pr.outputs.number }}
+        run: |
+          set -e
+
+          for i in {1..60}; do
+            MERGED=$(gh pr view "$PR_NUMBER" \
+              --repo "$REPO" \
+              --json merged \
+              --jq '.merged')
+
+            if [ "$MERGED" = "true" ]; then
+              echo "Release Please PR #$PR_NUMBER has been merged."
+              exit 0
+            fi
+
+            echo "Waiting for Release Please PR #$PR_NUMBER to be merged..."
+            sleep 10
+          done
+
+          echo "Release Please PR #$PR_NUMBER was not merged after waiting."
+          exit 1
+
+      - name: Dispatch final release workflow
+        if: ${{ steps.release_pr.outputs.number != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh workflow run release-please.yml \
+            --repo "$REPO" \
+            --ref production
