@@ -13,6 +13,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 jobs:
   promote:
@@ -77,3 +78,38 @@ jobs:
             --repo "$REPO" \
             --merge \
             --auto
+
+      - name: Wait for production promotion merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.create_pr.outputs.pr_number }}
+        run: |
+          set -e
+
+          for i in {1..60}; do
+            MERGED=$(gh pr view "$PR_NUMBER" \
+              --repo "$REPO" \
+              --json merged \
+              --jq '.merged')
+
+            if [ "$MERGED" = "true" ]; then
+              echo "PR #$PR_NUMBER has been merged."
+              exit 0
+            fi
+
+            echo "Waiting for PR #$PR_NUMBER to be merged..."
+            sleep 10
+          done
+
+          echo "PR #$PR_NUMBER was not merged after waiting."
+          exit 1
+
+      - name: Dispatch production release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh workflow run release-please.yml \
+            --repo "$REPO" \
+            --ref production
