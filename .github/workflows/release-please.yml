@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 permissions:
@@ -14,46 +12,30 @@ permissions:
 
 jobs:
   verify:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
       # TODO: Ajouter les vérifications avant release
-      #
-      # Exemples :
-      #
-      # - name: Install dependencies
-      #   run: npm install
-      #
-      # - name: Run tests
-      #   run: npm test
-      #
-      # - name: Run lint
-      #   run: npm run lint
-      #
-      # - name: Build
-      #   run: npm run build
-      #
-      # Pour Python :
-      #
-      # - name: Install dependencies
-      #   run: pip install -r requirements.txt
-      #
-      # - name: Run tests
-      #   run: pytest
 
       - name: Validation placeholder
         run: echo "Aucune vérification configurée pour le moment"
 
   release-please:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     needs: verify
     runs-on: ubuntu-latest
 
     steps:
-      - uses: googleapis/release-please-action@v4
+      - id: release
+        uses: googleapis/release-please-action@v4
         with:
           target-branch: main
           release-type: simple
+
+      - name: Enable auto-merge
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        run: |
+          gh pr merge ${{ fromJson(steps.release.outputs.pr).number }} --merge --auto
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
