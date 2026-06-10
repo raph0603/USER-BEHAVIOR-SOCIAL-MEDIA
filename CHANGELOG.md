@@ -1,5 +1,6 @@
 # Changelog
 
+<<<<<<< HEAD
 ## [1.0.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.0.0...v1.0.1) (2026-06-10)
 
 
@@ -7,11 +8,14 @@
 
 * .gitignore ([ace28b0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/ace28b04983b407feaca8087c4feda770f0090f7))
 
+=======
+>>>>>>> origin/production
 ## 1.0.0 (2026-06-10)
 
 
 ### Features
 
+<<<<<<< HEAD
 * add X crawler reply collection ([3bcf2a3](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/3bcf2a3cf3180c5b9ce6dd201e3c18da489518b5))
 * add X crawler reply collection ([5fa45eb](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/5fa45ebe2c2fc623bb44f8e938e0d3a5e8fe2330))
 * **orchestrator:** add social_clean_pipeline DAG (clean jobs + ingestion in parallel) ([28a07e5](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/28a07e58004f6674c104effa3ba97f2d24da7745))
@@ -24,6 +28,9 @@
 * **pipeline:** youtube clean+DLQ pipeline verified end-to-end ([74fd59e](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/74fd59e00f11a74f22da6ae56fdcd4623ad1b671))
 * test commitlint check ([b83d261](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/b83d26192904fceccb8139ab730f679b01e3f1dd))
 * test commitlint check ([6bca401](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/6bca401fecff5f8072da6d7a1ec12e52a6cef7cd))
+=======
+* **pipeline:** add privacy lakehouse orchestration ([35f2aca](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/35f2acae8473b8d376da7262bedf1eba061c7be6))
+>>>>>>> origin/production
 
 
 ### Bug Fixes
