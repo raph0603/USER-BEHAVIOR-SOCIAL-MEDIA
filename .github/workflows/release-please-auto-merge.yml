@@ -1,0 +1,25 @@
+# .github/workflows/release-please-auto-merge.yml
+
+name: Auto Merge Release Please
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - labeled
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: contains(github.event.pull_request.labels.*.name, 'autorelease: pending')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Enable auto merge
+        run: gh pr merge ${{ github.event.pull_request.number }} --merge --auto
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
