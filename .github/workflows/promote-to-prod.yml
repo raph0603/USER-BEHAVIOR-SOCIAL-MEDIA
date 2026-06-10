@@ -3,7 +3,7 @@ name: Promote Main to Production
 on:
   workflow_run:
     workflows:
-      - CI
+      - Main Branch Validation
     branches:
       - main
     types:
