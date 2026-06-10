@@ -9,8 +9,7 @@ on:
 
 jobs:
   lint:
-    if: |
-      !startsWith(github.event.pull_request.head.ref, 'release-please--')
+    if: startsWith(github.event.pull_request.head.ref, 'release-please--')
     name: Commit Lint Check
     runs-on: ubuntu-latest
 
