@@ -148,3 +148,7 @@ PROJECT_CONTEXT_NOTES.md
 *.doc
 *.docx
 *.pdf
+
+
+API/yt_raw_json/
+API/video_list.txt
