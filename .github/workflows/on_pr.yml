@@ -5,28 +5,42 @@ on:
     branches:
       - main
       - production
-    types: [opened, edited, synchronize, reopened]
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
   workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
 
 jobs:
   lint:
-    if: startsWith(github.event.pull_request.head.ref, 'release-please--')
-    name: Commit Lint Check
+    name: Commit & PR Lint
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - run: npm install --save-dev @commitlint/cli @commitlint/config-conventional
+      - name: Install CommitLint
+        run: |
+          npm install --no-save \
+            @commitlint/cli \
+            @commitlint/config-conventional
 
-      - run: |
-          cat > commitlint.config.js << 'EOF'
+      - name: Create CommitLint config
+        run: |
+          cat > commitlint.config.cjs << 'EOF'
           module.exports = {
             extends: ['@commitlint/config-conventional'],
             rules: {
@@ -48,18 +62,20 @@ jobs:
                   'revert'
                 ]
               ],
+              'type-empty': [2, 'never'],
+              'subject-empty': [2, 'never'],
               'header-max-length': [2, 'always', 100]
             }
           };
           EOF
 
+      - name: Validate PR title
+        run: |
+          echo "${{ github.event.pull_request.title }}" | npx commitlint --verbose
+
       - name: Validate commits
         run: |
           npx commitlint \
-            --from ${{ github.event.pull_request.base.sha }} \
-            --to ${{ github.event.pull_request.head.sha }} \
+            --from "${{ github.event.pull_request.base.sha }}" \
+            --to "${{ github.event.pull_request.head.sha }}" \
             --verbose
-
-      - name: Validate PR title
-        run: |
-          echo "${{ github.event.pull_request.title }}" | npx commitlint
