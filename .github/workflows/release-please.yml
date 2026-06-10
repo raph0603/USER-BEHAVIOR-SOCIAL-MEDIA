@@ -57,15 +57,3 @@ jobs:
         with:
           target-branch: main
           release-type: simple
-
-  auto-merge-release-pr:
-    if: >
-      github.event_name == 'pull_request' &&
-      contains(github.event.pull_request.labels.*.name, 'autorelease: pending')
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Enable auto-merge for Release Please PR
-        run: gh pr merge ${{ github.event.pull_request.number }} --merge --auto
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
