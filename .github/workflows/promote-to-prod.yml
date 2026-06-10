@@ -1,0 +1,79 @@
+name: Promote Main to Production
+
+on:
+  workflow_run:
+    workflows:
+      - Main Branch Validation
+    branches:
+      - main
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  promote:
+    name: Promote main to production
+    runs-on: ubuntu-latest
+
+    if: >
+      github.event_name == 'workflow_dispatch'
+      || (
+        github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push'
+      )
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create or get PR main to production
+        id: create_pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+
+          PR_NUMBER=$(gh pr list \
+            --repo "$REPO" \
+            --base production \
+            --head main \
+            --state open \
+            --json number \
+            --jq '.[0].number')
+
+          if [ -z "$PR_NUMBER" ]; then
+            gh pr create \
+              --repo "$REPO" \
+              --base production \
+              --head main \
+              --title "chore: promote main to production" \
+              --body "Promotion automatique de main vers production."
+
+            PR_NUMBER=$(gh pr list \
+              --repo "$REPO" \
+              --base production \
+              --head main \
+              --state open \
+              --json number \
+              --jq '.[0].number')
+          fi
+
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Enable auto-merge main to production
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.create_pr.outputs.pr_number }}
+        run: |
+          set -e
+
+          gh pr merge "$PR_NUMBER" \
+            --repo "$REPO" \
+            --merge \
+            --auto

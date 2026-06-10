@@ -1,0 +1,51 @@
+name: Production Release
+
+on:
+  push:
+    branches:
+      - production
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  release:
+    name: Release Please
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run Release Please
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          target-branch: production
+          release-type: simple
+
+      - name: Enable auto-merge for Release Please PR
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+
+          PR_NUMBER=$(gh pr list \
+            --repo "$REPO" \
+            --base production \
+            --state open \
+            --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("release-please--")) | .number' \
+            | head -n 1)
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No Release Please PR found."
+            exit 0
+          fi
+
+          gh pr merge "$PR_NUMBER" \
+            --repo "$REPO" \
+            --squash \
+            --auto

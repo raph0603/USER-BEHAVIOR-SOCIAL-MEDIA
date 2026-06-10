@@ -136,8 +136,19 @@ tmp/
 temp/
 *.tmp
 
+# Local project reading notes for Codex/user context
+PROJECT_CONTEXT_NOTES.md
+
 # =========================================
 # Mac/Linux swap
 # =========================================
 *.swp
 *.swo
+
+*.doc
+*.docx
+*.pdf
+
+
+API/yt_raw_json/
+API/video_list.txt

@@ -1,4 +1,4 @@
-# USER-BAHAVIOR-SOCIAL-MEDIA
+# USER-BEHAVIOR-SOCIAL-MEDIA
 
 ## Lakehouse (Bronze/Silver on Iceberg)
 
