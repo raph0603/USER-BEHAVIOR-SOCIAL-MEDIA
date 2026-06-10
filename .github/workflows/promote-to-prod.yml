@@ -83,12 +83,12 @@ jobs:
           set -e
 
           for i in {1..10}; do
-            MERGED=$(gh pr view "$PR_NUMBER" \
+            MERGED_AT=$(gh pr view "$PR_NUMBER" \
               --repo "$REPO" \
-              --json merged \
-              --jq '.merged')
+              --json mergedAt \
+              --jq '.mergedAt // ""')
 
-            if [ "$MERGED" = "true" ]; then
+            if [ -n "$MERGED_AT" ]; then
               echo "PR #$PR_NUMBER is already merged."
               exit 0
             fi
@@ -105,12 +105,12 @@ jobs:
             sleep 10
           done
 
-          MERGED=$(gh pr view "$PR_NUMBER" \
+          MERGED_AT=$(gh pr view "$PR_NUMBER" \
             --repo "$REPO" \
-            --json merged \
-            --jq '.merged')
+            --json mergedAt \
+            --jq '.mergedAt // ""')
 
-          if [ "$MERGED" = "true" ]; then
+          if [ -n "$MERGED_AT" ]; then
             echo "PR #$PR_NUMBER was merged during retries."
             exit 0
           fi
@@ -128,12 +128,12 @@ jobs:
           set -e
 
           for i in {1..60}; do
-            MERGED=$(gh pr view "$PR_NUMBER" \
+            MERGED_AT=$(gh pr view "$PR_NUMBER" \
               --repo "$REPO" \
-              --json merged \
-              --jq '.merged')
+              --json mergedAt \
+              --jq '.mergedAt // ""')
 
-            if [ "$MERGED" = "true" ]; then
+            if [ -n "$MERGED_AT" ]; then
               echo "PR #$PR_NUMBER has been merged."
               exit 0
             fi
