@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - main
+      - production
     types: [opened, edited, synchronize, reopened]
   workflow_dispatch:
 
