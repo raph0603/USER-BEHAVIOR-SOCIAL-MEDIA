@@ -33,6 +33,8 @@ jobs:
           target-branch: main
           release-type: simple
 
+      - uses: actions/checkout@v4
+
       - name: Enable auto-merge
         if: ${{ steps.release.outputs.prs_created == 'true' }}
         run: |
