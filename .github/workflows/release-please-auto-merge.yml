@@ -1,5 +1,3 @@
-# .github/workflows/release-please-auto-merge.yml
-
 name: Auto Merge Release Please
 
 on:
@@ -8,6 +6,7 @@ on:
       - opened
       - synchronize
       - labeled
+      - reopened
 
 permissions:
   contents: write
@@ -15,7 +14,7 @@ permissions:
 
 jobs:
   auto-merge:
-    if: contains(github.event.pull_request.labels.*.name, 'autorelease: pending')
+    if: ${{ contains(github.event.pull_request.labels.*.name, 'autorelease: pending') }}
     runs-on: ubuntu-latest
 
     steps:
