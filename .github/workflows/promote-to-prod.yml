@@ -1,9 +1,13 @@
 name: Promote Main to Production
 
 on:
-  push:
+  workflow_run:
+    workflows:
+      - CI
     branches:
       - main
+    types:
+      - completed
   workflow_dispatch:
 
 permissions:
@@ -12,36 +16,64 @@ permissions:
 
 jobs:
   promote:
+    name: Promote main to production
     runs-on: ubuntu-latest
 
+    if: >
+      github.event_name == 'workflow_dispatch'
+      || (
+        github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push'
+      )
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      # TODO: Ajouter tes vérifications ici
-      - name: Validation placeholder
-        run: echo "Main validée, promotion vers production"
-
-      - name: Create PR main to production
+      - name: Create or get PR main to production
         id: create_pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
-          PR_URL=$(gh pr create \
-            --base production \
-            --head main \
-            --title "chore: promote main to production" \
-            --body "Promotion automatique de main vers production." \
-          || gh pr list \
+          set -e
+
+          PR_NUMBER=$(gh pr list \
+            --repo "$REPO" \
             --base production \
             --head main \
             --state open \
-            --json url \
-            --jq '.[0].url')
+            --json number \
+            --jq '.[0].number')
 
-          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          if [ -z "$PR_NUMBER" ]; then
+            gh pr create \
+              --repo "$REPO" \
+              --base production \
+              --head main \
+              --title "chore: promote main to production" \
+              --body "Promotion automatique de main vers production."
+
+            PR_NUMBER=$(gh pr list \
+              --repo "$REPO" \
+              --base production \
+              --head main \
+              --state open \
+              --json number \
+              --jq '.[0].number')
+          fi
+
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Enable auto-merge main to production
-        run: |
-          gh pr merge "${{ steps.create_pr.outputs.pr_url }}" --merge --auto
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.create_pr.outputs.pr_number }}
+        run: |
+          set -e
+
+          gh pr merge "$PR_NUMBER" \
+            --repo "$REPO" \
+            --merge \
+            --auto
