@@ -74,6 +74,7 @@ jobs:
           echo "${{ github.event.pull_request.title }}" | npx commitlint --verbose
 
       - name: Validate commits
+        if: github.event.pull_request.base.ref == 'main'
         run: |
           npx commitlint \
             --from "${{ github.event.pull_request.base.sha }}" \
