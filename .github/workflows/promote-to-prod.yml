@@ -22,12 +22,26 @@ jobs:
         run: echo "Main validée, promotion vers production"
 
       - name: Create PR main to production
+        id: create_pr
         run: |
-          gh pr create \
+          PR_URL=$(gh pr create \
             --base production \
             --head main \
             --title "chore: promote main to production" \
             --body "Promotion automatique de main vers production." \
-          || echo "PR déjà existante ou aucun changement."
+          || gh pr list \
+            --base production \
+            --head main \
+            --state open \
+            --json url \
+            --jq '.[0].url')
+
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge main to production
+        run: |
+          gh pr merge "${{ steps.create_pr.outputs.pr_url }}" --merge --auto
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
