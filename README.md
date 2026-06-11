@@ -1,4 +1,4 @@
-# USER-BEHAVIOR-SOCIAL-MEDIA
+# USER-BAHAVIOR-SOCIAL-MEDIA
 
 ## Lakehouse (Bronze/Silver on Iceberg)
 
@@ -6,11 +6,15 @@ This stack includes MinIO (S3-compatible) and Spark jobs that write to Iceberg t
 
 ## Privacy gateway
 
-The Bronze streaming job applies privacy safeguards before data lands in Iceberg:
+The three source-specific cleaning jobs apply privacy safeguards before data
+lands in Bronze:
 
 - `user_id` is replaced by a deterministic SHA-256 hash salted with `PRIVACY_HASH_SALT`.
-- URL query strings and fragments are stripped.
-- Emails, phone numbers, and IP addresses are redacted from free-text fields.
+- URL fragments are stripped while useful query parameters such as YouTube
+  video IDs are preserved.
+- Emails, mentions, phone numbers, IP addresses, embedded URLs, HTML and
+  control characters are removed or replaced in free-text fields.
+- Invalid records are sent to a source-specific DLQ before Bronze.
 
 Set `PRIVACY_HASH_SALT` to a non-default secret outside local development.
 
@@ -18,10 +22,22 @@ Set `PRIVACY_HASH_SALT` to a non-default secret outside local development.
 
 The project includes a local Airflow orchestrator for the lakehouse flow.
 
-When Airflow runs Docker Compose through the Docker socket, bind mounts must use a host-visible path. Keep a local `.env` based on `.env.example`; on this Windows Docker Desktop setup it uses:
+When Airflow runs Docker Compose through the Docker socket, bind mounts must use a host-visible path. Keep local startup mounts relative, and configure a separate Docker Desktop path for Compose commands launched inside Airflow:
 
 ```bash
-HOST_PROJECT_DIR=/run/desktop/mnt/host/c/Users/rapha/OneDrive/Documents/USER-BEHAVIOR-SOCIAL-MEDIA
+HOST_PROJECT_DIR=.
+DOCKER_HOST_PROJECT_DIR=C:/Users/rapha/OneDrive/Documents/USER-BEHAVIOR-SOCIAL-MEDIA
+YOUTUBE_KAFKA_TOPIC=youtube.raw.events
+X_COLLECTION_ENABLED=true
+X_KAFKA_TOPIC=x.raw.events
+REDDIT_COLLECTION_ENABLED=true
+REDDIT_KAFKA_TOPIC=reddit.raw.events
+YOUTUBE_CLEAN_KAFKA_TOPIC=youtube.clean.events
+X_CLEAN_KAFKA_TOPIC=x.clean.events
+REDDIT_CLEAN_KAFKA_TOPIC=reddit.clean.events
+YOUTUBE_DLQ_KAFKA_TOPIC=youtube.dlq.events
+X_DLQ_KAFKA_TOPIC=x.dlq.events
+REDDIT_DLQ_KAFKA_TOPIC=reddit.dlq.events
 ```
 
 ```bash
@@ -35,7 +51,88 @@ Default local login:
 - user: `admin`
 - password: `admin`
 
-The DAG `user_behavior_lakehouse` starts the core stack, runs the Spark/Kafka probe and Bronze stream in parallel, emits bounded synthetic events, then runs Silver as a batch step after Bronze has data.
+The DAG `user_behavior_lakehouse` runs the complete online pipeline:
+
+1. collect YouTube, X and Reddit data into their raw Kafka topics;
+2. clean, validate and anonymize the three raw streams in parallel, with
+   separate clean topics, DLQ topics and checkpoints;
+3. merge only records marked `stage=clean` into Iceberg Bronze;
+4. publish the Bronze records to `lakehouse.bronze.for_silver`;
+5. transmit and process those Bronze records into Iceberg Silver.
+
+The Airflow task names describe the implemented transformations. In
+particular, `sha256_hash_pii_redact_validate_*` applies salted SHA-256 user
+hashing, regex-based PII redaction, text normalization, validation and DLQ
+routing. This pipeline does not currently run a NER model.
+
+The separate `social_clean_pipeline` DAG is retained for replaying the legacy
+sample CSV files. It is not required for the online lakehouse flow.
+
+The online DAG runs automatically every 60 minutes by default. Configure the
+interval in `.env`:
+
+```env
+LAKEHOUSE_SCHEDULE_MINUTES=30
+```
+
+Use `LAKEHOUSE_SCHEDULE_MINUTES=0` to disable automatic runs. Airflow keeps at
+most one active run, so intervals shorter than the pipeline duration do not
+execute concurrently.
+
+The `user_behavior_lakehouse_no_row_checks` DAG runs the same online pipeline
+without `wait_bronze_rows` or `wait_silver_rows`. It succeeds when collectors
+and Spark jobs finish without an execution error, even when a run produces no
+new Bronze or Silver row. It also runs every 60 minutes by default. Its
+schedule is configured separately:
+
+```env
+LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=30
+```
+
+Both online DAGs use a shared pipeline lock. If their scheduled or manual runs
+overlap, the second run waits before cleanup and Spark processing instead of
+starting concurrent streams on the same checkpoints.
+
+The independent `iceberg_parquet_compaction` DAG compacts the Parquet files
+managed by the Bronze and Silver Iceberg tables. It runs every six hours by
+default:
+
+```env
+ICEBERG_COMPACTION_SCHEDULE_MINUTES=360
+ICEBERG_COMPACTION_TABLES=lakehouse.bronze.events,lakehouse.silver.events
+ICEBERG_COMPACTION_RETRIES=3
+```
+
+Set the schedule to `0` to keep this DAG manual. Its trigger form exposes
+`target_file_size_mb` (128 MB by default) and `min_input_files` (2 by default).
+Iceberg uses `rewrite-all=false`, so files already compacted are skipped.
+
+Each table rewrite is an atomic Iceberg snapshot transaction with partial
+progress disabled. A failed attempt leaves the previous snapshot readable.
+The job verifies that the record count is unchanged and retries three times by
+default. The shared lock prevents compaction from overlapping Bronze or Silver
+writes without creating a dependency between DAGs.
+
+When manually triggering `user_behavior_lakehouse` from the Airflow interface,
+the trigger form exposes three limits:
+
+- `youtube_event_count`: maximum number of new YouTube videos, from 1 to 50;
+- `x_event_count`: maximum number of new X posts, from 1 to 100;
+- `reddit_event_count`: maximum number of new Reddit comments, from 1 to 100.
+
+These are upper limits. A collector can return fewer events when the online
+search does not contain enough unprocessed results. Scheduled runs use the
+default value of 5 for each source.
+
+The trigger form also exposes `x_headless`:
+
+- `true` (default): Edge uses the persistent profile without displaying a
+  window;
+- `false`: Edge is visible, which is required to complete a Google login or
+  an X challenge.
+
+The Windows CDP proxy automatically restarts Edge when it has been closed.
+YouTube is API-based, and Reddit remains headless inside its Docker container.
 
 ### Start services
 
@@ -56,3 +153,81 @@ docker compose exec spark-master /opt/spark/bin/spark-submit \
 docker compose exec spark-master /opt/spark/bin/spark-submit \
 	/opt/spark/jobs/batch/bronze_to_silver.py
 ```
+
+### Run YouTube collection
+
+Set `YOUTUBE_API_KEY` in your `.env`, then run:
+
+```bash
+docker compose run --rm youtube-collector
+```
+
+The collector writes raw JSON under `API/yt_raw_json/` and emits YouTube
+events to Kafka using the same event schema as the other producers.
+
+### Run X collection
+
+X is collected directly from the live website with Playwright. The collector
+connects to an authenticated Chrome or Edge session through CDP and publishes
+new posts to `x.raw.events`:
+
+```bash
+docker compose run --rm x-collector
+```
+
+Set `X_COLLECTION_ENABLED=true` to include this step in the Airflow DAG.
+Start the browser with remote debugging enabled before running the DAG:
+
+```powershell
+.\scripts\start_x_browser.ps1
+```
+
+The script selects free ports for Edge and its Docker-accessible CDP proxy,
+then writes the selected proxy port to `data/x-runtime/cdp-port.txt`. The
+`x-collector` container reads that file automatically, so no fixed X port is
+required in `.env` or Airflow. `X_CDP_URL` remains available only as a fallback
+for an externally managed CDP endpoint.
+
+Log in to X in that browser window. When triggering the DAG from the Airflow
+UI, set `x_post_count` to the maximum number of new X posts to collect
+(between 1 and 100). For a direct `docker compose run`, `X_MAX_EVENTS` in
+`.env` provides the limit. If fewer new posts are available, the collector
+publishes fewer events. When X collection is enabled, a crawler or CDP
+failure fails the Airflow task and the DAG.
+
+Authenticate to X with Google in the Edge window. The crawler reuses that
+authenticated browser session. If the X login page reappears, it clicks the
+Google login option and selects `X_GOOGLE_EMAIL` from the existing Edge
+session. Password, CAPTCHA and MFA challenges still require completion in the
+Edge window.
+
+### Run Reddit collection
+
+Reddit is collected directly from the live public pages with Playwright. New
+comments from the configured subreddits are published to `reddit.raw.events`:
+
+```bash
+docker compose run --rm reddit-collector
+```
+
+Set `REDDIT_COLLECTION_ENABLED=true` to include this step in Airflow.
+`REDDIT_SUBREDDITS`, `REDDIT_POST_LIMIT` and `REDDIT_MAX_EVENTS` control the
+online collection.
+
+Each collector stores processed source IDs in its own persistent SQLite file
+under `data/collector-state/`. Existing topic contents are imported into this
+state before collection, so previously processed posts, comments and videos
+are not republished.
+
+### Reset all pipeline data
+
+Run this before an end-to-end test to delete Kafka events and schemas, MinIO
+Bronze/Silver tables, collector deduplication state, and collected source
+files:
+
+```powershell
+.\scripts\reset_pipeline_data.ps1
+```
+
+The command preserves the X/Google browser profile, Airflow metadata, and
+Airflow logs. For non-interactive use, pass `-Force`.

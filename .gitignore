@@ -62,9 +62,14 @@ credentials/
 # Data files
 # =========================================
 data/
+data/collector-state/
 datasets/
 raw_data/
 processed_data/
+API/video_list.txt
+API/yt_raw_json/
+playwright/x_urls.txt
+playwright/reddit_urls.txt
 
 # Large files
 *.csv
@@ -145,10 +150,14 @@ PROJECT_CONTEXT_NOTES.md
 *.swp
 *.swo
 
+# Documents
 *.doc
 *.docx
 *.pdf
 
+# Local X browser process state
+data/x-edge.pid
+data/x-edge-mode.txt
 
 API/yt_raw_json/
 API/video_list.txt

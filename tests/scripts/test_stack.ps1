@@ -1,19 +1,20 @@
 param(
     [switch]$Kafka,
     [switch]$Spark,
-    [switch]$SparkKafka,
     [switch]$Lakehouse,
     [switch]$Clean
 )
 
-$runKafka = $Kafka -or (-not $Spark -and -not $SparkKafka)
-$runSpark = $Spark -or (-not $Kafka -and -not $SparkKafka)
-$runSparkKafka = $SparkKafka -or (-not $Kafka -and -not $Spark)
+$noTestSelected = -not $Kafka -and -not $Spark -and -not $Lakehouse
+$runKafka = $Kafka -or $noTestSelected
+$runSpark = $Spark -or $noTestSelected
 $runLakehouse = $Lakehouse
 $logDir = ".\tests\logs"
 $runId = Get-Date -Format "yyyyMMdd-HHmmss"
 $mainLog = Join-Path $logDir "test_stack_$runId.log"
-$sparkTestTopic = "spark-test-topic"
+$youtubeTopic = "youtube.raw.events"
+$xTopic = "x.raw.events"
+$redditTopic = "reddit.raw.events"
 $pipelineFailed = $false
 
 function Invoke-LoggedCommand {
@@ -69,10 +70,10 @@ function Invoke-DockerExec {
 function Kill-SparkJobs {
     Write-Host "Step: kill lingering Spark submit processes"
     Invoke-DockerExec -Container "spark-master" -Command "pkill -9 -f spark-submit || true"
-    Invoke-DockerExec -Container "spark-master" -Command "pkill -9 -f kafka_stream_test.py || true; pkill -9 -f kafka_to_iceberg_bronze.py || true; pkill -9 -f bronze_to_silver.py || true; pkill -9 -f lakehouse_check.py || true"
+    Invoke-DockerExec -Container "spark-master" -Command "pkill -9 -f kafka_to_iceberg_bronze.py || true; pkill -9 -f bronze_to_silver.py || true; pkill -9 -f lakehouse_check.py || true"
     Invoke-DockerExec -Container "spark-worker-1" -Command "pkill -9 -f spark-submit || true"
     Invoke-DockerExec -Container "spark-worker-2" -Command "pkill -9 -f spark-submit || true"
-    Invoke-DockerExec -Container "spark-master" -Command "rm -f /opt/spark/tests/streaming/kafka_stream_test.pid /opt/spark/tests/lakehouse/bronze_stream.pid"
+    Invoke-DockerExec -Container "spark-master" -Command "rm -f /opt/spark/tests/lakehouse/bronze_stream.pid"
 }
 
 function Wait-Ready {
@@ -115,7 +116,7 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 if ($Clean) {
     Remove-Item -Recurse -Force .\data\minio -ErrorAction SilentlyContinue
 }
-docker compose up -d minio minio-init kafka schema-registry kafdrop spark-master spark-worker-1 spark-worker-2 | Out-Null
+docker compose up -d --scale spark-worker=2 minio minio-init kafka schema-registry kafdrop spark-master spark-worker | Out-Null
 Start-Transcript -Path $mainLog -Append | Out-Null
 Write-Host "Run log: $mainLog"
 
@@ -134,11 +135,13 @@ Kill-SparkJobs
 
 if ($runKafka) {
     Write-Section "Kafka test"
-    Write-Host "Step: create/list topic"
+    Write-Host "Step: describe/list source topics"
     $kafkaLog = Join-Path $logDir "kafka_$runId.log"
-    $topicCreateExit = Invoke-LoggedCommand "docker exec kafka /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic test-topic --partitions 2 --replication-factor 1 --bootstrap-server kafka:9092" $kafkaLog
+    $youtubeDescribeExit = Invoke-LoggedCommand "docker exec kafka /opt/kafka/bin/kafka-topics.sh --describe --topic $youtubeTopic --bootstrap-server kafka:9092" $kafkaLog
+    $xDescribeExit = Invoke-LoggedCommand "docker exec kafka /opt/kafka/bin/kafka-topics.sh --describe --topic $xTopic --bootstrap-server kafka:9092" $kafkaLog
+    $redditDescribeExit = Invoke-LoggedCommand "docker exec kafka /opt/kafka/bin/kafka-topics.sh --describe --topic $redditTopic --bootstrap-server kafka:9092" $kafkaLog
     $topicListExit = Invoke-LoggedCommand "docker exec kafka /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server kafka:9092" $kafkaLog
-    if ($topicCreateExit -ne 0 -or $topicListExit -ne 0) {
+    if ($youtubeDescribeExit -ne 0 -or $xDescribeExit -ne 0 -or $redditDescribeExit -ne 0 -or $topicListExit -ne 0) {
         Set-PipelineFailed "Kafka test: FAILED"
     }
     Write-Host "Log: $kafkaLog"
@@ -157,81 +160,19 @@ if ($runSpark) {
     Write-Host "Spark UI: http://localhost:8080"
 }
 
-if ($runSparkKafka) {
-    Write-Section "Spark + Kafka test"
-    Write-Host "Step: create isolated Spark/Kafka topic"
-    $sparkKafkaLog = Join-Path $logDir "spark_kafka_$runId.log"
-    $sparkKafkaTopicExit = Invoke-LoggedCommand "docker exec kafka /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic $sparkTestTopic --partitions 1 --replication-factor 1 --bootstrap-server kafka:9092" $sparkKafkaLog
-    if ($sparkKafkaTopicExit -ne 0) {
-        Set-PipelineFailed "Spark + Kafka topic setup: FAILED"
-    }
-
-    Write-Host "Step: start streaming job"
-    docker exec spark-master /bin/bash -lc 'mkdir -p /opt/spark/tests/streaming && /opt/spark/bin/spark-submit --master spark://spark-master:7077 --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/tests/streaming/kafka_stream_test.py > /opt/spark/tests/streaming/kafka_stream_test.log 2>&1 & echo $! > /opt/spark/tests/streaming/kafka_stream_test.pid'
-
-    $message = "test-" + (Get-Date -Format "yyyyMMdd-HHmmss")
-    docker exec kafka /bin/bash -lc "printf '%s\\n' '$message' | timeout 5s /opt/kafka/bin/kafka-console-producer.sh --broker-list kafka:9092 --topic $sparkTestTopic"
-
-    Write-Host "Waiting for stream log..."
-    $streamReady = $false
-    for ($i = 1; $i -le 12; $i++) {
-        $logSize = docker exec spark-master /bin/bash -lc "if [[ -f /opt/spark/tests/streaming/kafka_stream_test.log ]]; then wc -c < /opt/spark/tests/streaming/kafka_stream_test.log; else echo 0; fi"
-        if ([int]$logSize -gt 0) {
-            $streamReady = $true
-            break
-        }
-        Show-Progress -Activity "Spark + Kafka" -Status "Waiting for stream log" -Percent ($i * 100 / 12)
-        Start-Sleep -Seconds 5
-    }
-    Show-Progress -Activity "Spark + Kafka" -Status "Waiting for stream log" -Percent 100
-
-    if ($streamReady) {
-        Write-Host "Stream log (tail):"
-        Invoke-LoggedCommand 'docker exec spark-master /bin/bash -lc "tail -n 50 /opt/spark/tests/streaming/kafka_stream_test.log"' $sparkKafkaLog | Out-Null
-        Write-Host "Log: $sparkKafkaLog"
-    } else {
-        Write-Host "Warning: stream log stayed empty after waiting."
-        Write-Host "Log: $sparkKafkaLog"
-        Set-PipelineFailed "Spark + Kafka test: FAILED"
-    }
-
-    Write-Host "Step: stop streaming job"
-    Invoke-DockerExec -Container "spark-master" -Command "if [[ -f /opt/spark/tests/streaming/kafka_stream_test.pid ]]; then cat /opt/spark/tests/streaming/kafka_stream_test.pid | xargs -r kill -9 || true; fi"
-    Invoke-DockerExec -Container "spark-master" -Command "pkill -9 -f kafka_stream_test.py || true"
-    Invoke-DockerExec -Container "spark-worker-1" -Command "pkill -9 -f kafka_stream_test.py || true"
-    Invoke-DockerExec -Container "spark-worker-2" -Command "pkill -9 -f kafka_stream_test.py || true"
-}
-
-Write-Section "Producer check"
-Write-Host "Step: run bounded synthetic producer"
-docker compose run --rm -e PRODUCER_MODE=synthetic -e PRODUCER_MAX_EVENTS=20 -e EVENT_INTERVAL_SEC=0 playwright-producer | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Set-PipelineFailed "Producer run: FAILED"
-}
-Write-Host "Step: verify producer emits at least one message"
-$producerOk = $false
-for ($i = 1; $i -le 6; $i++) {
-    $probe = docker exec kafka /bin/bash -lc "/opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic test-topic --from-beginning --max-messages 1 --timeout-ms 3000"
-    if ($probe) {
-        $producerOk = $true
-        break
-    }
-    Start-Sleep -Seconds 2
-}
-if (-not $producerOk) {
-    Write-Host "Producer check: FAILED (no messages in topic)"
-}
-
-if ($producerOk) {
-    Write-Host "Producer check: OK"
-} else {
-    Set-PipelineFailed "Producer check: FAILED (mock did not emit)"
-}
-
 if ($runLakehouse) {
+    Write-Section "Source topic check"
+    $youtubeOffsetCount = docker exec kafka /bin/bash -lc "/opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server kafka:9092 --topic $youtubeTopic 2>/dev/null | awk -F: '{sum += `$3} END {print sum+0}'"
+    $xOffsetCount = docker exec kafka /bin/bash -lc "/opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server kafka:9092 --topic $xTopic 2>/dev/null | awk -F: '{sum += `$3} END {print sum+0}'"
+    $redditOffsetCount = docker exec kafka /bin/bash -lc "/opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server kafka:9092 --topic $redditTopic 2>/dev/null | awk -F: '{sum += `$3} END {print sum+0}'"
+    $producerOk = ([int]$youtubeOffsetCount + [int]$xOffsetCount + [int]$redditOffsetCount) -gt 0
+    if (-not $producerOk) {
+        Set-PipelineFailed "Source topic check: FAILED (no YouTube, X or Reddit messages)"
+    }
+
     Write-Section "Lakehouse test"
     if (-not $producerOk) {
-        Write-Host "Skipping Lakehouse: producer did not emit messages."
+        Write-Host "Skipping Lakehouse: all source topics are empty."
         $pipelineFailed = $true
     } else {
     Write-Host "Step: ensure MinIO bucket"

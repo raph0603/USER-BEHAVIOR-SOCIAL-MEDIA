@@ -27,7 +27,12 @@ INGEST_LIMIT = 500  # bounded rows per platform per run
 
 
 def compose(cmd: str) -> str:
-    return f"cd {PROJECT_DIR} && docker compose {cmd}"
+    return (
+        f"cd {PROJECT_DIR} && "
+        'HOST_PROJECT_DIR="${DOCKER_HOST_PROJECT_DIR:-.}" && '
+        "export HOST_PROJECT_DIR && "
+        f"docker compose {cmd}"
+    )
 
 
 START_CLEAN_TMPL = r'''
@@ -57,7 +62,10 @@ with DAG(
 
     start_stack = BashOperator(
         task_id="start_core_stack",
-        bash_command=compose("up -d kafka spark-master spark-worker-1 spark-worker-2"),
+        bash_command=compose(
+            "up -d --scale spark-worker=${SPARK_WORKER_COUNT:-4} "
+            "kafka spark-master spark-worker"
+        ),
     )
 
     wait_services = BashOperator(
