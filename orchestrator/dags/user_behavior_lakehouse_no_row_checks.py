@@ -14,12 +14,15 @@ PROJECT_DIR = "/workspace"
 
 
 def schedule_interval() -> timedelta | None:
-    raw_value = os.getenv("LAKEHOUSE_SCHEDULE_MINUTES", "60").strip()
+    raw_value = os.getenv(
+        "LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES",
+        "60",
+    ).strip()
     try:
         minutes = int(raw_value)
     except ValueError as exc:
         raise ValueError(
-            "LAKEHOUSE_SCHEDULE_MINUTES must be an integer"
+            "LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES must be an integer"
         ) from exc
 
     return timedelta(minutes=minutes) if minutes > 0 else None
@@ -131,7 +134,7 @@ def release_pipeline_lock_command() -> str:
 
 
 with DAG(
-    dag_id="user_behavior_lakehouse",
+    dag_id="user_behavior_lakehouse_no_row_checks",
     start_date=datetime(2026, 1, 1, tz="UTC"),
     schedule=schedule_interval(),
     catchup=False,
@@ -180,7 +183,14 @@ with DAG(
             ),
         ),
     },
-    tags=["collection", "clean", "lakehouse", "spark", "realtime"],
+    tags=[
+        "collection",
+        "clean",
+        "lakehouse",
+        "spark",
+        "realtime",
+        "no-row-checks",
+    ],
 ) as dag:
     start_stack = BashOperator(
         task_id="initialize_core_services",
@@ -413,22 +423,6 @@ with DAG(
         ),
     )
 
-    wait_bronze = BashOperator(
-        task_id="verify_bronze_rows",
-        bash_command=r"""
-        set -euo pipefail
-        timeout 120s docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/tests/lakehouse/lakehouse_check.py lakehouse.bronze.events 1"
-        """,
-    )
-
-    wait_silver = BashOperator(
-        task_id="verify_silver_rows",
-        bash_command=r"""
-        set -euo pipefail
-        timeout 120s docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/tests/lakehouse/lakehouse_check.py lakehouse.silver.events 1"
-        """,
-    )
-
     stop_realtime_streams = BashOperator(
         task_id="terminate_pipeline_spark_jobs",
         trigger_rule=TriggerRule.ALL_DONE,
@@ -470,10 +464,8 @@ with DAG(
         wait_clean_x,
         wait_clean_reddit,
     ] >> start_bronze_stream
-    start_bronze_stream >> wait_bronze
-    wait_bronze >> start_silver_stream
-    start_silver_stream >> wait_silver
-    wait_silver >> stop_realtime_streams >> release_pipeline_lock
+    start_bronze_stream >> start_silver_stream
+    start_silver_stream >> stop_realtime_streams >> release_pipeline_lock
     [
         run_youtube_collection,
         run_x_collection,
@@ -481,8 +473,8 @@ with DAG(
         wait_clean_youtube,
         wait_clean_x,
         wait_clean_reddit,
-        wait_bronze,
-        wait_silver,
+        start_bronze_stream,
+        start_silver_stream,
         stop_realtime_streams,
         acquire_pipeline_lock,
         release_pipeline_lock,

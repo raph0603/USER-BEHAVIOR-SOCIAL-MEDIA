@@ -42,6 +42,45 @@ def main() -> None:
 
     spark = _build_spark("bronze-to-silver", warehouse)
 
+    # Parallelism tuning: allow environment to influence shuffle partitions
+    workers_env = os.getenv("SPARK_WORKER_COUNT")
+    cores_env = os.getenv("SPARK_WORKER_CORES")
+    try:
+        workers = int(workers_env) if workers_env else None
+    except ValueError:
+        workers = None
+    try:
+        cores_per_worker = int(cores_env) if cores_env else None
+    except ValueError:
+        cores_per_worker = None
+
+    default_partitions = 200
+    if workers and cores_per_worker:
+        default_partitions = max(200, workers * cores_per_worker * 2)
+
+    shuffle_env = os.getenv("SPARK_SHUFFLE_PARTITIONS")
+    if shuffle_env and shuffle_env.strip():
+        try:
+            shuffle_partitions = int(shuffle_env)
+        except ValueError:
+            shuffle_partitions = default_partitions
+    else:
+        shuffle_partitions = default_partitions
+
+    spark.conf.set("spark.sql.shuffle.partitions", shuffle_partitions)
+
+    bronze_table = "lakehouse.bronze.events"
+    silver_table = "lakehouse.silver.events"
+    silver_columns = [
+        "user_id",
+        "url",
+        "title",
+        "event_ts",
+        "source",
+        "error",
+        "event_date",
+    ]
+
     spark.sql("CREATE NAMESPACE IF NOT EXISTS lakehouse.silver")
     spark.sql(
         """
@@ -59,35 +98,85 @@ def main() -> None:
         """
     )
 
-    bronze = spark.table("lakehouse.bronze.events")
-    updates = (
-        bronze.withColumn("event_ts", to_timestamp(col("timestamp")))
+    current_columns = set(spark.table(silver_table).columns)
+    for legacy_column in (
+        "event_id",
+        "pipeline_run_id",
+        "ingested_at",
+        "kafka_topic",
+        "kafka_partition",
+        "kafka_offset",
+    ):
+        if legacy_column in current_columns:
+            spark.sql(f"ALTER TABLE {silver_table} DROP COLUMN {legacy_column}")
+
+    checkpoint = f"s3a://{bucket}/checkpoints/silver/events/incremental"
+
+    # Processing mode: 'continuous' or 'availableNow'
+    processing_mode = _env("PROCESSING_MODE", "continuous")
+    trigger_interval = _env("PROCESSING_TRIGGER", "30 seconds")
+
+    source_stream = (
+        spark.readStream.format("iceberg")
+        .load(bronze_table)
+        .withColumn("event_ts", to_timestamp(col("timestamp")))
         .withColumn("event_date", to_date(col("event_ts")))
-        .dropDuplicates(["user_id", "url", "event_ts"])
-        .select(
-            "user_id",
-            "url",
-            "title",
-            "event_ts",
-            "source",
-            "error",
-            "event_date",
+        .select(*silver_columns)
+    )
+
+    # Dedup and idempotent upsert per micro-batch using MERGE INTO
+    def _foreach_batch(df, epoch_id: int):
+        if df.rdd.isEmpty():
+            return
+
+        batch_df = df.dropDuplicates(["user_id", "url", "event_ts"])  # dedupe within batch
+        temp_view = f"microbatch_{epoch_id}"
+        batch_df.createOrReplaceTempView(temp_view)
+        batch_spark = batch_df.sparkSession
+
+        cols = ", ".join(silver_columns)
+        # Perform an idempotent MERGE INTO using the micro-batch
+        merge_sql = f"""
+        MERGE INTO {silver_table} AS t
+        USING {temp_view} AS s
+        ON t.event_date = s.event_date
+           AND t.user_id = s.user_id
+           AND t.url = s.url
+           AND t.event_ts = s.event_ts
+        WHEN NOT MATCHED THEN
+          INSERT ({cols}) VALUES ({', '.join([f's.{c}' for c in silver_columns])})
+        """
+
+        batch_spark.sql(merge_sql)
+
+    if processing_mode == "availableNow":
+        checkpoint = f"s3a://{bucket}/checkpoints/silver/events/incremental"
+        updates = (
+            source_stream.dropDuplicates(["user_id", "url", "event_ts"]) 
         )
-    )
 
-    updates.createOrReplaceTempView("silver_updates")
+        query = (
+            updates.writeStream.outputMode("append")
+            .option("checkpointLocation", checkpoint)
+            .trigger(availableNow=True)
+            .toTable(silver_table)
+        )
 
-    spark.sql(
-        """
-        MERGE INTO lakehouse.silver.events t
-        USING silver_updates s
-        ON t.user_id = s.user_id
-          AND t.url = s.url
-          AND t.event_ts = s.event_ts
-        WHEN MATCHED THEN UPDATE SET *
-        WHEN NOT MATCHED THEN INSERT *
-        """
-    )
+        query.awaitTermination()
+    else:
+        # continuous streaming mode: micro-batches are processed and merged into silver concurrently
+        checkpoint_rt = f"s3a://{bucket}/checkpoints/silver/events/realtime"
+
+        query = (
+            source_stream.writeStream
+            .outputMode("append")
+            .option("checkpointLocation", checkpoint_rt)
+            .trigger(processingTime=trigger_interval)
+            .foreachBatch(_foreach_batch)
+            .start()
+        )
+
+        query.awaitTermination()
 
 
 if __name__ == "__main__":

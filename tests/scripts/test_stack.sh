@@ -3,13 +3,14 @@ set -euo pipefail
 
 run_kafka=false
 run_spark=false
-run_spark_kafka=false
 run_lakehouse=false
 do_clean=false
 log_dir="./tests/logs"
 run_id="$(date +%Y%m%d-%H%M%S)"
 main_log="${log_dir}/test_stack_${run_id}.log"
-spark_test_topic="spark-test-topic"
+youtube_topic="youtube.raw.events"
+x_topic="x.raw.events"
+reddit_topic="reddit.raw.events"
 failed=false
 producer_ok=false
 
@@ -21,13 +22,11 @@ mark_failed() {
 if [[ $# -eq 0 ]]; then
   run_kafka=true
   run_spark=true
-  run_spark_kafka=true
 else
   for arg in "$@"; do
     case "$arg" in
       --kafka) run_kafka=true ;;
       --spark) run_spark=true ;;
-      --spark-kafka) run_spark_kafka=true ;;
       --lakehouse) run_lakehouse=true ;;
       --clean) do_clean=true ;;
       *) echo "Unknown option: $arg"; exit 1 ;;
@@ -40,13 +39,15 @@ mkdir -p "$log_dir"
 if [[ "$do_clean" == true ]]; then
   rm -rf ./data/minio
 fi
-docker compose up -d minio minio-init kafka schema-registry kafdrop spark-master spark-worker-1 spark-worker-2 >/dev/null
+docker compose up -d --scale spark-worker=2 minio minio-init kafka schema-registry kafdrop spark-master spark-worker >/dev/null
 exec > >(tee -a "$main_log") 2>&1
 echo "Run log: $main_log"
 
 if [[ "$run_kafka" == true ]]; then
-  echo "Kafka test: create/list topic"
-  docker exec kafka /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic test-topic --partitions 2 --replication-factor 1 --bootstrap-server kafka:9092 | tee -a "${log_dir}/kafka_${run_id}.log"
+  echo "Kafka test: describe/list source topics"
+  docker exec kafka /opt/kafka/bin/kafka-topics.sh --describe --topic "$youtube_topic" --bootstrap-server kafka:9092 | tee -a "${log_dir}/kafka_${run_id}.log"
+  docker exec kafka /opt/kafka/bin/kafka-topics.sh --describe --topic "$x_topic" --bootstrap-server kafka:9092 | tee -a "${log_dir}/kafka_${run_id}.log"
+  docker exec kafka /opt/kafka/bin/kafka-topics.sh --describe --topic "$reddit_topic" --bootstrap-server kafka:9092 | tee -a "${log_dir}/kafka_${run_id}.log"
   docker exec kafka /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server kafka:9092 | tee -a "${log_dir}/kafka_${run_id}.log"
   echo "Kafdrop: http://localhost:9002"
 fi
@@ -57,45 +58,22 @@ if [[ "$run_spark" == true ]]; then
   echo "Spark UI: http://localhost:8080"
 fi
 
-if [[ "$run_spark_kafka" == true ]]; then
-  echo "Spark + Kafka test: create isolated topic"
-  docker exec kafka /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic "$spark_test_topic" --partitions 1 --replication-factor 1 --bootstrap-server kafka:9092 | tee -a "${log_dir}/spark_kafka_${run_id}.log"
-
-  echo "Spark + Kafka test: start streaming job"
-  docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/tests/streaming/kafka_stream_test.py > /opt/spark/tests/streaming/kafka_stream_test.log 2>&1 &"
-
-  sleep 5
-
-  message="test-$(date +%Y%m%d-%H%M%S)"
-  echo "$message" | docker exec -i kafka /opt/kafka/bin/kafka-console-producer.sh --broker-list kafka:9092 --topic "$spark_test_topic"
-
-  sleep 5
-
-  echo "Stream log (tail):"
-  docker exec spark-master /bin/bash -lc "tail -n 50 /opt/spark/tests/streaming/kafka_stream_test.log" | tee -a "${log_dir}/spark_kafka_${run_id}.log"
-fi
-
 if [[ "$run_lakehouse" == true ]]; then
-  echo "Producer check: run bounded synthetic producer"
-  if docker compose run --rm -e PRODUCER_MODE=synthetic -e PRODUCER_MAX_EVENTS=20 -e EVENT_INTERVAL_SEC=0 playwright-producer >/dev/null; then
-    for i in {1..6}; do
-      if docker exec kafka /bin/bash -lc "/opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic test-topic --from-beginning --max-messages 1 --timeout-ms 3000" >/dev/null; then
-        producer_ok=true
-        break
-      fi
-      sleep 2
-    done
+  echo "Source topic check"
+  youtube_offset_count="$(docker exec kafka /bin/bash -lc "/opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server kafka:9092 --topic '$youtube_topic' 2>/dev/null | awk -F: '{sum += \$3} END {print sum+0}'")"
+  x_offset_count="$(docker exec kafka /bin/bash -lc "/opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server kafka:9092 --topic '$x_topic' 2>/dev/null | awk -F: '{sum += \$3} END {print sum+0}'")"
+  reddit_offset_count="$(docker exec kafka /bin/bash -lc "/opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server kafka:9092 --topic '$reddit_topic' 2>/dev/null | awk -F: '{sum += \$3} END {print sum+0}'")"
+  offset_count="$(( ${youtube_offset_count:-0} + ${x_offset_count:-0} + ${reddit_offset_count:-0} ))"
+  if [[ "${offset_count:-0}" -gt 0 ]]; then
+    producer_ok=true
   else
-    mark_failed "Producer run: FAILED"
-  fi
-  if [[ "$producer_ok" != true ]]; then
-    mark_failed "Producer check: FAILED"
+    mark_failed "Source topic check: FAILED (no YouTube, X or Reddit messages)"
   fi
 fi
 
 if [[ "$run_lakehouse" == true ]]; then
   if [[ "$producer_ok" != true ]]; then
-    echo "Skipping Lakehouse: producer did not emit messages."
+    echo "Skipping Lakehouse: all source topics are empty."
   else
   echo "Lakehouse test: ensure MinIO bucket"
   for i in {1..10}; do

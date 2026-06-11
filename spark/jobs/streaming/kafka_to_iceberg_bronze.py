@@ -1,14 +1,21 @@
 import os
-from pathlib import Path
 
-from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.avro.functions import from_avro
-from pyspark.sql.functions import col, concat_ws, expr, lit, regexp_replace, sha2, to_timestamp, when
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, from_json, lit, to_timestamp
+from pyspark.sql.functions import struct, to_json
+from pyspark.storagelevel import StorageLevel
+from pyspark.sql.types import StringType, StructField, StructType
 
 
 def _env(name: str, default: str) -> str:
     value = os.getenv(name)
     return value if value else default
+
+
+def _trigger(writer, mode: str, interval: str):
+    if mode == "available_now":
+        return writer.trigger(availableNow=True)
+    return writer.trigger(processingTime=interval)
 
 
 def _build_spark(app_name: str, warehouse: str) -> SparkSession:
@@ -31,61 +38,33 @@ def _build_spark(app_name: str, warehouse: str) -> SparkSession:
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config("spark.sql.shuffle.partitions", _env("SPARK_SQL_SHUFFLE_PARTITIONS", "4"))
+        .config("spark.default.parallelism", _env("SPARK_DEFAULT_PARALLELISM", "4"))
         .getOrCreate()
     )
 
     return spark
 
 
-def _redact_text(column):
-    redacted = regexp_replace(
-        column,
-        r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
-        "[REDACTED_EMAIL]",
-    )
-    redacted = regexp_replace(
-        redacted,
-        r"(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)",
-        "[REDACTED_PHONE]",
-    )
-    return regexp_replace(
-        redacted,
-        r"\b(?:\d{1,3}\.){3}\d{1,3}\b",
-        "[REDACTED_IP]",
-    )
-
-
-def _apply_privacy_gateway(events: DataFrame, hash_salt: str) -> DataFrame:
-    hashed_user_id = when(
-        col("user_id").isNull(),
-        lit(None),
-    ).otherwise(sha2(concat_ws(":", lit(hash_salt), col("user_id")), 256))
-
-    sanitized_url = regexp_replace(col("url"), r"([?#]).*$", "")
-
-    return events.select(
-        hashed_user_id.alias("user_id"),
-        sanitized_url.alias("url"),
-        _redact_text(col("title")).alias("title"),
-        col("timestamp"),
-        col("source"),
-        _redact_text(col("error")).alias("error"),
-    )
-
-
 def main() -> None:
     kafka_bootstrap = _env("KAFKA_BOOTSTRAP", "kafka:9092")
-    kafka_topic = _env("KAFKA_TOPIC", "test-topic")
-    schema_path = _env("SCHEMA_PATH", "/opt/spark/schemas/playwright_event.avsc")
+    kafka_topics = _env(
+        "KAFKA_TOPIC",
+        "youtube.clean.events,x.clean.events,reddit.clean.events",
+    )
+    value_format = _env("KAFKA_VALUE_FORMAT", "json").lower()
     bucket = _env("MINIO_BUCKET", "lakehouse")
-    privacy_hash_salt = _env("PRIVACY_HASH_SALT", "dev-privacy-salt")
 
     warehouse = f"s3a://{bucket}/warehouse"
-    checkpoint = f"s3a://{bucket}/checkpoints/bronze/events"
+    checkpoint_key = kafka_topics.replace(",", "__")
+    checkpoint_version = _env("BRONZE_CHECKPOINT_VERSION", "post_clean_v1")
+    checkpoint = (
+        f"s3a://{bucket}/checkpoints/bronze/events/"
+        f"{checkpoint_version}/{checkpoint_key}"
+    )
 
     spark = _build_spark("kafka-to-iceberg-bronze", warehouse)
-
-    schema = Path(schema_path).read_text(encoding="utf-8")
+    spark.sparkContext.setLogLevel("WARN")
 
     spark.sql("CREATE NAMESPACE IF NOT EXISTS lakehouse.bronze")
     spark.sql(
@@ -104,30 +83,132 @@ def main() -> None:
         """
     )
 
+    starting_offsets = _env("KAFKA_STARTING_OFFSETS", "earliest")
+    fail_on_data_loss = _env("KAFKA_FAIL_ON_DATA_LOSS", "false")
+
     raw = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", kafka_bootstrap)
-        .option("subscribe", kafka_topic)
-        .option("startingOffsets", "earliest")
+        .option("subscribe", kafka_topics)
+        .option("startingOffsets", starting_offsets)
+        .option("failOnDataLoss", fail_on_data_loss)
         .load()
     )
 
-    decoded = (
-        raw.withColumn("avro_value", expr("substring(value, 6, length(value) - 5)"))
-        .select(from_avro(col("avro_value"), schema).alias("data"))
-        .select("data.*")
-    )
-    privacy_safe = _apply_privacy_gateway(decoded, privacy_hash_salt)
-    enriched = privacy_safe.withColumn("event_ts", to_timestamp(col("timestamp")))
+    if value_format == "json":
+        event_schema = StructType(
+            [
+                StructField("user_id", StringType()),
+                StructField("url", StringType()),
+                StructField("title", StringType()),
+                StructField("timestamp", StringType()),
+                StructField("source", StringType()),
+                StructField("error", StringType()),
+                StructField("stage", StringType()),
+            ]
+        )
+        decoded = raw.select(
+            from_json(col("value").cast("string"), event_schema).alias("data")
+        ).select("data.*").filter(col("stage") == lit("clean"))
+    else:
+        raise ValueError(
+            f"Unsupported KAFKA_VALUE_FORMAT={value_format!r}; expected json"
+        )
+    enriched = decoded.select(
+        "user_id",
+        "url",
+        "title",
+        "timestamp",
+        "source",
+        "error",
+    ).withColumn("event_ts", to_timestamp(col("timestamp")))
+    # Trigger configuration for Bronze micro-batches.
+    bronze_trigger = _env("BRONZE_TRIGGER", "10 seconds")
+    trigger_mode = _env("BRONZE_TRIGGER_MODE", "processing_time").lower()
 
-    query = (
-        enriched.writeStream.format("iceberg")
+    bronze_columns = [
+        "user_id",
+        "url",
+        "title",
+        "timestamp",
+        "source",
+        "error",
+        "event_ts",
+    ]
+
+    def _merge_bronze(df, epoch_id: int):
+        cached = df.persist(StorageLevel.MEMORY_AND_DISK)
+        try:
+            input_rows = cached.count()
+            if input_rows == 0:
+                print(f"Bronze epoch {epoch_id}: no clean input rows")
+                return
+
+            batch_df = cached.dropDuplicates(["user_id", "url", "event_ts"])
+            deduplicated_rows = batch_df.count()
+            temp_view = f"bronze_microbatch_{epoch_id}"
+            batch_df.createOrReplaceTempView(temp_view)
+            cols = ", ".join(bronze_columns)
+            batch_df.sparkSession.sql(
+                f"""
+                MERGE INTO lakehouse.bronze.events AS t
+                USING {temp_view} AS s
+                ON t.user_id = s.user_id
+                   AND t.url = s.url
+                   AND t.event_ts = s.event_ts
+                WHEN MATCHED THEN UPDATE SET
+                  t.title = s.title,
+                  t.timestamp = s.timestamp,
+                  t.source = s.source,
+                  t.error = s.error
+                WHEN NOT MATCHED THEN
+                  INSERT ({cols})
+                  VALUES ({', '.join([f's.{name}' for name in bronze_columns])})
+                """
+            )
+            print(
+                f"Bronze epoch {epoch_id}: merged {deduplicated_rows} "
+                f"deduplicated clean rows from {input_rows} Kafka rows"
+            )
+        finally:
+            cached.unpersist()
+
+    # Only validated, anonymized events can reach the Bronze table.
+    iceberg_writer = (
+        enriched.writeStream
         .outputMode("append")
         .option("checkpointLocation", checkpoint)
-        .toTable("lakehouse.bronze.events")
+        .foreachBatch(_merge_bronze)
+    )
+    iceberg_query = _trigger(
+        iceberg_writer,
+        trigger_mode,
+        bronze_trigger,
+    ).start()
+
+    # Optionally publish a sanitized JSON representation to a Kafka topic for downstream jobs
+    kafka_out_topic = _env("BRONZE_KAFKA_OUT_TOPIC", "lakehouse.bronze.for_silver")
+    kafka_out_checkpoint = (
+        f"s3a://{bucket}/checkpoints/bronze/to_kafka/"
+        f"{checkpoint_version}/{checkpoint_key}"
     )
 
-    query.awaitTermination()
+    kafka_payload = enriched.select(to_json(struct("user_id", "url", "title", "timestamp", "source", "error", "event_ts")).alias("value"))
+
+    kafka_writer = (
+        kafka_payload.writeStream.format("kafka")
+        .option("kafka.bootstrap.servers", kafka_bootstrap)
+        .option("topic", kafka_out_topic)
+        .option("checkpointLocation", kafka_out_checkpoint)
+    )
+    kafka_query = _trigger(
+        kafka_writer,
+        trigger_mode,
+        bronze_trigger,
+    ).start()
+
+    iceberg_query.awaitTermination()
+    kafka_query.awaitTermination()
 
 
 if __name__ == "__main__":

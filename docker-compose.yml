@@ -11,6 +11,24 @@ x-airflow-common: &airflow-common
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
     AIRFLOW__WEBSERVER__SECRET_KEY: local-dev-secret
     AIRFLOW_UID: "0"
+    DOCKER_HOST_PROJECT_DIR: ${DOCKER_HOST_PROJECT_DIR:-.}
+    LAKEHOUSE_SCHEDULE_MINUTES: ${LAKEHOUSE_SCHEDULE_MINUTES:-60}
+    LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES: ${LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES:-60}
+    ICEBERG_COMPACTION_SCHEDULE_MINUTES: ${ICEBERG_COMPACTION_SCHEDULE_MINUTES:-360}
+    ICEBERG_COMPACTION_TABLES: ${ICEBERG_COMPACTION_TABLES:-lakehouse.bronze.events,lakehouse.silver.events}
+    ICEBERG_COMPACTION_RETRIES: ${ICEBERG_COMPACTION_RETRIES:-3}
+    YOUTUBE_KAFKA_TOPIC: ${YOUTUBE_KAFKA_TOPIC:-youtube.raw.events}
+    X_COLLECTION_ENABLED: ${X_COLLECTION_ENABLED:-false}
+    X_KAFKA_TOPIC: ${X_KAFKA_TOPIC:-x.raw.events}
+    REDDIT_COLLECTION_ENABLED: ${REDDIT_COLLECTION_ENABLED:-false}
+    REDDIT_KAFKA_TOPIC: ${REDDIT_KAFKA_TOPIC:-reddit.raw.events}
+    YOUTUBE_CLEAN_KAFKA_TOPIC: ${YOUTUBE_CLEAN_KAFKA_TOPIC:-youtube.clean.events}
+    X_CLEAN_KAFKA_TOPIC: ${X_CLEAN_KAFKA_TOPIC:-x.clean.events}
+    REDDIT_CLEAN_KAFKA_TOPIC: ${REDDIT_CLEAN_KAFKA_TOPIC:-reddit.clean.events}
+    YOUTUBE_DLQ_KAFKA_TOPIC: ${YOUTUBE_DLQ_KAFKA_TOPIC:-youtube.dlq.events}
+    X_DLQ_KAFKA_TOPIC: ${X_DLQ_KAFKA_TOPIC:-x.dlq.events}
+    REDDIT_DLQ_KAFKA_TOPIC: ${REDDIT_DLQ_KAFKA_TOPIC:-reddit.dlq.events}
+    BRONZE_KAFKA_OUT_TOPIC: ${BRONZE_KAFKA_OUT_TOPIC:-lakehouse.bronze.for_silver}
 
   user: "0:0"
 
@@ -38,7 +56,7 @@ services:
       - "9001:9001"
 
     volumes:
-      - ${HOST_PROJECT_DIR:-.}/data/minio:/data
+      - minio-data:/data
 
   minio-init:
     image: minio/mc:RELEASE.2025-08-13T08-35-41Z
@@ -95,6 +113,7 @@ services:
       - SCHEMA_REGISTRY_LISTENERS=http://0.0.0.0:8081
       - SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS=PLAINTEXT://kafka:9092
       - SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR=1
+      - SCHEMA_REGISTRY_KAFKASTORE_TIMEOUT_MS=10000
 
     ports:
       - "8081:8081"
@@ -114,7 +133,7 @@ services:
     ports:
       - "9002:9000"
 
-  playwright-producer:
+  youtube-collector:
     build:
       context: ./playwright
 
@@ -124,17 +143,87 @@ services:
 
     environment:
       - KAFKA_BOOTSTRAP=kafka:9092
-      - KAFKA_TOPIC=test-topic
+      - KAFKA_TOPIC=${YOUTUBE_KAFKA_TOPIC:-youtube.raw.events}
       - SCHEMA_REGISTRY_URL=http://schema-registry:8081
       - SCHEMA_PATH=/app/schemas/playwright_event.avsc
       - SCHEMA_REGISTRY_WAIT_SEC=180
-      - PRODUCER_MODE=synthetic
-      - PLAYWRIGHT_TARGET_URLS=https://example.com,https://example.org
-      - PLAYWRIGHT_USERS=3
-      - EVENT_INTERVAL_SEC=2
+      - PRODUCER_MODE=youtube
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
+      - YOUTUBE_OUTPUT_DIR=/app/api/yt_raw_json
+      - YOUTUBE_SLEEP_SECONDS=0.5
+      - YOUTUBE_SEARCH_QUERY=electric vehicle review
+      - YOUTUBE_SEARCH_MAX_RESULTS=${YOUTUBE_SEARCH_MAX_RESULTS:-10}
+      - PRODUCER_MAX_EVENTS=${YOUTUBE_MAX_EVENTS:-5}
+      - COLLECTOR_STATE_DB=/app/state/youtube.sqlite
+      - BOOTSTRAP_STATE_FROM_KAFKA=true
 
     volumes:
       - ${HOST_PROJECT_DIR:-.}/schemas:/app/schemas:ro
+      - ${HOST_PROJECT_DIR:-.}/API:/app/api
+      - ${HOST_PROJECT_DIR:-.}/data/collector-state:/app/state
+
+  x-collector:
+    build:
+      context: ./playwright
+
+    depends_on:
+      - kafka
+      - schema-registry
+
+    environment:
+      - KAFKA_BOOTSTRAP=kafka:9092
+      - KAFKA_TOPIC=${X_KAFKA_TOPIC:-x.raw.events}
+      - SCHEMA_REGISTRY_URL=http://schema-registry:8081
+      - SCHEMA_PATH=/app/schemas/playwright_event.avsc
+      - SCHEMA_REGISTRY_WAIT_SEC=180
+      - PRODUCER_MODE=x
+      - X_CDP_URL=${X_CDP_URL:-}
+      - X_CDP_HOST=${X_CDP_HOST:-host.docker.internal}
+      - X_CDP_PORT_FILE=/app/x-runtime/cdp-port.txt
+      - X_CDP_WAIT_SECONDS=${X_CDP_WAIT_SECONDS:-90}
+      - X_HEADLESS=${X_HEADLESS:-true}
+      - X_GOOGLE_EMAIL=${X_GOOGLE_EMAIL:-}
+      - X_GOOGLE_LOGIN_WAIT_SECONDS=${X_GOOGLE_LOGIN_WAIT_SECONDS:-90}
+      - X_SEARCH_QUERIES=${X_SEARCH_QUERIES:-(electric vehicle OR EV OR "electric car") lang:en -filter:replies||(Tesla OR "EV charging" OR "battery range") lang:en -filter:replies}
+      - X_SEARCH_WAIT_MS=${X_SEARCH_WAIT_MS:-20000}
+      - X_SEARCH_RETRIES=${X_SEARCH_RETRIES:-3}
+      - X_SEARCH_RETRY_SECONDS=${X_SEARCH_RETRY_SECONDS:-10}
+      - X_SCROLL_ROUNDS=${X_SCROLL_ROUNDS:-5}
+      - X_SCROLL_WAIT_MS=${X_SCROLL_WAIT_MS:-1500}
+      - PRODUCER_MAX_EVENTS=${X_MAX_EVENTS:-5}
+      - COLLECTOR_STATE_DB=/app/state/x.sqlite
+      - BOOTSTRAP_STATE_FROM_KAFKA=true
+
+    volumes:
+      - ${HOST_PROJECT_DIR:-.}/schemas:/app/schemas:ro
+      - ${HOST_PROJECT_DIR:-.}/data/collector-state:/app/state
+      - ${HOST_PROJECT_DIR:-.}/data/x-runtime:/app/x-runtime:ro
+
+  reddit-collector:
+    build:
+      context: ./playwright
+
+    depends_on:
+      - kafka
+      - schema-registry
+
+    environment:
+      - KAFKA_BOOTSTRAP=kafka:9092
+      - KAFKA_TOPIC=${REDDIT_KAFKA_TOPIC:-reddit.raw.events}
+      - SCHEMA_REGISTRY_URL=http://schema-registry:8081
+      - SCHEMA_PATH=/app/schemas/playwright_event.avsc
+      - SCHEMA_REGISTRY_WAIT_SEC=180
+      - PRODUCER_MODE=reddit
+      - REDDIT_SUBREDDITS=${REDDIT_SUBREDDITS:-electricvehicles,teslamotors}
+      - REDDIT_POST_LIMIT=${REDDIT_POST_LIMIT:-8}
+      - REDDIT_WAIT_MS=${REDDIT_WAIT_MS:-750}
+      - PRODUCER_MAX_EVENTS=${REDDIT_MAX_EVENTS:-5}
+      - COLLECTOR_STATE_DB=/app/state/reddit.sqlite
+      - BOOTSTRAP_STATE_FROM_KAFKA=true
+
+    volumes:
+      - ${HOST_PROJECT_DIR:-.}/schemas:/app/schemas:ro
+      - ${HOST_PROJECT_DIR:-.}/data/collector-state:/app/state
 
   spark-master:
     build:
@@ -159,19 +248,25 @@ services:
       - MINIO_ROOT_PASSWORD=minioadmin
       - MINIO_BUCKET=lakehouse
       - PRIVACY_HASH_SALT=dev-privacy-salt
+      - KAFKA_TOPIC=${YOUTUBE_KAFKA_TOPIC:-youtube.raw.events},${X_KAFKA_TOPIC:-x.raw.events},${REDDIT_KAFKA_TOPIC:-reddit.raw.events}
+      - BRONZE_KAFKA_OUT_TOPIC=${BRONZE_KAFKA_OUT_TOPIC:-lakehouse.bronze.for_silver}
+      # Tuning knobs consumed by Spark jobs
+      - SPARK_WORKER_COUNT=4
+      - SPARK_WORKER_CORES=1
+      # Optional override for shuffle partitions (if set, overrides auto calculation)
+      - SPARK_SHUFFLE_PARTITIONS=
 
     volumes:
       - ${HOST_PROJECT_DIR:-.}/spark/jobs:/opt/spark/jobs
       - ${HOST_PROJECT_DIR:-.}/schemas:/opt/spark/schemas:ro
       - ${HOST_PROJECT_DIR:-.}/tests/spark:/opt/spark/tests
 
-  spark-worker-1:
+  spark-worker:
     build:
       context: ./spark
       dockerfile: worker/Dockerfile
 
-    container_name: spark-worker-1
-
+    # Do not set container_name to allow scaling (multiple containers)
     depends_on:
       - spark-master
 
@@ -186,33 +281,9 @@ services:
       - MINIO_ROOT_PASSWORD=minioadmin
       - MINIO_BUCKET=lakehouse
       - PRIVACY_HASH_SALT=dev-privacy-salt
-
-    volumes:
-      - ${HOST_PROJECT_DIR:-.}/spark/jobs:/opt/spark/jobs
-      - ${HOST_PROJECT_DIR:-.}/schemas:/opt/spark/schemas:ro
-      - ${HOST_PROJECT_DIR:-.}/tests/spark:/opt/spark/tests
-
-  spark-worker-2:
-    build:
-      context: ./spark
-      dockerfile: worker/Dockerfile
-
-    container_name: spark-worker-2
-
-    depends_on:
-      - spark-master
-
-    command: >
-      /opt/spark/bin/spark-class
-      org.apache.spark.deploy.worker.Worker
-      spark://spark-master:7077
-
-    environment:
-      - MINIO_ENDPOINT=http://minio:9000
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
-      - MINIO_BUCKET=lakehouse
-      - PRIVACY_HASH_SALT=dev-privacy-salt
+      # Tunables for scaling
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2G
 
     volumes:
       - ${HOST_PROJECT_DIR:-.}/spark/jobs:/opt/spark/jobs
@@ -221,6 +292,7 @@ services:
 
   airflow-postgres:
     image: postgres:15-alpine
+    stop_grace_period: 60s
 
     environment:
       - POSTGRES_DB=airflow
@@ -230,8 +302,9 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
       interval: 10s
-      retries: 5
-      start_period: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
 
     volumes:
       - ${HOST_PROJECT_DIR:-.}/data/airflow-postgres:/var/lib/postgresql/data
@@ -277,3 +350,6 @@ services:
         condition: service_completed_successfully
 
     command: scheduler
+
+volumes:
+  minio-data:
