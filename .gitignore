@@ -158,3 +158,6 @@ PROJECT_CONTEXT_NOTES.md
 # Local X browser process state
 data/x-edge.pid
 data/x-edge-mode.txt
+
+API/yt_raw_json/
+API/video_list.txt

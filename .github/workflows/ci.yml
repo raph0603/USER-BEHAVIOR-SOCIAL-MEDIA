@@ -1,0 +1,22 @@
+name: Pull Request Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+      - production
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pr-validation:
+    name: pr-validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Placeholder validation
+        run: |
+          echo "No tests configured yet."
+          echo "This placeholder validates pull requests."
