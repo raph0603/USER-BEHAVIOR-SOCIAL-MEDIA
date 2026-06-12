@@ -1,6 +1,21 @@
 # Changelog
 
 <<<<<<< HEAD
+## [1.2.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.1.0...v1.2.0) (2026-06-12)
+
+
+### Features
+
+* **dashboard:** add dashboard application ([726ddb2](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/726ddb245b65ab8b1e8543e13edba18f65c7fb8d))
+* **dashboard:** add Iceberg-backed social media dashboard ([b38e27b](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/b38e27b64eae95a28edcde4f904f39638b239a11))
+* **dashboard:** add sample social media data ([a6d1b7d](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/a6d1b7d1ef6907ab8a588c216b76fb2b56bbb6af))
+* **dashboard:** read events from Iceberg Silver ([1adc6bc](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/1adc6bc9c1a4b66214d3957fe70033f0e4f76f76))
+
+
+### Bug Fixes
+
+* **dashboard:** resolve data paths with pathlib ([ff7e28c](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/ff7e28c6171d48d497ae70da37942466619dcc7e))
+
 ## [1.1.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.0.1...v1.1.0) (2026-06-11)
 
 
