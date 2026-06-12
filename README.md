@@ -140,6 +140,24 @@ YouTube is API-based, and Reddit remains headless inside its Docker container.
 docker compose up -d --build
 ```
 
+### Run the local dashboard
+
+The Streamlit dashboard reads the cleaned events directly from
+`lakehouse.silver.events` in MinIO. Start MinIO before launching it:
+
+```powershell
+docker compose up -d minio minio-init
+cd dashboard
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+The dashboard is available at http://localhost:8501. Its Iceberg table,
+MinIO endpoint, and credentials can be overridden with the
+`DASHBOARD_ICEBERG_TABLE_PATH`, `DASHBOARD_MINIO_ENDPOINT`,
+`DASHBOARD_MINIO_ACCESS_KEY`, and `DASHBOARD_MINIO_SECRET_KEY` environment
+variables.
+
 ### Run the Bronze streaming job
 
 ```bash
