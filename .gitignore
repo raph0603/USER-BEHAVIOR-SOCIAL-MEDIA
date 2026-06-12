@@ -161,3 +161,9 @@ data/x-edge-mode.txt
 
 API/yt_raw_json/
 API/video_list.txt
+
+# Local dashboard data
+dashboard/data/
+
+AGENTS.md
+.github/copilot-instructions.md
