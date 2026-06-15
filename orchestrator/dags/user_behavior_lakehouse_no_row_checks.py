@@ -9,6 +9,10 @@ from airflow.operators.bash import BashOperator
 from airflow.operators.empty import EmptyOperator
 from airflow.utils.trigger_rule import TriggerRule
 from pendulum import datetime
+from pipeline_lock import (
+    acquire_pipeline_lock_command,
+    release_pipeline_lock_command,
+)
 
 PROJECT_DIR = "/workspace"
 
@@ -85,51 +89,6 @@ def wait_clean_command(
     CLEAN_TOTAL=$(docker exec kafka /opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server kafka:9092 --topic "$CLEAN_TOPIC" 2>/dev/null | awk -F: '{{s+=$3}} END{{print s+0}}')
     DLQ_TOTAL=$(docker exec kafka /opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server kafka:9092 --topic "$DLQ_TOPIC" 2>/dev/null | awk -F: '{{s+=$3}} END{{print s+0}}')
     echo "{platform} cleaning completed: clean=${{CLEAN_TOTAL:-0}}, dlq=${{DLQ_TOTAL:-0}}"
-    """
-
-
-def acquire_pipeline_lock_command() -> str:
-    return r"""
-    set -euo pipefail
-    LOCK_DIR=/tmp/user-behavior-lakehouse.pipeline.lock
-    OWNER="${AIRFLOW_CTX_DAG_ID}/${AIRFLOW_CTX_DAG_RUN_ID}"
-    for attempt in $(seq 1 720); do
-      if docker exec spark-master mkdir "$LOCK_DIR" 2>/dev/null; then
-        docker exec -e LOCK_OWNER="$OWNER" spark-master /bin/bash -lc \
-          'printf "%s\n" "$LOCK_OWNER" > /tmp/user-behavior-lakehouse.pipeline.lock/owner'
-        echo "Acquired shared pipeline lock for $OWNER"
-        exit 0
-      fi
-      if (( attempt % 6 == 1 )); then
-        CURRENT_OWNER=$(docker exec spark-master /bin/bash -lc \
-          'cat /tmp/user-behavior-lakehouse.pipeline.lock/owner 2>/dev/null || echo unknown')
-        echo "Pipeline busy with $CURRENT_OWNER; waiting..."
-      fi
-      sleep 10
-    done
-    echo "Timed out waiting for the shared pipeline lock"
-    exit 1
-    """
-
-
-def release_pipeline_lock_command() -> str:
-    return r"""
-    set -euo pipefail
-    OWNER="${AIRFLOW_CTX_DAG_ID}/${AIRFLOW_CTX_DAG_RUN_ID}"
-    if ! docker exec spark-master true >/dev/null 2>&1; then
-      echo "spark-master is not running; pipeline lock is already unavailable"
-      exit 0
-    fi
-    docker exec -e LOCK_OWNER="$OWNER" spark-master /bin/bash -lc '
-      LOCK_DIR=/tmp/user-behavior-lakehouse.pipeline.lock
-      CURRENT_OWNER=$(cat "$LOCK_DIR/owner" 2>/dev/null || true)
-      if [[ "$CURRENT_OWNER" == "$LOCK_OWNER" ]]; then
-        rm -rf "$LOCK_DIR"
-        echo "Released shared pipeline lock for $LOCK_OWNER"
-      else
-        echo "Pipeline lock belongs to ${CURRENT_OWNER:-nobody}; nothing to release"
-      fi
-    '
     """
 
 
