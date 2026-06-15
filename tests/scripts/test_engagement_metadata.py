@@ -11,6 +11,40 @@ ENGAGEMENT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ENGAGEMENT)
 
 
+class FakeNode:
+    def __init__(self, text="", aria_label=None):
+        self.text = text
+        self.aria_label = aria_label
+
+    def inner_text(self, timeout):
+        return self.text
+
+    def get_attribute(self, name, timeout):
+        if name == "aria-label":
+            return self.aria_label
+        return None
+
+
+class FakeLocator:
+    def __init__(self, node=None):
+        self.node = node
+
+    def count(self):
+        return int(self.node is not None)
+
+    @property
+    def first(self):
+        return self.node
+
+
+class FakeArticle:
+    def __init__(self, nodes):
+        self.nodes = nodes
+
+    def locator(self, selector):
+        return FakeLocator(self.nodes.get(selector))
+
+
 class EngagementMetadataTests(unittest.TestCase):
     def test_parse_count_supports_platform_abbreviations(self):
         cases = {
@@ -23,6 +57,46 @@ class EngagementMetadataTests(unittest.TestCase):
         for raw_value, expected in cases.items():
             with self.subTest(raw_value=raw_value):
                 self.assertEqual(ENGAGEMENT.parse_count(raw_value), expected)
+
+    def test_x_views_fall_back_to_analytics_link(self):
+        article = FakeArticle(
+            {
+                'a[href*="/analytics"]': FakeNode(
+                    text="1.2K",
+                    aria_label="1.2K views. View post analytics",
+                )
+            }
+        )
+
+        self.assertEqual(
+            ENGAGEMENT.extract_x_metric(article, "analytics"),
+            1200,
+        )
+
+    def test_x_analytics_link_without_count_means_zero_views(self):
+        article = FakeArticle(
+            {
+                'a[href*="/analytics"]': FakeNode(
+                    aria_label="View post analytics",
+                )
+            }
+        )
+
+        self.assertEqual(
+            ENGAGEMENT.extract_x_metric(article, "analytics"),
+            0,
+        )
+
+    def test_x_metric_still_supports_data_testid(self):
+        article = FakeArticle(
+            {
+                '[data-testid="like"]': FakeNode(
+                    aria_label="23 Likes. Like",
+                )
+            }
+        )
+
+        self.assertEqual(ENGAGEMENT.extract_x_metric(article, "like"), 23)
 
     def test_avro_contract_contains_available_engagement_metadata(self):
         schema_path = ROOT / "schemas" / "playwright_event.avsc"

@@ -22,7 +22,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-from engagement import parse_count
+from engagement import extract_x_metric, parse_count
 
 
 DEFAULT_X_QUERIES = [
@@ -106,21 +106,6 @@ def _ensure_schema_registered(
 
 def _clean_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
-
-
-def _extract_x_metric(article, test_id: str) -> int | None:
-    locator = article.locator(f'[data-testid="{test_id}"]')
-    if locator.count() == 0:
-        return None
-    try:
-        text = locator.first.inner_text(timeout=1000)
-        parsed = parse_count(text)
-        if parsed is not None:
-            return parsed
-        aria_label = locator.first.get_attribute("aria-label", timeout=1000)
-        return parse_count(aria_label)
-    except (PlaywrightTimeoutError, PlaywrightError):
-        return None
 
 
 def _extract_reddit_reply_count(comment) -> int | None:
@@ -695,15 +680,24 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                                     "title": text,
                                     "timestamp": timestamp,
                                     "source": "x",
-                                    "like_count": _extract_x_metric(article, "like"),
+                                    "like_count": extract_x_metric(
+                                        article,
+                                        "like",
+                                    ),
                                     "comment_count": None,
-                                    "reply_count": _extract_x_metric(article, "reply"),
-                                    "view_count": _extract_x_metric(article, "analytics"),
-                                    "retweet_count": _extract_x_metric(
+                                    "reply_count": extract_x_metric(
+                                        article,
+                                        "reply",
+                                    ),
+                                    "view_count": extract_x_metric(
+                                        article,
+                                        "analytics",
+                                    ),
+                                    "retweet_count": extract_x_metric(
                                         article,
                                         "retweet",
                                     ),
-                                    "bookmark_count": _extract_x_metric(
+                                    "bookmark_count": extract_x_metric(
                                         article,
                                         "bookmark",
                                     ),
