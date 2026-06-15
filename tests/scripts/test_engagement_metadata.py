@@ -157,6 +157,31 @@ class EngagementMetadataTests(unittest.TestCase):
                 for field_name in expected:
                     self.assertIn(field_name, source)
 
+    def test_reddit_collector_discovers_recent_comments(self):
+        producer = (ROOT / "playwright" / "producer.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('f"https://old.reddit.com/r/{subreddit}/comments/"', producer)
+        self.assertIn("REDDIT_COMMENT_SCAN_LIMIT", producer)
+        self.assertNotIn("?sort=top&t=month", producer)
+
+    def test_youtube_search_supports_multiple_pages(self):
+        producer = (ROOT / "playwright" / "producer.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('page_token = response.get("nextPageToken")', producer)
+        self.assertIn("while len(video_ids) < max_results:", producer)
+
+    def test_reddit_keyword_filter_uses_word_boundaries(self):
+        producer = (ROOT / "playwright" / "producer.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("def _matches_keywords(", producer)
+        self.assertIn(r'rf"\b{re.escape(normalized_keyword)}\b"', producer)
+
 
 if __name__ == "__main__":
     unittest.main()

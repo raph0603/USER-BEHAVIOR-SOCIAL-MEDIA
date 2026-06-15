@@ -127,12 +127,48 @@ The job verifies that the record count is unchanged and retries three times by
 default. The shared lock prevents compaction from overlapping Bronze or Silver
 writes without creating a dependency between DAGs.
 
+The separate `refresh_recent_engagement_insights` DAG refreshes engagement
+metrics for events already stored in Silver. It runs once per day by default,
+selects events from the previous 15 days, recollects the metrics available for
+YouTube, X and Reddit, then updates the matching Bronze and Silver rows.
+
+```env
+INSIGHT_REFRESH_SCHEDULE_MINUTES=1440
+```
+
+The trigger form exposes `lookback_days` and `max_events_per_source`. X and
+Reddit follow the existing `X_COLLECTION_ENABLED` and
+`REDDIT_COLLECTION_ENABLED` switches. X also requires the authenticated CDP
+browser session.
+
+The `docker_storage_maintenance` DAG limits development-machine disk growth. It
+runs daily, removes stopped containers and dangling images older than 24 hours,
+keeps at most 1 GB of old build cache, and removes Airflow logs older than 14
+days. Docker volumes are never pruned by this DAG.
+
+```env
+DOCKER_MAINTENANCE_SCHEDULE_MINUTES=1440
+DOCKER_MAINTENANCE_BUILD_CACHE_KEEP=1GB
+AIRFLOW_LOG_RETENTION_DAYS=14
+```
+
+Compose also uses Docker's compressed `local` logging driver with three 10 MB
+files per container.
+
+Docker Desktop's WSL disk does not always shrink after cleanup. To return its
+free blocks to Windows, close Docker Desktop and run the following command from
+an elevated PowerShell:
+
+```powershell
+.\scripts\compact_docker_disk.ps1
+```
+
 When manually triggering `user_behavior_lakehouse` from the Airflow interface,
 the trigger form exposes three limits:
 
-- `youtube_event_count`: maximum number of new YouTube videos, from 1 to 50;
-- `x_event_count`: maximum number of new X posts, from 1 to 100;
-- `reddit_event_count`: maximum number of new Reddit comments, from 1 to 100.
+- `youtube_event_count`: maximum number of new YouTube videos, from 1 to 500;
+- `x_event_count`: maximum number of new X posts, from 1 to 500;
+- `reddit_event_count`: maximum number of new Reddit comments, from 1 to 500.
 
 These are upper limits. A collector can return fewer events when the online
 search does not contain enough unprocessed results. Scheduled runs use the
@@ -170,7 +206,16 @@ The dashboard is available at http://localhost:8501. Its Iceberg table,
 MinIO endpoint, and credentials can be overridden with the
 `DASHBOARD_ICEBERG_TABLE_PATH`, `DASHBOARD_MINIO_ENDPOINT`,
 `DASHBOARD_MINIO_ACCESS_KEY`, and `DASHBOARD_MINIO_SECRET_KEY` environment
-variables.
+variables. The Airflow monitoring panel uses `DASHBOARD_AIRFLOW_URL`,
+`DASHBOARD_AIRFLOW_USERNAME`, and `DASHBOARD_AIRFLOW_PASSWORD`. It displays
+active DAG runs, task completion progress, and upcoming scheduled runs.
+
+The separate `Configuration` dashboard page manages crawler limits and search
+filters. Keywords are added and removed individually, then translated into
+YouTube and X query syntax based on the selected language and filters. Reddit
+uses its configured keyword list to filter recent comments from the selected
+subreddits. Saved values are stored in Airflow Variables and become defaults
+for later scheduled runs.
 
 ### Run the Bronze streaming job
 
@@ -239,8 +284,8 @@ required in `.env` or Airflow. `X_CDP_URL` remains available only as a fallback
 for an externally managed CDP endpoint.
 
 Log in to X in that browser window. When triggering the DAG from the Airflow
-UI, set `x_post_count` to the maximum number of new X posts to collect
-(between 1 and 100). For a direct `docker compose run`, `X_MAX_EVENTS` in
+UI, set `x_event_count` to the maximum number of new X posts to collect
+(between 1 and 500). For a direct `docker compose run`, `X_MAX_EVENTS` in
 `.env` provides the limit. If fewer new posts are available, the collector
 publishes fewer events. When X collection is enabled, a crawler or CDP
 failure fails the Airflow task and the DAG.
@@ -261,8 +306,10 @@ docker compose run --rm reddit-collector
 ```
 
 Set `REDDIT_COLLECTION_ENABLED=true` to include this step in Airflow.
-`REDDIT_SUBREDDITS`, `REDDIT_POST_LIMIT` and `REDDIT_MAX_EVENTS` control the
-online collection.
+`REDDIT_SUBREDDITS`, `REDDIT_COMMENT_SCAN_LIMIT` and `REDDIT_MAX_EVENTS`
+control the online collection. The collector scans up to 100 recent comments
+per subreddit, sorts them globally by publication time and publishes the newest
+unprocessed comments first.
 
 Each collector stores processed source IDs in its own persistent SQLite file
 under `data/collector-state/`. Existing topic contents are imported into this

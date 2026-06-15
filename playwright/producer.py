@@ -108,6 +108,43 @@ def _clean_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
 
+def _env_json_list(name: str, fallback: list[str]) -> list[str]:
+    raw_value = os.getenv(name)
+    if not raw_value:
+        return fallback
+    try:
+        values = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{name} must contain a JSON array") from exc
+    if not isinstance(values, list):
+        raise RuntimeError(f"{name} must contain a JSON array")
+    return [
+        str(value).strip()
+        for value in values
+        if str(value).strip()
+    ]
+
+
+def _matches_keywords(text: str, keywords: list[str], match_mode: str) -> bool:
+    if not keywords:
+        return True
+    normalized_text = text.casefold()
+    matches = []
+    for keyword in keywords:
+        normalized_keyword = keyword.casefold()
+        if re.fullmatch(r"\w+", normalized_keyword):
+            matches.append(
+                re.search(
+                    rf"\b{re.escape(normalized_keyword)}\b",
+                    normalized_text,
+                )
+                is not None
+            )
+        else:
+            matches.append(normalized_keyword in normalized_text)
+    return all(matches) if match_mode == "AND" else any(matches)
+
+
 def _extract_reddit_reply_count(comment) -> int | None:
     try:
         direct_replies = comment.locator(
@@ -137,6 +174,62 @@ def _extract_reddit_score(comment) -> int | None:
         if parsed is not None:
             return parsed
     return None
+
+
+def _extract_reddit_comment_event(comment, fallback_url: str) -> dict | None:
+    fullname = comment.get_attribute("data-fullname") or ""
+    comment_id = fullname.removeprefix("t1_")
+    if not comment_id:
+        return None
+
+    body_locator = comment.locator(".usertext-body .md")
+    text = (
+        _clean_text(body_locator.first.inner_text(timeout=1500))
+        if body_locator.count()
+        else ""
+    )
+    if not text:
+        return None
+
+    author_locator = comment.locator("a.author")
+    author = (
+        author_locator.first.inner_text(timeout=1500)
+        if author_locator.count()
+        else "anonymous"
+    )
+    time_locator = comment.locator("time")
+    timestamp = (
+        time_locator.first.get_attribute("datetime")
+        if time_locator.count()
+        else None
+    )
+    permalink_locator = comment.locator("a.bylink")
+    href = (
+        permalink_locator.first.get_attribute("href")
+        if permalink_locator.count()
+        else ""
+    )
+    comment_url = urljoin(fallback_url, href) if href else fallback_url
+    comment_url = comment_url.replace(
+        "https://old.reddit.com",
+        "https://www.reddit.com",
+    )
+
+    return {
+        "event_id": comment_id,
+        "user_id": f"reddit-{_hash_identity(author)}",
+        "url": comment_url,
+        "title": text,
+        "timestamp": timestamp,
+        "source": "reddit",
+        "like_count": None,
+        "comment_count": None,
+        "reply_count": _extract_reddit_reply_count(comment),
+        "view_count": None,
+        "retweet_count": None,
+        "bookmark_count": None,
+        "score": _extract_reddit_score(comment),
+    }
 
 
 def _youtube_reply_count(comment_pages: list[dict]) -> int:
@@ -269,20 +362,36 @@ def _get_youtube_service(api_key: str):
     return build("youtube", "v3", developerKey=api_key)
 
 
-def _search_youtube_video_ids(youtube, search_query: str, max_results: int) -> list[str]:
-    response = youtube.search().list(
-        part="id",
-        q=search_query,
-        type="video",
-        relevanceLanguage="en",
-        order="date",
-        maxResults=max(1, min(max_results, 50)),
-    ).execute()
-    return [
-        item["id"]["videoId"]
-        for item in response.get("items", [])
-        if item.get("id", {}).get("videoId")
-    ]
+def _search_youtube_video_ids(
+    youtube,
+    search_query: str,
+    max_results: int,
+    relevance_language: str,
+    order: str,
+) -> list[str]:
+    video_ids = []
+    page_token = None
+
+    while len(video_ids) < max_results:
+        response = youtube.search().list(
+            part="id",
+            q=search_query,
+            type="video",
+            relevanceLanguage=relevance_language or None,
+            order=order,
+            maxResults=min(50, max_results - len(video_ids)),
+            pageToken=page_token,
+        ).execute()
+        video_ids.extend(
+            item["id"]["videoId"]
+            for item in response.get("items", [])
+            if item.get("id", {}).get("videoId")
+        )
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+
+    return video_ids[:max_results]
 
 
 def _fetch_video_metadata(youtube, video_id: str):
@@ -521,11 +630,17 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
     cdp_url = _x_cdp_url()
     cdp_wait_seconds = _env_int("X_CDP_WAIT_SECONDS", 60)
     headless = _env_bool("X_HEADLESS", True)
-    queries = [
-        query.strip()
-        for query in _env_str("X_SEARCH_QUERIES", "||".join(DEFAULT_X_QUERIES)).split("||")
-        if query.strip()
-    ]
+    queries = _env_json_list(
+        "X_SEARCH_QUERIES_JSON",
+        [
+            query.strip()
+            for query in _env_str(
+                "X_SEARCH_QUERIES",
+                "||".join(DEFAULT_X_QUERIES),
+            ).split("||")
+            if query.strip()
+        ],
+    )
     scroll_rounds = _env_int("X_SCROLL_ROUNDS", 5)
     wait_ms = _env_int("X_SCROLL_WAIT_MS", 1500)
     search_wait_ms = _env_int("X_SEARCH_WAIT_MS", 20000)
@@ -740,18 +855,31 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
 
 
 def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]:
-    subreddits = [
-        value.strip()
-        for value in _env_str(
-            "REDDIT_SUBREDDITS",
-            "electricvehicles,teslamotors",
-        ).split(",")
-        if value.strip()
-    ]
-    post_limit = _env_int("REDDIT_POST_LIMIT", 8)
+    subreddits = _env_json_list(
+        "REDDIT_SUBREDDITS_JSON",
+        [
+            value.strip()
+            for value in _env_str(
+                "REDDIT_SUBREDDITS",
+                "electricvehicles,teslamotors",
+            ).split(",")
+            if value.strip()
+        ],
+    )
+    configured_scan_limit = _env_int("REDDIT_COMMENT_SCAN_LIMIT", 100)
+    keywords = _env_json_list("REDDIT_KEYWORDS_JSON", [])
+    keyword_match_mode = _env_str(
+        "REDDIT_KEYWORD_MATCH_MODE",
+        "OR",
+    ).upper()
+    scan_limit = min(
+        100,
+        max(1, configured_scan_limit, max_events if max_events > 0 else 0),
+    )
     wait_ms = _env_int("REDDIT_WAIT_MS", 750)
     events = []
-    post_urls = []
+    candidates = {}
+    discovered_comments = 0
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
@@ -765,86 +893,68 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
 
         for subreddit in subreddits:
             listing_url = (
-                f"https://old.reddit.com/r/{subreddit}/top/"
-                "?sort=top&t=month"
+                f"https://old.reddit.com/r/{subreddit}/comments/"
+                f"?limit={scan_limit}"
             )
             page.goto(listing_url, wait_until="domcontentloaded", timeout=60000)
-            links = page.locator("a.comments")
-            for index in range(min(links.count(), post_limit)):
-                href = links.nth(index).get_attribute("href")
-                if href:
-                    normalized = urljoin("https://old.reddit.com", href)
-                    if normalized not in post_urls:
-                        post_urls.append(normalized)
-
-        if not post_urls:
-            browser.close()
-            raise RuntimeError("Reddit online collection found no public posts")
-
-        for post_url in post_urls[:post_limit]:
-            page.goto(post_url, wait_until="domcontentloaded", timeout=60000)
             comments = page.locator("div.thing.comment")
+            discovered_comments += comments.count()
             for index in range(comments.count()):
-                comment = comments.nth(index)
-                fullname = comment.get_attribute("data-fullname") or ""
-                comment_id = fullname.removeprefix("t1_")
-                if not comment_id or state.contains("reddit", comment_id):
+                event = _extract_reddit_comment_event(
+                    comments.nth(index),
+                    listing_url,
+                )
+                if event is None or state.contains("reddit", event["event_id"]):
                     continue
-
-                body_locator = comment.locator(".usertext-body .md")
-                text = (
-                    _clean_text(body_locator.first.inner_text(timeout=1500))
-                    if body_locator.count()
-                    else ""
-                )
-                if not text:
+                if not _matches_keywords(
+                    event["title"],
+                    keywords,
+                    keyword_match_mode,
+                ):
                     continue
+                candidates[event["event_id"]] = event
 
-                author_locator = comment.locator("a.author")
-                author = (
-                    author_locator.first.inner_text(timeout=1500)
-                    if author_locator.count()
-                    else "anonymous"
-                )
-                time_locator = comment.locator("time")
-                timestamp = (
-                    time_locator.first.get_attribute("datetime")
-                    if time_locator.count()
-                    else None
-                )
-                permalink_locator = comment.locator("a.bylink")
-                href = (
-                    permalink_locator.first.get_attribute("href")
-                    if permalink_locator.count()
-                    else ""
-                )
-                comment_url = urljoin(post_url, href) if href else post_url
-                comment_url = comment_url.replace(
-                    "https://old.reddit.com",
-                    "https://www.reddit.com",
+            page.wait_for_timeout(wait_ms)
+
+        if discovered_comments == 0:
+            browser.close()
+            raise RuntimeError("Reddit online collection found no public comments")
+
+        ordered_candidates = sorted(
+            candidates.values(),
+            key=lambda event: event.get("timestamp") or "",
+            reverse=True,
+        )
+        if max_events > 0:
+            ordered_candidates = ordered_candidates[:max_events]
+
+        for candidate in ordered_candidates:
+            event = candidate
+            detail_url = candidate["url"].replace(
+                "https://www.reddit.com",
+                "https://old.reddit.com",
+            )
+            try:
+                page.goto(detail_url, wait_until="domcontentloaded", timeout=60000)
+                exact_comment = page.locator(
+                    "div.thing.comment"
+                    f'[data-fullname="t1_{candidate["event_id"]}"]'
+                ).first
+                if exact_comment.count():
+                    detailed_event = _extract_reddit_comment_event(
+                        exact_comment,
+                        detail_url,
+                    )
+                    if detailed_event is not None:
+                        event = detailed_event
+            except (PlaywrightTimeoutError, PlaywrightError) as exc:
+                LOGGER.warning(
+                    "Using Reddit listing metadata for %s: %s",
+                    candidate["url"],
+                    exc,
                 )
 
-                events.append(
-                    {
-                        "event_id": comment_id,
-                        "user_id": f"reddit-{_hash_identity(author)}",
-                        "url": comment_url,
-                        "title": text,
-                        "timestamp": timestamp,
-                        "source": "reddit",
-                        "like_count": None,
-                        "comment_count": None,
-                        "reply_count": _extract_reddit_reply_count(comment),
-                        "view_count": None,
-                        "retweet_count": None,
-                        "bookmark_count": None,
-                        "score": _extract_reddit_score(comment),
-                    }
-                )
-                if max_events > 0 and len(events) >= max_events:
-                    browser.close()
-                    return events
-
+            events.append(event)
             page.wait_for_timeout(wait_ms)
 
         browser.close()
@@ -948,11 +1058,34 @@ def main() -> None:
             if not api_key:
                 raise RuntimeError("YOUTUBE_API_KEY is required")
             youtube = _get_youtube_service(api_key)
-            video_ids = _search_youtube_video_ids(
-                youtube,
-                _env_str("YOUTUBE_SEARCH_QUERY", "electric vehicle review"),
-                _env_int("YOUTUBE_SEARCH_MAX_RESULTS", 10),
+            search_limit = _env_int("YOUTUBE_SEARCH_MAX_RESULTS", 10)
+            search_language = _env_str("YOUTUBE_SEARCH_LANGUAGE", "en")
+            search_order = _env_str("YOUTUBE_SEARCH_ORDER", "date")
+            youtube_queries = _env_json_list(
+                "YOUTUBE_SEARCH_QUERIES_JSON",
+                [
+                    _env_str(
+                        "YOUTUBE_SEARCH_QUERY",
+                        "electric vehicle review",
+                    )
+                ],
             )
+            video_ids = []
+            for search_query in youtube_queries:
+                discovered_ids = _search_youtube_video_ids(
+                    youtube,
+                    search_query,
+                    search_limit,
+                    search_language,
+                    search_order,
+                )
+                for video_id in discovered_ids:
+                    if video_id not in video_ids:
+                        video_ids.append(video_id)
+                    if len(video_ids) >= search_limit:
+                        break
+                if len(video_ids) >= search_limit:
+                    break
             events = []
             output_dir = Path(
                 _env_str("YOUTUBE_OUTPUT_DIR", "/app/api/yt_raw_json")

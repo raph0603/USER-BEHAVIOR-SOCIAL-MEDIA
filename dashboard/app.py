@@ -2,7 +2,9 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from airflow_monitoring import AirflowClient
 from loaders import ENGAGEMENT_COLUMNS, get_iceberg_config, load_iceberg_data
+from navigation import render_navigation
 
 
 ENGAGEMENT_LABELS = {
@@ -28,6 +30,8 @@ st.set_page_config(
     layout="wide",
 )
 
+render_navigation()
+
 st.title("Social Media Lakehouse Dashboard")
 st.caption(
     "Monitoring des événements nettoyés reçus dans la table Iceberg Silver"
@@ -38,6 +42,86 @@ st.caption(
 def get_data():
     return load_iceberg_data()
 
+
+@st.cache_data(ttl=10, show_spinner=False)
+def get_airflow_status():
+    return AirflowClient().load_status()
+
+
+@st.fragment(run_every="15s")
+def render_airflow_monitoring():
+    st.subheader("Orchestration Airflow")
+
+    try:
+        status = get_airflow_status()
+    except Exception as exc:
+        st.warning(f"Monitoring Airflow indisponible: {exc}")
+        return
+
+    active_runs = status["active_runs"]
+    next_runs = status["next_runs"]
+
+    if active_runs:
+        st.caption(f"{len(active_runs)} job(s) actif(s)")
+        for run in active_runs:
+            label = (
+                f"{run['dag_id']} - {run['state']} - "
+                f"{run['completed_tasks']}/{run['total_tasks']} tâches"
+            )
+            st.write(f"**{label}**")
+            st.progress(
+                run["progress"],
+                text=f"{run['progress']} % terminé",
+            )
+            if run["failed_tasks"]:
+                st.error(
+                    f"{run['failed_tasks']} tâche(s) en échec dans ce run"
+                )
+    else:
+        st.success("Aucun job Airflow en cours")
+
+    if next_runs:
+        next_run = next_runs[0]
+        metric_columns = st.columns(3)
+        metric_columns[0].metric(
+            "Prochain job",
+            next_run["dag_id"],
+        )
+        metric_columns[1].metric(
+            "Planification",
+            next_run["countdown"],
+        )
+        metric_columns[2].metric(
+            "Heure prévue",
+            next_run["next_run"].astimezone().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+        schedule_rows = [
+            {
+                "Job": run["dag_id"],
+                "Prochaine exécution": run["next_run"]
+                .astimezone()
+                .strftime("%Y-%m-%d %H:%M:%S"),
+                "Dans": run["countdown"],
+            }
+            for run in next_runs
+        ]
+        st.dataframe(
+            schedule_rows,
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.info("Aucune prochaine exécution planifiée")
+
+    st.caption(
+        "Actualisation automatique toutes les 15 secondes. "
+        f"Dernière vérification: "
+        f"{status['checked_at'].astimezone().strftime('%H:%M:%S')}"
+    )
+
+
+render_airflow_monitoring()
 
 config = get_iceberg_config()
 

@@ -8,6 +8,7 @@ from airflow.models.param import Param
 from airflow.operators.bash import BashOperator
 from airflow.operators.empty import EmptyOperator
 from airflow.utils.trigger_rule import TriggerRule
+from crawler_configuration import load_crawler_config
 from pendulum import datetime
 from pipeline_lock import (
     acquire_pipeline_lock_command,
@@ -92,6 +93,9 @@ def wait_clean_command(
     """
 
 
+CRAWLER_CONFIG = load_crawler_config()
+
+
 with DAG(
     dag_id="user_behavior_lakehouse_no_row_checks",
     start_date=datetime(2026, 1, 1, tz="UTC"),
@@ -102,35 +106,94 @@ with DAG(
     default_args={"owner": "data-platform", "retries": 0},
     params={
         "youtube_event_count": Param(
-            5,
+            CRAWLER_CONFIG["youtube_event_count"],
             type="integer",
             minimum=1,
-            maximum=50,
+            maximum=500,
             title="Nombre d'evenements YouTube",
             description=(
                 "Nombre maximal de nouvelles videos YouTube a publier dans Kafka."
             ),
         ),
+        "youtube_search_queries": Param(
+            CRAWLER_CONFIG["youtube_search_queries"],
+            type="array",
+            minItems=1,
+            items={"type": "string", "minLength": 1},
+            title="Recherches YouTube",
+        ),
+        "youtube_search_language": Param(
+            CRAWLER_CONFIG["youtube_search_language"],
+            type="string",
+            title="Langue YouTube",
+        ),
+        "youtube_search_order": Param(
+            CRAWLER_CONFIG["youtube_search_order"],
+            type="string",
+            enum=["date", "relevance", "viewCount", "rating"],
+            title="Tri YouTube",
+        ),
         "x_event_count": Param(
-            5,
+            CRAWLER_CONFIG["x_event_count"],
             type="integer",
             minimum=1,
-            maximum=100,
+            maximum=500,
             title="Nombre d'evenements X",
             description=(
                 "Nombre maximal de nouveaux posts X à publier dans Kafka."
             ),
         ),
-        "reddit_event_count": Param(
-            5,
+        "x_search_queries": Param(
+            CRAWLER_CONFIG["x_search_queries"],
+            type="array",
+            minItems=1,
+            items={"type": "string", "minLength": 1},
+            title="Recherches X",
+        ),
+        "x_scroll_rounds": Param(
+            CRAWLER_CONFIG["x_scroll_rounds"],
             type="integer",
             minimum=1,
-            maximum=100,
+            maximum=50,
+            title="Nombre de scrolls X par recherche",
+        ),
+        "reddit_event_count": Param(
+            CRAWLER_CONFIG["reddit_event_count"],
+            type="integer",
+            minimum=1,
+            maximum=500,
             title="Nombre d'evenements Reddit",
             description=(
                 "Nombre maximal de nouveaux commentaires Reddit a publier "
                 "dans Kafka."
             ),
+        ),
+        "reddit_subreddits": Param(
+            CRAWLER_CONFIG["reddit_subreddits"],
+            type="array",
+            minItems=1,
+            items={"type": "string", "minLength": 1},
+            title="Subreddits",
+        ),
+        "reddit_keywords": Param(
+            CRAWLER_CONFIG["reddit_keywords"],
+            type="array",
+            minItems=1,
+            items={"type": "string", "minLength": 1},
+            title="Mots-cles Reddit",
+        ),
+        "reddit_keyword_match_mode": Param(
+            CRAWLER_CONFIG["reddit_keyword_match_mode"],
+            type="string",
+            enum=["OR", "AND"],
+            title="Correspondance Reddit",
+        ),
+        "reddit_comment_scan_limit": Param(
+            CRAWLER_CONFIG["reddit_comment_scan_limit"],
+            type="integer",
+            minimum=1,
+            maximum=100,
+            title="Commentaires inspectes par subreddit",
         ),
         "x_headless": Param(
             True,
@@ -306,10 +369,19 @@ with DAG(
     )
     run_youtube_collection = BashOperator(
         task_id="collect_youtube_api_events",
+        env={
+            "YOUTUBE_SEARCH_QUERIES_JSON": (
+                "{{ params.youtube_search_queries | tojson }}"
+            ),
+        },
+        append_env=True,
         bash_command=docker_compose(
             "run --rm "
             "-e PRODUCER_MAX_EVENTS={{ params.youtube_event_count }} "
             "-e YOUTUBE_SEARCH_MAX_RESULTS={{ params.youtube_event_count }} "
+            "-e YOUTUBE_SEARCH_QUERIES_JSON "
+            "-e YOUTUBE_SEARCH_LANGUAGE={{ params.youtube_search_language }} "
+            "-e YOUTUBE_SEARCH_ORDER={{ params.youtube_search_order }} "
             "youtube-collector"
         ),
     )
@@ -318,6 +390,10 @@ with DAG(
         task_id="collect_x_playwright_events",
         retries=2,
         retry_delay=timedelta(seconds=20),
+        env={
+            "X_SEARCH_QUERIES_JSON": "{{ params.x_search_queries | tojson }}",
+        },
+        append_env=True,
         bash_command=r"""
         set -euo pipefail
         if [[ "${X_COLLECTION_ENABLED:-false}" != "true" ]]; then
@@ -327,6 +403,8 @@ with DAG(
         """ + docker_compose(
             "run --rm "
             "-e PRODUCER_MAX_EVENTS={{ params.x_event_count }} "
+            "-e X_SEARCH_QUERIES_JSON "
+            "-e X_SCROLL_ROUNDS={{ params.x_scroll_rounds }} "
             "-e X_HEADLESS={{ params.x_headless | lower }} "
             "x-collector"
         ),
@@ -334,6 +412,13 @@ with DAG(
 
     run_reddit_collection = BashOperator(
         task_id="collect_reddit_online_events",
+        env={
+            "REDDIT_SUBREDDITS_JSON": (
+                "{{ params.reddit_subreddits | tojson }}"
+            ),
+            "REDDIT_KEYWORDS_JSON": "{{ params.reddit_keywords | tojson }}",
+        },
+        append_env=True,
         bash_command=r"""
         set -euo pipefail
         if [[ "${REDDIT_COLLECTION_ENABLED:-false}" != "true" ]]; then
@@ -343,6 +428,12 @@ with DAG(
         """ + docker_compose(
             "run --rm "
             "-e PRODUCER_MAX_EVENTS={{ params.reddit_event_count }} "
+            "-e REDDIT_SUBREDDITS_JSON "
+            "-e REDDIT_KEYWORDS_JSON "
+            "-e REDDIT_KEYWORD_MATCH_MODE="
+            "{{ params.reddit_keyword_match_mode }} "
+            "-e REDDIT_COMMENT_SCAN_LIMIT="
+            "{{ params.reddit_comment_scan_limit }} "
             "reddit-collector"
         ),
     )

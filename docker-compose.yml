@@ -1,19 +1,35 @@
 name: user-behavior-social-media
 
+x-default-logging: &default-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 x-airflow-common: &airflow-common
   build:
     context: ./orchestrator/airflow
+
+  logging: *default-logging
 
   environment: &airflow-common-env
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
+    AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
     AIRFLOW__WEBSERVER__SECRET_KEY: local-dev-secret
     AIRFLOW_UID: "0"
     DOCKER_HOST_PROJECT_DIR: ${DOCKER_HOST_PROJECT_DIR:-.}
     LAKEHOUSE_SCHEDULE_MINUTES: ${LAKEHOUSE_SCHEDULE_MINUTES:-60}
     LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES: ${LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES:-60}
+    INSIGHT_REFRESH_SCHEDULE_MINUTES: ${INSIGHT_REFRESH_SCHEDULE_MINUTES:-1440}
+    DOCKER_MAINTENANCE_SCHEDULE_MINUTES: ${DOCKER_MAINTENANCE_SCHEDULE_MINUTES:-1440}
+    DOCKER_MAINTENANCE_CONTAINER_AGE: ${DOCKER_MAINTENANCE_CONTAINER_AGE:-24h}
+    DOCKER_MAINTENANCE_IMAGE_AGE: ${DOCKER_MAINTENANCE_IMAGE_AGE:-24h}
+    DOCKER_MAINTENANCE_BUILD_CACHE_AGE: ${DOCKER_MAINTENANCE_BUILD_CACHE_AGE:-168h}
+    DOCKER_MAINTENANCE_BUILD_CACHE_KEEP: ${DOCKER_MAINTENANCE_BUILD_CACHE_KEEP:-1GB}
+    AIRFLOW_LOG_RETENTION_DAYS: ${AIRFLOW_LOG_RETENTION_DAYS:-14}
     ICEBERG_COMPACTION_SCHEDULE_MINUTES: ${ICEBERG_COMPACTION_SCHEDULE_MINUTES:-360}
     ICEBERG_COMPACTION_TABLES: ${ICEBERG_COMPACTION_TABLES:-lakehouse.bronze.events,lakehouse.silver.events}
     ICEBERG_COMPACTION_RETRIES: ${ICEBERG_COMPACTION_RETRIES:-3}
@@ -45,6 +61,7 @@ services:
 
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    logging: *default-logging
 
     container_name: minio
 
@@ -63,6 +80,7 @@ services:
 
   minio-init:
     image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    logging: *default-logging
 
     depends_on:
       - minio
@@ -76,6 +94,7 @@ services:
 
   kafka:
     image: apache/kafka:3.7.0
+    logging: *default-logging
 
     container_name: kafka
 
@@ -103,6 +122,7 @@ services:
 
   schema-registry:
     image: confluentinc/cp-schema-registry:7.6.1
+    logging: *default-logging
 
     container_name: schema-registry
 
@@ -123,6 +143,7 @@ services:
 
   kafdrop:
     image: obsidiandynamics/kafdrop:4.0.1
+    logging: *default-logging
 
     container_name: kafdrop
 
@@ -139,6 +160,7 @@ services:
   youtube-collector:
     build:
       context: ./playwright
+    logging: *default-logging
 
     depends_on:
       - kafka
@@ -156,7 +178,9 @@ services:
       - YOUTUBE_SLEEP_SECONDS=0.5
       - YOUTUBE_SEARCH_QUERY=electric vehicle review
       - YOUTUBE_SEARCH_MAX_RESULTS=${YOUTUBE_SEARCH_MAX_RESULTS:-10}
-      - PRODUCER_MAX_EVENTS=${YOUTUBE_MAX_EVENTS:-5}
+      - YOUTUBE_SEARCH_LANGUAGE=${YOUTUBE_SEARCH_LANGUAGE:-en}
+      - YOUTUBE_SEARCH_ORDER=${YOUTUBE_SEARCH_ORDER:-date}
+      - PRODUCER_MAX_EVENTS=${YOUTUBE_MAX_EVENTS:-500}
       - COLLECTOR_STATE_DB=/app/state/youtube.sqlite
       - BOOTSTRAP_STATE_FROM_KAFKA=true
 
@@ -164,10 +188,12 @@ services:
       - ${HOST_PROJECT_DIR:-.}/schemas:/app/schemas:ro
       - ${HOST_PROJECT_DIR:-.}/API:/app/api
       - ${HOST_PROJECT_DIR:-.}/data/collector-state:/app/state
+      - ${HOST_PROJECT_DIR:-.}/data/insight-refresh:/app/insight-refresh
 
   x-collector:
     build:
       context: ./playwright
+    logging: *default-logging
 
     depends_on:
       - kafka
@@ -193,7 +219,7 @@ services:
       - X_SEARCH_RETRY_SECONDS=${X_SEARCH_RETRY_SECONDS:-10}
       - X_SCROLL_ROUNDS=${X_SCROLL_ROUNDS:-5}
       - X_SCROLL_WAIT_MS=${X_SCROLL_WAIT_MS:-1500}
-      - PRODUCER_MAX_EVENTS=${X_MAX_EVENTS:-5}
+      - PRODUCER_MAX_EVENTS=${X_MAX_EVENTS:-500}
       - COLLECTOR_STATE_DB=/app/state/x.sqlite
       - BOOTSTRAP_STATE_FROM_KAFKA=true
 
@@ -201,10 +227,12 @@ services:
       - ${HOST_PROJECT_DIR:-.}/schemas:/app/schemas:ro
       - ${HOST_PROJECT_DIR:-.}/data/collector-state:/app/state
       - ${HOST_PROJECT_DIR:-.}/data/x-runtime:/app/x-runtime:ro
+      - ${HOST_PROJECT_DIR:-.}/data/insight-refresh:/app/insight-refresh
 
   reddit-collector:
     build:
       context: ./playwright
+    logging: *default-logging
 
     depends_on:
       - kafka
@@ -218,20 +246,23 @@ services:
       - SCHEMA_REGISTRY_WAIT_SEC=180
       - PRODUCER_MODE=reddit
       - REDDIT_SUBREDDITS=${REDDIT_SUBREDDITS:-electricvehicles,teslamotors}
-      - REDDIT_POST_LIMIT=${REDDIT_POST_LIMIT:-8}
+      - REDDIT_COMMENT_SCAN_LIMIT=${REDDIT_COMMENT_SCAN_LIMIT:-100}
+      - REDDIT_KEYWORD_MATCH_MODE=${REDDIT_KEYWORD_MATCH_MODE:-OR}
       - REDDIT_WAIT_MS=${REDDIT_WAIT_MS:-750}
-      - PRODUCER_MAX_EVENTS=${REDDIT_MAX_EVENTS:-5}
+      - PRODUCER_MAX_EVENTS=${REDDIT_MAX_EVENTS:-500}
       - COLLECTOR_STATE_DB=/app/state/reddit.sqlite
       - BOOTSTRAP_STATE_FROM_KAFKA=true
 
     volumes:
       - ${HOST_PROJECT_DIR:-.}/schemas:/app/schemas:ro
       - ${HOST_PROJECT_DIR:-.}/data/collector-state:/app/state
+      - ${HOST_PROJECT_DIR:-.}/data/insight-refresh:/app/insight-refresh
 
   spark-master:
     build:
       context: ./spark
       dockerfile: master/Dockerfile
+    logging: *default-logging
 
     container_name: spark-master
 
@@ -263,11 +294,13 @@ services:
       - ${HOST_PROJECT_DIR:-.}/spark/jobs:/opt/spark/jobs
       - ${HOST_PROJECT_DIR:-.}/schemas:/opt/spark/schemas:ro
       - ${HOST_PROJECT_DIR:-.}/tests/spark:/opt/spark/tests
+      - ${HOST_PROJECT_DIR:-.}/data/insight-refresh:/opt/spark/insight-refresh
 
   spark-worker:
     build:
       context: ./spark
       dockerfile: worker/Dockerfile
+    logging: *default-logging
 
     # Do not set container_name to allow scaling (multiple containers)
     depends_on:
@@ -292,9 +325,11 @@ services:
       - ${HOST_PROJECT_DIR:-.}/spark/jobs:/opt/spark/jobs
       - ${HOST_PROJECT_DIR:-.}/schemas:/opt/spark/schemas:ro
       - ${HOST_PROJECT_DIR:-.}/tests/spark:/opt/spark/tests
+      - ${HOST_PROJECT_DIR:-.}/data/insight-refresh:/opt/spark/insight-refresh
 
   airflow-postgres:
     image: postgres:15-alpine
+    logging: *default-logging
     stop_grace_period: 60s
 
     environment:

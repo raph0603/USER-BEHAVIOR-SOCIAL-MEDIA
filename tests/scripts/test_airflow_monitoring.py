@@ -1,0 +1,96 @@
+import importlib.util
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+MODULE_PATH = ROOT / "dashboard" / "airflow_monitoring.py"
+SPEC = importlib.util.spec_from_file_location("airflow_monitoring", MODULE_PATH)
+MONITORING = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MONITORING)
+
+
+class FakeResponse:
+    def __init__(self, payload):
+        self.payload = payload
+        self.content = b"{}"
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+
+class FakeSession:
+    def __init__(self, responses):
+        self.responses = responses
+        self.auth = None
+
+    def request(self, method, url, params, json, timeout):
+        path = url.split("/api/v1", 1)[1]
+        return FakeResponse(self.responses[path])
+
+
+class AirflowMonitoringTests(unittest.TestCase):
+    def test_load_status_calculates_progress_and_next_run(self):
+        responses = {
+            "/dags": {
+                "dags": [
+                    {
+                        "dag_id": "pipeline",
+                        "is_paused": False,
+                        "next_dagrun": "2026-06-15T10:30:00+00:00",
+                        "next_dagrun_create_after": "2026-06-15T10:30:00+00:00",
+                    }
+                ]
+            },
+            "/dags/pipeline/dagRuns": {
+                "dag_runs": [
+                    {
+                        "dag_run_id": "scheduled__run",
+                        "state": "running",
+                        "start_date": "2026-06-15T10:00:00+00:00",
+                    }
+                ]
+            },
+            "/dags/pipeline/dagRuns/scheduled__run/taskInstances": {
+                "total_entries": 4,
+                "task_instances": [
+                    {"state": "success"},
+                    {"state": "success"},
+                    {"state": "running"},
+                    {"state": None},
+                ],
+            },
+        }
+        client = MONITORING.AirflowClient(
+            config={
+                "base_url": "http://airflow",
+                "username": "admin",
+                "password": "admin",
+                "timeout": 10,
+            },
+            session=FakeSession(responses),
+        )
+
+        status = client.load_status(
+            now=datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc)
+        )
+
+        self.assertEqual(status["active_runs"][0]["progress"], 50)
+        self.assertEqual(status["active_runs"][0]["completed_tasks"], 2)
+        self.assertEqual(status["next_runs"][0]["countdown"], "30 min 0 s")
+
+    def test_format_duration(self):
+        self.assertEqual(MONITORING.format_duration(90), "1 min 30 s")
+        self.assertEqual(MONITORING.format_duration(3660), "1 h 1 min")
+        self.assertEqual(
+            MONITORING.format_countdown(-90),
+            "en attente depuis 1 min 30 s",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
