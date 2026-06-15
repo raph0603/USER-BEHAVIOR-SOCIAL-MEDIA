@@ -91,7 +91,21 @@ LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=30
 
 Both online DAGs use a shared pipeline lock. If their scheduled or manual runs
 overlap, the second run waits before cleanup and Spark processing instead of
-starting concurrent streams on the same checkpoints.
+starting concurrent streams on the same checkpoints. Lock operations use
+`flock`, and a waiting run checks the owner in the Airflow metadata database.
+Locks owned by terminal or missing DAG runs are reclaimed automatically after
+a short safety delay.
+
+The lock timing can be configured in `.env`:
+
+```env
+PIPELINE_LOCK_POLL_SECONDS=10
+PIPELINE_LOCK_MAX_WAIT_SECONDS=7200
+PIPELINE_LOCK_STALE_GRACE_SECONDS=30
+```
+
+If the Airflow metadata lookup fails, the lock is preserved and the waiting
+run retries later.
 
 The independent `iceberg_parquet_compaction` DAG compacts the Parquet files
 managed by the Bronze and Silver Iceberg tables. It runs every six hours by
@@ -182,6 +196,24 @@ docker compose run --rm youtube-collector
 
 The collector writes raw JSON under `API/yt_raw_json/` and emits YouTube
 events to Kafka using the same event schema as the other producers.
+
+### Engagement metadata
+
+Collector events carry a nullable engagement contract through the privacy
+cleaning topics, Iceberg Bronze and Iceberg Silver:
+
+- shared nullable fields: `like_count`, `comment_count`, `reply_count` and
+  `view_count`;
+- X-specific fields: `retweet_count` and `bookmark_count`;
+- Reddit-specific field: `score`;
+- YouTube videos populate likes, comments, replies found in fetched threads,
+  and views;
+- X posts populate likes, replies, views, retweets and bookmarks;
+- Reddit comments populate direct replies and their native score.
+
+Unsupported or unavailable metrics remain null, preserving the original
+platform semantics for downstream score calculation. Existing Bronze and
+Silver tables are evolved automatically when new columns are first used.
 
 ### Run X collection
 
