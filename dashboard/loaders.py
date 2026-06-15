@@ -7,6 +7,15 @@ import pandas as pd
 
 DEFAULT_TABLE_PATH = "s3://lakehouse/warehouse/silver/events"
 DEFAULT_MINIO_ENDPOINT = "http://localhost:9000"
+ENGAGEMENT_COLUMNS = (
+    "like_count",
+    "comment_count",
+    "reply_count",
+    "view_count",
+    "retweet_count",
+    "bookmark_count",
+    "score",
+)
 
 
 def _endpoint_settings(endpoint_url):
@@ -98,6 +107,13 @@ def load_iceberg_data(config=None):
                 event_ts,
                 source,
                 error,
+                like_count,
+                comment_count,
+                reply_count,
+                view_count,
+                retweet_count,
+                bookmark_count,
+                score,
                 event_date
             FROM iceberg_scan(?, allow_moved_paths = true)
             """,
@@ -128,6 +144,8 @@ def load_iceberg_data(config=None):
     df["author_hash"] = df["author_hash"].astype("string")
     df["error"] = df["error"].astype("string")
     df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce", utc=True)
+    for column in ENGAGEMENT_COLUMNS:
+        df[column] = pd.to_numeric(df[column], errors="coerce").astype("Int64")
     df["text_len_chars"] = df["text"].fillna("").str.len()
     df["text_len_words"] = df["text"].fillna("").str.split().str.len()
     df["has_question"] = df["text"].fillna("").str.contains(r"\?", regex=True)

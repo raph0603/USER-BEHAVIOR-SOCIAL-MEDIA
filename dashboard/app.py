@@ -2,7 +2,25 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from loaders import get_iceberg_config, load_iceberg_data
+from loaders import ENGAGEMENT_COLUMNS, get_iceberg_config, load_iceberg_data
+
+
+ENGAGEMENT_LABELS = {
+    "like_count": "Likes",
+    "view_count": "Vues",
+    "comment_count": "Commentaires",
+    "reply_count": "Réponses",
+    "retweet_count": "Retweets",
+    "bookmark_count": "Favoris",
+    "score": "Score Reddit",
+}
+
+
+def format_engagement_total(series):
+    values = series.dropna()
+    if values.empty:
+        return "N/A"
+    return f"{int(values.sum()):,}"
 
 
 st.set_page_config(
@@ -104,6 +122,70 @@ c3.metric("Identifiants uniques", f"{unique_identifiers:,}")
 c4.metric("Longueur moyenne", f"{avg_text_words:.1f} mots")
 c5.metric("Dates manquantes", f"{missing_timestamps_pct:.1f}%")
 c6.metric("Erreurs pipeline", f"{pipeline_error_pct:.1f}%")
+
+st.subheader("Métadonnées d'engagement")
+engagement_metrics = st.columns(len(ENGAGEMENT_LABELS))
+for metric, (column, label) in zip(
+    engagement_metrics,
+    ENGAGEMENT_LABELS.items(),
+):
+    metric.metric(label, format_engagement_total(df_filtered[column]))
+
+engagement_by_source = (
+    df_filtered.groupby("source")[list(ENGAGEMENT_COLUMNS)]
+    .sum(min_count=1)
+    .reset_index()
+    .rename(columns={"source": "Source", **ENGAGEMENT_LABELS})
+)
+st.dataframe(
+    engagement_by_source,
+    width="stretch",
+    hide_index=True,
+    column_config={
+        label: st.column_config.NumberColumn(label, format="%d")
+        for label in ENGAGEMENT_LABELS.values()
+    },
+)
+st.caption(
+    "Les valeurs N/A correspondent aux métriques non disponibles pour la "
+    "plateforme. Le score Reddit est conservé séparément des likes."
+)
+
+common_engagement_columns = [
+    "like_count",
+    "view_count",
+    "comment_count",
+    "reply_count",
+]
+engagement_chart_data = (
+    engagement_by_source.rename(
+        columns={
+            ENGAGEMENT_LABELS[column]: column
+            for column in common_engagement_columns
+        }
+    )
+    .melt(
+        id_vars="Source",
+        value_vars=common_engagement_columns,
+        var_name="metric",
+        value_name="value",
+    )
+    .dropna(subset=["value"])
+)
+engagement_chart_data["metric"] = engagement_chart_data["metric"].map(
+    ENGAGEMENT_LABELS
+)
+
+if not engagement_chart_data.empty:
+    fig_engagement = px.bar(
+        engagement_chart_data,
+        x="Source",
+        y="value",
+        color="metric",
+        barmode="group",
+        labels={"value": "Total", "metric": "Métrique"},
+    )
+    st.plotly_chart(fig_engagement, width="stretch")
 
 st.subheader("Événements par source")
 source_counts = (
@@ -229,7 +311,15 @@ recent_df["created_at"] = recent_df["created_at"].dt.strftime(
 recent_df["created_at"] = recent_df["created_at"].fillna("N/A")
 recent_df["error"] = recent_df["error"].fillna("")
 recent_df = recent_df[
-    ["source", "created_at", "author_hash", "text", "url", "error"]
+    [
+        "source",
+        "created_at",
+        "author_hash",
+        "text",
+        *ENGAGEMENT_COLUMNS,
+        "url",
+        "error",
+    ]
 ].head(100)
 
 st.dataframe(
@@ -241,12 +331,11 @@ st.dataframe(
         "created_at": "Timestamp",
         "author_hash": "Identifiant hash",
         "text": "Contenu nettoyé",
+        **{
+            column: st.column_config.NumberColumn(label, format="%d")
+            for column, label in ENGAGEMENT_LABELS.items()
+        },
         "url": st.column_config.LinkColumn("URL"),
         "error": "Erreur",
     },
-)
-
-st.caption(
-    "Les métriques d'engagement, de réponses et les indicateurs spécifiques "
-    "YouTube ne sont pas affichés car la table Silver ne stocke pas ces champs."
 )
