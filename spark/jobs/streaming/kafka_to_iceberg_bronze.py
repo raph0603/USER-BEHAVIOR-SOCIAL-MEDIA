@@ -4,7 +4,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, lit, to_timestamp
 from pyspark.sql.functions import struct, to_json
 from pyspark.storagelevel import StorageLevel
-from pyspark.sql.types import StringType, StructField, StructType
+from pyspark.sql.types import LongType, StringType, StructField, StructType
 
 
 def _env(name: str, default: str) -> str:
@@ -46,6 +46,13 @@ def _build_spark(app_name: str, warehouse: str) -> SparkSession:
     return spark
 
 
+def _ensure_columns(spark: SparkSession, table: str, columns: dict[str, str]) -> None:
+    current_columns = set(spark.table(table).columns)
+    for name, data_type in columns.items():
+        if name not in current_columns:
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN {name} {data_type}")
+
+
 def main() -> None:
     kafka_bootstrap = _env("KAFKA_BOOTSTRAP", "kafka:9092")
     kafka_topics = _env(
@@ -76,11 +83,31 @@ def main() -> None:
           timestamp STRING,
           source STRING,
           error STRING,
+          like_count BIGINT,
+          comment_count BIGINT,
+          reply_count BIGINT,
+          view_count BIGINT,
+          retweet_count BIGINT,
+          bookmark_count BIGINT,
+          score BIGINT,
           event_ts TIMESTAMP
         )
         USING iceberg
         PARTITIONED BY (days(event_ts))
         """
+    )
+    _ensure_columns(
+        spark,
+        "lakehouse.bronze.events",
+        {
+            "like_count": "BIGINT",
+            "comment_count": "BIGINT",
+            "reply_count": "BIGINT",
+            "view_count": "BIGINT",
+            "retweet_count": "BIGINT",
+            "bookmark_count": "BIGINT",
+            "score": "BIGINT",
+        },
     )
 
     starting_offsets = _env("KAFKA_STARTING_OFFSETS", "earliest")
@@ -104,6 +131,13 @@ def main() -> None:
                 StructField("timestamp", StringType()),
                 StructField("source", StringType()),
                 StructField("error", StringType()),
+                StructField("like_count", LongType()),
+                StructField("comment_count", LongType()),
+                StructField("reply_count", LongType()),
+                StructField("view_count", LongType()),
+                StructField("retweet_count", LongType()),
+                StructField("bookmark_count", LongType()),
+                StructField("score", LongType()),
                 StructField("stage", StringType()),
             ]
         )
@@ -121,6 +155,13 @@ def main() -> None:
         "timestamp",
         "source",
         "error",
+        "like_count",
+        "comment_count",
+        "reply_count",
+        "view_count",
+        "retweet_count",
+        "bookmark_count",
+        "score",
     ).withColumn("event_ts", to_timestamp(col("timestamp")))
     # Trigger configuration for Bronze micro-batches.
     bronze_trigger = _env("BRONZE_TRIGGER", "10 seconds")
@@ -133,6 +174,13 @@ def main() -> None:
         "timestamp",
         "source",
         "error",
+        "like_count",
+        "comment_count",
+        "reply_count",
+        "view_count",
+        "retweet_count",
+        "bookmark_count",
+        "score",
         "event_ts",
     ]
 
@@ -160,7 +208,20 @@ def main() -> None:
                   t.title = s.title,
                   t.timestamp = s.timestamp,
                   t.source = s.source,
-                  t.error = s.error
+                  t.error = s.error,
+                  t.like_count = COALESCE(s.like_count, t.like_count),
+                  t.comment_count = COALESCE(s.comment_count, t.comment_count),
+                  t.reply_count = COALESCE(s.reply_count, t.reply_count),
+                  t.view_count = COALESCE(s.view_count, t.view_count),
+                  t.retweet_count = COALESCE(
+                    s.retweet_count,
+                    t.retweet_count
+                  ),
+                  t.bookmark_count = COALESCE(
+                    s.bookmark_count,
+                    t.bookmark_count
+                  ),
+                  t.score = COALESCE(s.score, t.score)
                 WHEN NOT MATCHED THEN
                   INSERT ({cols})
                   VALUES ({', '.join([f's.{name}' for name in bronze_columns])})
@@ -193,7 +254,9 @@ def main() -> None:
         f"{checkpoint_version}/{checkpoint_key}"
     )
 
-    kafka_payload = enriched.select(to_json(struct("user_id", "url", "title", "timestamp", "source", "error", "event_ts")).alias("value"))
+    kafka_payload = enriched.select(
+        to_json(struct(*bronze_columns)).alias("value")
+    )
 
     kafka_writer = (
         kafka_payload.writeStream.format("kafka")

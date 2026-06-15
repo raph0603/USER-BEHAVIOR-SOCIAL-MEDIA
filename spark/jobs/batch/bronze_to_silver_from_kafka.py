@@ -4,7 +4,13 @@ import re
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import coalesce, col, from_json, to_date, to_timestamp
 from pyspark.storagelevel import StorageLevel
-from pyspark.sql.types import StructType, StructField, StringType, TimestampType
+from pyspark.sql.types import (
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
 
 
 def _env(name: str, default: str) -> str:
@@ -46,6 +52,13 @@ def _build_spark(app_name: str, warehouse: str) -> SparkSession:
     return spark
 
 
+def _ensure_columns(spark: SparkSession, table: str, columns: dict[str, str]) -> None:
+    current_columns = set(spark.table(table).columns)
+    for name, data_type in columns.items():
+        if name not in current_columns:
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN {name} {data_type}")
+
+
 def main() -> None:
     kafka_bootstrap = _env("KAFKA_BOOTSTRAP", "kafka:9092")
     kafka_topics = _env(
@@ -70,6 +83,13 @@ def main() -> None:
         "event_ts",
         "source",
         "error",
+        "like_count",
+        "comment_count",
+        "reply_count",
+        "view_count",
+        "retweet_count",
+        "bookmark_count",
+        "score",
         "event_date",
     ]
 
@@ -83,11 +103,31 @@ def main() -> None:
           event_ts TIMESTAMP,
           source STRING,
           error STRING,
+          like_count BIGINT,
+          comment_count BIGINT,
+          reply_count BIGINT,
+          view_count BIGINT,
+          retweet_count BIGINT,
+          bookmark_count BIGINT,
+          score BIGINT,
           event_date DATE
         )
         USING iceberg
         PARTITIONED BY (event_date)
         """
+    )
+    _ensure_columns(
+        spark,
+        silver_table,
+        {
+            "like_count": "BIGINT",
+            "comment_count": "BIGINT",
+            "reply_count": "BIGINT",
+            "view_count": "BIGINT",
+            "retweet_count": "BIGINT",
+            "bookmark_count": "BIGINT",
+            "score": "BIGINT",
+        },
     )
 
     # define schema for the JSON payload produced by Bronze
@@ -99,6 +139,13 @@ def main() -> None:
             StructField("timestamp", StringType()),
             StructField("source", StringType()),
             StructField("error", StringType()),
+            StructField("like_count", LongType()),
+            StructField("comment_count", LongType()),
+            StructField("reply_count", LongType()),
+            StructField("view_count", LongType()),
+            StructField("retweet_count", LongType()),
+            StructField("bookmark_count", LongType()),
+            StructField("score", LongType()),
             StructField("event_ts", TimestampType()),
         ]
     )
@@ -146,7 +193,17 @@ def main() -> None:
             WHEN MATCHED THEN UPDATE SET
               t.title = s.title,
               t.source = s.source,
-              t.error = s.error
+              t.error = s.error,
+              t.like_count = COALESCE(s.like_count, t.like_count),
+              t.comment_count = COALESCE(s.comment_count, t.comment_count),
+              t.reply_count = COALESCE(s.reply_count, t.reply_count),
+              t.view_count = COALESCE(s.view_count, t.view_count),
+              t.retweet_count = COALESCE(s.retweet_count, t.retweet_count),
+              t.bookmark_count = COALESCE(
+                s.bookmark_count,
+                t.bookmark_count
+              ),
+              t.score = COALESCE(s.score, t.score)
             WHEN NOT MATCHED THEN
               INSERT ({cols}) VALUES ({', '.join([f's.{c}' for c in silver_columns])})
             """

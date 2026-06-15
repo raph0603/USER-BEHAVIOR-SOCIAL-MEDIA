@@ -35,6 +35,13 @@ def _build_spark(app_name: str, warehouse: str) -> SparkSession:
     return spark
 
 
+def _ensure_columns(spark: SparkSession, table: str, columns: dict[str, str]) -> None:
+    current_columns = set(spark.table(table).columns)
+    for name, data_type in columns.items():
+        if name not in current_columns:
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN {name} {data_type}")
+
+
 def main() -> None:
     bucket = _env("MINIO_BUCKET", "lakehouse")
 
@@ -78,6 +85,13 @@ def main() -> None:
         "event_ts",
         "source",
         "error",
+        "like_count",
+        "comment_count",
+        "reply_count",
+        "view_count",
+        "retweet_count",
+        "bookmark_count",
+        "score",
         "event_date",
     ]
 
@@ -91,11 +105,31 @@ def main() -> None:
           event_ts TIMESTAMP,
           source STRING,
           error STRING,
+          like_count BIGINT,
+          comment_count BIGINT,
+          reply_count BIGINT,
+          view_count BIGINT,
+          retweet_count BIGINT,
+          bookmark_count BIGINT,
+          score BIGINT,
           event_date DATE
         )
         USING iceberg
         PARTITIONED BY (event_date)
         """
+    )
+    _ensure_columns(
+        spark,
+        silver_table,
+        {
+            "like_count": "BIGINT",
+            "comment_count": "BIGINT",
+            "reply_count": "BIGINT",
+            "view_count": "BIGINT",
+            "retweet_count": "BIGINT",
+            "bookmark_count": "BIGINT",
+            "score": "BIGINT",
+        },
     )
 
     current_columns = set(spark.table(silver_table).columns)
@@ -143,6 +177,17 @@ def main() -> None:
            AND t.user_id = s.user_id
            AND t.url = s.url
            AND t.event_ts = s.event_ts
+        WHEN MATCHED THEN UPDATE SET
+          t.title = s.title,
+          t.source = s.source,
+          t.error = s.error,
+          t.like_count = COALESCE(s.like_count, t.like_count),
+          t.comment_count = COALESCE(s.comment_count, t.comment_count),
+          t.reply_count = COALESCE(s.reply_count, t.reply_count),
+          t.view_count = COALESCE(s.view_count, t.view_count),
+          t.retweet_count = COALESCE(s.retweet_count, t.retweet_count),
+          t.bookmark_count = COALESCE(s.bookmark_count, t.bookmark_count),
+          t.score = COALESCE(s.score, t.score)
         WHEN NOT MATCHED THEN
           INSERT ({cols}) VALUES ({', '.join([f's.{c}' for c in silver_columns])})
         """

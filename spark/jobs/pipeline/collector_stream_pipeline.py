@@ -17,7 +17,7 @@ from pyspark.sql.functions import (
     to_json,
     when,
 )
-from pyspark.sql.types import StringType, StructField, StructType
+from pyspark.sql.types import LongType, StringType, StructField, StructType
 
 from cleaning import clean_text, invalid_reason
 
@@ -118,6 +118,13 @@ def main() -> None:
                 StructField("timestamp", StringType()),
                 StructField("source", StringType()),
                 StructField("error", StringType()),
+                StructField("like_count", LongType()),
+                StructField("comment_count", LongType()),
+                StructField("reply_count", LongType()),
+                StructField("view_count", LongType()),
+                StructField("retweet_count", LongType()),
+                StructField("bookmark_count", LongType()),
+                StructField("score", LongType()),
             ]
         )
         decoded = metadata.select(
@@ -167,6 +174,13 @@ def main() -> None:
                 "timestamp",
                 "source",
                 "error",
+                "like_count",
+                "comment_count",
+                "reply_count",
+                "view_count",
+                "retweet_count",
+                "bookmark_count",
+                "score",
                 lit("clean").alias("stage"),
             )
         ).alias("value"),
@@ -182,6 +196,13 @@ def main() -> None:
                 "timestamp",
                 "source",
                 "error",
+                "like_count",
+                "comment_count",
+                "reply_count",
+                "view_count",
+                "retweet_count",
+                "bookmark_count",
+                "score",
                 "_kafka_topic",
                 "_kafka_partition",
                 "_kafka_offset",

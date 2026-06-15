@@ -8,6 +8,13 @@
     { "name": "title", "type": ["null", "string"], "default": null },
     { "name": "timestamp", "type": "string" },
     { "name": "source", "type": "string" },
-    { "name": "error", "type": ["null", "string"], "default": null }
+    { "name": "error", "type": ["null", "string"], "default": null },
+    { "name": "like_count", "type": ["null", "long"], "default": null },
+    { "name": "comment_count", "type": ["null", "long"], "default": null },
+    { "name": "reply_count", "type": ["null", "long"], "default": null },
+    { "name": "view_count", "type": ["null", "long"], "default": null },
+    { "name": "retweet_count", "type": ["null", "long"], "default": null },
+    { "name": "bookmark_count", "type": ["null", "long"], "default": null },
+    { "name": "score", "type": ["null", "long"], "default": null }
   ]
 }

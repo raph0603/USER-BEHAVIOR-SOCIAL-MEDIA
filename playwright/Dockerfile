@@ -6,5 +6,6 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY producer.py /app/producer.py
+COPY engagement.py /app/engagement.py
 
 CMD ["python", "/app/producer.py"]
