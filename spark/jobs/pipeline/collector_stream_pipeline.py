@@ -135,12 +135,7 @@ def main() -> None:
                     ArrayType(StringType()),
                 ),
                 StructField("like_count", LongType()),
-                StructField("comment_count", LongType()),
-                StructField("reply_count", LongType()),
                 StructField("view_count", LongType()),
-                StructField("retweet_count", LongType()),
-                StructField("bookmark_count", LongType()),
-                StructField("score", LongType()),
             ]
         )
         decoded = metadata.select(
@@ -194,12 +189,7 @@ def main() -> None:
                 "owner_channel_id",
                 "collaborator_channel_ids",
                 "like_count",
-                "comment_count",
-                "reply_count",
                 "view_count",
-                "retweet_count",
-                "bookmark_count",
-                "score",
                 lit("clean").alias("stage"),
             )
         ).alias("value"),
@@ -219,12 +209,7 @@ def main() -> None:
                 "owner_channel_id",
                 "collaborator_channel_ids",
                 "like_count",
-                "comment_count",
-                "reply_count",
                 "view_count",
-                "retweet_count",
-                "bookmark_count",
-                "score",
                 "_kafka_topic",
                 "_kafka_partition",
                 "_kafka_offset",
