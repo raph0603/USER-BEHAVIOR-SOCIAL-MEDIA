@@ -94,12 +94,7 @@ def main() -> None:
           owner_channel_id STRING,
           collaborator_channel_ids ARRAY<STRING>,
           like_count BIGINT,
-          comment_count BIGINT,
-          reply_count BIGINT,
           view_count BIGINT,
-          retweet_count BIGINT,
-          bookmark_count BIGINT,
-          score BIGINT,
           event_ts TIMESTAMP
         )
         USING iceberg
@@ -115,12 +110,7 @@ def main() -> None:
             "metadata_refreshed_at": "TIMESTAMP",
             "collaborator_channel_ids": "ARRAY<STRING>",
             "like_count": "BIGINT",
-            "comment_count": "BIGINT",
-            "reply_count": "BIGINT",
             "view_count": "BIGINT",
-            "retweet_count": "BIGINT",
-            "bookmark_count": "BIGINT",
-            "score": "BIGINT",
         },
     )
 
@@ -152,12 +142,7 @@ def main() -> None:
                     ArrayType(StringType()),
                 ),
                 StructField("like_count", LongType()),
-                StructField("comment_count", LongType()),
-                StructField("reply_count", LongType()),
                 StructField("view_count", LongType()),
-                StructField("retweet_count", LongType()),
-                StructField("bookmark_count", LongType()),
-                StructField("score", LongType()),
                 StructField("stage", StringType()),
             ]
         )
@@ -183,14 +168,8 @@ def main() -> None:
         "owner_channel_id",
         "collaborator_channel_ids",
         "like_count",
-        "comment_count",
-        "reply_count",
         "view_count",
-        "retweet_count",
-        "bookmark_count",
-        "score",
     ).withColumn("event_ts", to_timestamp(col("timestamp")))
-    # Trigger configuration for Bronze micro-batches.
     bronze_trigger = _env("BRONZE_TRIGGER", "10 seconds")
     trigger_mode = _env("BRONZE_TRIGGER_MODE", "processing_time").lower()
 
@@ -206,12 +185,7 @@ def main() -> None:
         "owner_channel_id",
         "collaborator_channel_ids",
         "like_count",
-        "comment_count",
-        "reply_count",
         "view_count",
-        "retweet_count",
-        "bookmark_count",
-        "score",
         "event_ts",
     ]
 
@@ -269,18 +243,7 @@ def main() -> None:
                     t.collaborator_channel_ids
                   ),
                   t.like_count = COALESCE(s.like_count, t.like_count),
-                  t.comment_count = COALESCE(s.comment_count, t.comment_count),
-                  t.reply_count = COALESCE(s.reply_count, t.reply_count),
-                  t.view_count = COALESCE(s.view_count, t.view_count),
-                  t.retweet_count = COALESCE(
-                    s.retweet_count,
-                    t.retweet_count
-                  ),
-                  t.bookmark_count = COALESCE(
-                    s.bookmark_count,
-                    t.bookmark_count
-                  ),
-                  t.score = COALESCE(s.score, t.score)
+                  t.view_count = COALESCE(s.view_count, t.view_count)
                 WHEN NOT MATCHED THEN
                   INSERT ({cols})
                   VALUES ({', '.join([f's.{name}' for name in bronze_columns])})
@@ -293,7 +256,6 @@ def main() -> None:
         finally:
             cached.unpersist()
 
-    # Only validated, anonymized events can reach the Bronze table.
     iceberg_writer = (
         enriched.writeStream
         .outputMode("append")
@@ -306,7 +268,6 @@ def main() -> None:
         bronze_trigger,
     ).start()
 
-    # Optionally publish a sanitized JSON representation to a Kafka topic for downstream jobs
     kafka_out_topic = _env("BRONZE_KAFKA_OUT_TOPIC", "lakehouse.bronze.for_silver")
     kafka_out_checkpoint = (
         f"s3a://{bucket}/checkpoints/bronze/to_kafka/"
