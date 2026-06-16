@@ -363,6 +363,7 @@ with DAG(
 
     start_bronze_stream = BashOperator(
         task_id="merge_clean_events_to_bronze",
+        trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
         bash_command=r"""
         set -euo pipefail
         docker exec \
@@ -426,6 +427,23 @@ with DAG(
           echo "X collection disabled; set X_COLLECTION_ENABLED=true to enable it"
           exit 0
         fi
+        if [[ -z "${X_CDP_URL:-}" ]]; then
+          CDP_PORT_FILE="/workspace/data/x-runtime/cdp-port.txt"
+          CDP_HOST="${X_CDP_HOST:-host.docker.internal}"
+          if [[ ! -s "$CDP_PORT_FILE" ]]; then
+            echo "X CDP port file missing; skipping X collection"
+            exit 99
+          fi
+          CDP_PORT="$(tr -dc '0-9' < "$CDP_PORT_FILE")"
+          if [[ -z "$CDP_PORT" ]]; then
+            echo "X CDP port file is invalid; skipping X collection"
+            exit 99
+          fi
+          if ! timeout 3 bash -lc ":</dev/tcp/${CDP_HOST}/${CDP_PORT}" 2>/dev/null; then
+            echo "X CDP endpoint ${CDP_HOST}:${CDP_PORT} is unavailable; skipping X collection"
+            exit 99
+          fi
+        fi
         """ + docker_compose(
             "run --rm "
             "-e PRODUCER_MAX_EVENTS={{ params.x_event_count }} "
@@ -434,6 +452,7 @@ with DAG(
             "-e X_HEADLESS={{ params.x_headless | lower }} "
             "x-collector"
         ),
+        skip_on_exit_code=99,
     )
 
     run_reddit_collection = BashOperator(

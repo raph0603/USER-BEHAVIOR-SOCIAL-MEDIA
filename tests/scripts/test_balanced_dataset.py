@@ -80,6 +80,23 @@ class BalancedDatasetTests(unittest.TestCase):
                 self.assertIn("build_balanced_dataset.py", source)
                 self.assertIn("update_balancing_report >> stop_realtime_streams", source)
 
+    def test_crawl_dags_do_not_block_on_unavailable_x_cdp(self):
+        for dag_name in (
+            "user_behavior_lakehouse.py",
+            "user_behavior_lakehouse_no_row_checks.py",
+        ):
+            source = (
+                ROOT / "orchestrator" / "dags" / dag_name
+            ).read_text(encoding="utf-8")
+            with self.subTest(dag=dag_name):
+                self.assertIn("CDP_PORT_FILE", source)
+                self.assertIn("skipping X collection", source)
+                self.assertIn("skip_on_exit_code=99", source)
+                self.assertIn(
+                    "trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS",
+                    source,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
