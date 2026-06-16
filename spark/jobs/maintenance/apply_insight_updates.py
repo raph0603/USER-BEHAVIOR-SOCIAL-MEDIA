@@ -3,7 +3,13 @@ import os
 from pathlib import Path
 
 from pyspark.sql import SparkSession
-from pyspark.sql.types import LongType, StringType, StructField, StructType
+from pyspark.sql.types import (
+    ArrayType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+)
 
 
 METRIC_COLUMNS = (
@@ -14,6 +20,10 @@ METRIC_COLUMNS = (
     "retweet_count",
     "bookmark_count",
     "score",
+)
+AUTHOR_COLUMNS = (
+    "owner_channel_id",
+    "collaborator_channel_ids",
 )
 
 
@@ -75,7 +85,7 @@ def _load_updates(path: Path) -> list[dict]:
 def _merge_updates(spark: SparkSession, table: str) -> None:
     assignments = ",\n".join(
         f"t.{column} = COALESCE(s.{column}, t.{column})"
-        for column in METRIC_COLUMNS
+        for column in (*AUTHOR_COLUMNS, *METRIC_COLUMNS)
     )
     spark.sql(
         f"""
@@ -114,6 +124,12 @@ def main() -> None:
             StructField("url", StringType(), False),
             StructField("event_ts", StringType(), False),
             StructField("source", StringType(), False),
+            StructField("owner_channel_id", StringType(), True),
+            StructField(
+                "collaborator_channel_ids",
+                ArrayType(StringType()),
+                True,
+            ),
             *[
                 StructField(column, LongType(), True)
                 for column in METRIC_COLUMNS
@@ -127,6 +143,16 @@ def main() -> None:
     ).createOrReplaceTempView("insight_updates")
 
     for table in ("lakehouse.bronze.events", "lakehouse.silver.events"):
+        current_columns = set(spark.table(table).columns)
+        if "owner_channel_id" not in current_columns:
+            spark.sql(
+                f"ALTER TABLE {table} ADD COLUMN owner_channel_id STRING"
+            )
+        if "collaborator_channel_ids" not in current_columns:
+            spark.sql(
+                f"ALTER TABLE {table} ADD COLUMN "
+                "collaborator_channel_ids ARRAY<STRING>"
+            )
         _merge_updates(spark, table)
 
     print(f"Applied {len(updates)} insight updates to Bronze and Silver")

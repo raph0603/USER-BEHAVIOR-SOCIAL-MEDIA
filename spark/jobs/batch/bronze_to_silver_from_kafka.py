@@ -5,6 +5,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import coalesce, col, from_json, to_date, to_timestamp
 from pyspark.storagelevel import StorageLevel
 from pyspark.sql.types import (
+    ArrayType,
     LongType,
     StringType,
     StructField,
@@ -83,6 +84,8 @@ def main() -> None:
         "event_ts",
         "source",
         "error",
+        "owner_channel_id",
+        "collaborator_channel_ids",
         "like_count",
         "comment_count",
         "reply_count",
@@ -103,6 +106,8 @@ def main() -> None:
           event_ts TIMESTAMP,
           source STRING,
           error STRING,
+          owner_channel_id STRING,
+          collaborator_channel_ids ARRAY<STRING>,
           like_count BIGINT,
           comment_count BIGINT,
           reply_count BIGINT,
@@ -120,6 +125,8 @@ def main() -> None:
         spark,
         silver_table,
         {
+            "owner_channel_id": "STRING",
+            "collaborator_channel_ids": "ARRAY<STRING>",
             "like_count": "BIGINT",
             "comment_count": "BIGINT",
             "reply_count": "BIGINT",
@@ -139,6 +146,11 @@ def main() -> None:
             StructField("timestamp", StringType()),
             StructField("source", StringType()),
             StructField("error", StringType()),
+            StructField("owner_channel_id", StringType()),
+            StructField(
+                "collaborator_channel_ids",
+                ArrayType(StringType()),
+            ),
             StructField("like_count", LongType()),
             StructField("comment_count", LongType()),
             StructField("reply_count", LongType()),
@@ -194,6 +206,14 @@ def main() -> None:
               t.title = s.title,
               t.source = s.source,
               t.error = s.error,
+              t.owner_channel_id = COALESCE(
+                s.owner_channel_id,
+                t.owner_channel_id
+              ),
+              t.collaborator_channel_ids = COALESCE(
+                s.collaborator_channel_ids,
+                t.collaborator_channel_ids
+              ),
               t.like_count = COALESCE(s.like_count, t.like_count),
               t.comment_count = COALESCE(s.comment_count, t.comment_count),
               t.reply_count = COALESCE(s.reply_count, t.reply_count),

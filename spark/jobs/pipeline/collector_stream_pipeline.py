@@ -17,7 +17,13 @@ from pyspark.sql.functions import (
     to_json,
     when,
 )
-from pyspark.sql.types import LongType, StringType, StructField, StructType
+from pyspark.sql.types import (
+    ArrayType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+)
 
 from cleaning import clean_text, invalid_reason
 
@@ -118,6 +124,11 @@ def main() -> None:
                 StructField("timestamp", StringType()),
                 StructField("source", StringType()),
                 StructField("error", StringType()),
+                StructField("owner_channel_id", StringType()),
+                StructField(
+                    "collaborator_channel_ids",
+                    ArrayType(StringType()),
+                ),
                 StructField("like_count", LongType()),
                 StructField("comment_count", LongType()),
                 StructField("reply_count", LongType()),
@@ -174,6 +185,8 @@ def main() -> None:
                 "timestamp",
                 "source",
                 "error",
+                "owner_channel_id",
+                "collaborator_channel_ids",
                 "like_count",
                 "comment_count",
                 "reply_count",
@@ -196,6 +209,8 @@ def main() -> None:
                 "timestamp",
                 "source",
                 "error",
+                "owner_channel_id",
+                "collaborator_channel_ids",
                 "like_count",
                 "comment_count",
                 "reply_count",

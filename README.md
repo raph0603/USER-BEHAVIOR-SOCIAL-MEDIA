@@ -260,6 +260,27 @@ Unsupported or unavailable metrics remain null, preserving the original
 platform semantics for downstream score calculation. Existing Bronze and
 Silver tables are evolved automatically when new columns are first used.
 
+### YouTube owners and collaborators
+
+YouTube events store the publishing channel in `owner_channel_id` and accepted
+creator collaborators in `collaborator_channel_ids`. The owner comes from the
+stable `snippet.channelId` returned by the YouTube Data API. Collaborators are
+read from the canonical public watch page because the Data API does not expose
+the accepted collaborator list.
+
+A confirmed video without collaborators stores an empty list. If the watch
+page is unavailable, private, deleted, blocked by a consent or anti-bot page,
+or its undocumented structure changes, the collaborator value remains null.
+Bronze, Silver and the insight refresh job use `COALESCE`, so such failures do
+not replace previously collected owner or collaborator metadata. The refresh
+DAG retries this enrichment for recent YouTube events.
+
+`YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS` controls the public page request timeout
+and defaults to 20 seconds. `YOUTUBE_AUTHOR_FETCH_WORKERS` limits concurrent
+watch-page requests and defaults to 8. Because collaborator extraction depends
+on undocumented page data, it should be monitored when YouTube changes its
+watch page.
+
 ### Run X collection
 
 X is collected directly from the live website with Playwright. The collector

@@ -23,6 +23,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from engagement import extract_x_metric, parse_count
+from youtube_authors import fetch_youtube_collaborators
 
 
 DEFAULT_X_QUERIES = [
@@ -1032,6 +1033,10 @@ def main() -> None:
                     or datetime.now(timezone.utc).isoformat(),
                     "source": event["source"],
                     "error": None,
+                    "owner_channel_id": event.get("owner_channel_id"),
+                    "collaborator_channel_ids": event.get(
+                        "collaborator_channel_ids"
+                    ),
                     "like_count": event.get("like_count"),
                     "comment_count": event.get("comment_count"),
                     "reply_count": event.get("reply_count"),
@@ -1090,10 +1095,43 @@ def main() -> None:
             output_dir = Path(
                 _env_str("YOUTUBE_OUTPUT_DIR", "/app/api/yt_raw_json")
             )
-            for video_id in video_ids:
-                if state.contains("youtube", video_id):
-                    continue
-                metadata = _fetch_video_metadata(youtube, video_id)
+            candidate_ids = [
+                video_id
+                for video_id in video_ids
+                if not state.contains("youtube", video_id)
+            ]
+            if max_events > 0:
+                candidate_ids = candidate_ids[:max_events]
+            metadata_by_id = {
+                video_id: _fetch_video_metadata(youtube, video_id)
+                for video_id in candidate_ids
+            }
+            owner_by_id = {
+                video_id: owner_channel_id
+                for video_id, metadata in metadata_by_id.items()
+                if (
+                    owner_channel_id := (
+                        (metadata or {})
+                        .get("snippet", {})
+                        .get("channelId")
+                    )
+                )
+            }
+            collaborators_by_id = fetch_youtube_collaborators(
+                owner_by_id,
+                timeout_seconds=_env_float(
+                    "YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS",
+                    20,
+                ),
+                max_workers=_env_int(
+                    "YOUTUBE_AUTHOR_FETCH_WORKERS",
+                    8,
+                ),
+            )
+            for video_id in candidate_ids:
+                metadata = metadata_by_id[video_id]
+                owner_channel_id = owner_by_id.get(video_id)
+                collaborator_channel_ids = collaborators_by_id.get(video_id)
                 comments = _fetch_youtube_comments(
                     youtube,
                     video_id,
@@ -1105,6 +1143,10 @@ def main() -> None:
                         {
                             "video_id": video_id,
                             "video_metadata": metadata,
+                            "owner_channel_id": owner_channel_id,
+                            "collaborator_channel_ids": (
+                                collaborator_channel_ids
+                            ),
                             "comment_threads_pages": comments,
                         },
                         ensure_ascii=False,
@@ -1120,6 +1162,10 @@ def main() -> None:
                         "title": (metadata or {}).get("snippet", {}).get("title"),
                         "timestamp": None,
                         "source": "youtube",
+                        "owner_channel_id": owner_channel_id,
+                        "collaborator_channel_ids": (
+                            collaborator_channel_ids
+                        ),
                         "like_count": parse_count(
                             (metadata or {}).get("statistics", {}).get("likeCount")
                         ),
@@ -1137,8 +1183,6 @@ def main() -> None:
                         "score": None,
                     }
                 )
-                if max_events > 0 and len(events) >= max_events:
-                    break
         elif mode == "x":
             events = _collect_x_events(state, max_events)
         else:

@@ -9,6 +9,12 @@
     { "name": "timestamp", "type": "string" },
     { "name": "source", "type": "string" },
     { "name": "error", "type": ["null", "string"], "default": null },
+    { "name": "owner_channel_id", "type": ["null", "string"], "default": null },
+    {
+      "name": "collaborator_channel_ids",
+      "type": ["null", { "type": "array", "items": "string" }],
+      "default": null
+    },
     { "name": "like_count", "type": ["null", "long"], "default": null },
     { "name": "comment_count", "type": ["null", "long"], "default": null },
     { "name": "reply_count", "type": ["null", "long"], "default": null },
