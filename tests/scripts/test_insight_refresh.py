@@ -87,6 +87,40 @@ class InsightRefreshTests(unittest.TestCase):
         ]
         self.assertNotIn("browser.close()", refresh_x)
 
+    def test_x_refresh_skips_unavailable_cdp_without_failing_dag(self):
+        source = (
+            ROOT / "playwright" / "insight_refresh.py"
+        ).read_text(encoding="utf-8")
+
+        refresh_x = source[
+            source.index("def _refresh_x") : source.index(
+                "def _reddit_comment_id"
+            )
+        ]
+        self.assertIn("Skipping X insight refresh", refresh_x)
+        self.assertIn('SKIPPED_REFRESH_SOURCES.add("x")', refresh_x)
+        self.assertIn("requests.RequestException", refresh_x)
+        self.assertIn("return []", refresh_x)
+
+        self.assertIn(
+            "source not in SKIPPED_REFRESH_SOURCES",
+            source,
+        )
+
+    def test_reddit_refresh_uses_json_endpoint_without_browser_timeouts(self):
+        source = (
+            ROOT / "playwright" / "insight_refresh.py"
+        ).read_text(encoding="utf-8")
+
+        refresh_reddit = source[
+            source.index("def _refresh_reddit") : source.index("def main")
+        ]
+        self.assertIn("_reddit_comment_json_url", refresh_reddit)
+        self.assertIn("requests.get", refresh_reddit)
+        self.assertIn('SKIPPED_REFRESH_SOURCES.add("reddit")', refresh_reddit)
+        self.assertNotIn("sync_playwright", refresh_reddit)
+        self.assertNotIn("wait_for(state=\"attached\"", refresh_reddit)
+
 
 if __name__ == "__main__":
     unittest.main()

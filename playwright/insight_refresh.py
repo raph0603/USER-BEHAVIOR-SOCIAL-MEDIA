@@ -12,6 +12,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from engagement import extract_x_metric, parse_count
+from youtube_authors import fetch_youtube_collaborators
 
 
 METRIC_COLUMNS = (
@@ -23,6 +24,7 @@ METRIC_COLUMNS = (
     "bookmark_count",
     "score",
 )
+SKIPPED_REFRESH_SOURCES = set()
 
 
 def _env(name: str, default: str = "") -> str:
@@ -52,6 +54,8 @@ def _base_update(target: dict) -> dict:
         "source": target["source"],
     }
     update.update({column: None for column in METRIC_COLUMNS})
+    update["owner_channel_id"] = None
+    update["collaborator_channel_ids"] = None
     return update
 
 
@@ -79,17 +83,41 @@ def _refresh_youtube(targets: list[dict]) -> list[dict]:
         batch_ids = video_ids[start : start + 50]
         response = (
             youtube.videos()
-            .list(part="statistics", id=",".join(batch_ids))
+            .list(part="snippet,statistics", id=",".join(batch_ids))
             .execute()
         )
-        for item in response.get("items", []):
+        items = response.get("items", [])
+        owner_by_id = {
+            item["id"]: owner_channel_id
+            for item in items
+            if (
+                owner_channel_id := (
+                    item.get("snippet", {}).get("channelId")
+                )
+            )
+        }
+        collaborators_by_id = fetch_youtube_collaborators(
+            owner_by_id,
+            timeout_seconds=float(
+                _env("YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS", "20")
+            ),
+            max_workers=int(
+                _env("YOUTUBE_AUTHOR_FETCH_WORKERS", "8")
+            ),
+        )
+        for item in items:
             target = targets_by_id.get(item.get("id"))
             if not target:
                 continue
             statistics = item.get("statistics", {})
+            owner_channel_id = item.get("snippet", {}).get("channelId")
             update = _base_update(target)
             update.update(
                 {
+                    "owner_channel_id": owner_channel_id,
+                    "collaborator_channel_ids": collaborators_by_id.get(
+                        item["id"]
+                    ),
                     "like_count": parse_count(statistics.get("likeCount")),
                     "comment_count": parse_count(
                         statistics.get("commentCount")
@@ -135,22 +163,38 @@ def _x_cdp_url() -> str:
 
 
 def _refresh_x(targets: list[dict]) -> list[dict]:
-    cdp_url = _x_cdp_url()
+    try:
+        cdp_url = _x_cdp_url()
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        print(f"Skipping X insight refresh: CDP endpoint unavailable: {exc}")
+        SKIPPED_REFRESH_SOURCES.add("x")
+        return []
+
     if cdp_url.startswith(("http://", "https://")):
-        response = requests.get(
-            f"{cdp_url.rstrip('/')}/__x_cdp__/ensure",
-            params={"headless": _env("X_HEADLESS", "true")},
-            timeout=int(_env("X_CDP_WAIT_SECONDS", "90")),
-        )
-        if response.status_code not in {200, 404}:
-            response.raise_for_status()
+        try:
+            response = requests.get(
+                f"{cdp_url.rstrip('/')}/__x_cdp__/ensure",
+                params={"headless": _env("X_HEADLESS", "true")},
+                timeout=int(_env("X_CDP_WAIT_SECONDS", "90")),
+            )
+            if response.status_code not in {200, 404}:
+                response.raise_for_status()
+        except requests.RequestException as exc:
+            print(f"Skipping X insight refresh: CDP proxy unavailable: {exc}")
+            SKIPPED_REFRESH_SOURCES.add("x")
+            return []
 
     updates = []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.connect_over_cdp(
-            _resolve_cdp_url(cdp_url),
-            timeout=30000,
-        )
+        try:
+            browser = playwright.chromium.connect_over_cdp(
+                _resolve_cdp_url(cdp_url),
+                timeout=30000,
+            )
+        except (OSError, requests.RequestException, PlaywrightError) as exc:
+            print(f"Skipping X insight refresh: browser CDP unavailable: {exc}")
+            SKIPPED_REFRESH_SOURCES.add("x")
+            return []
         context = (
             browser.contexts[0]
             if browser.contexts
@@ -208,71 +252,83 @@ def _reddit_comment_id(url: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _reddit_comment_json_url(url: str) -> str:
+    return f"{url.rstrip('/')}.json"
+
+
+def _find_reddit_comment(node, comment_id: str) -> dict | None:
+    if isinstance(node, list):
+        for item in node:
+            found = _find_reddit_comment(item, comment_id)
+            if found:
+                return found
+        return None
+
+    if not isinstance(node, dict):
+        return None
+
+    data = node.get("data", {})
+    if node.get("kind") == "t1" and data.get("id") == comment_id:
+        return data
+
+    return _find_reddit_comment(data.get("children", []), comment_id)
+
+
+def _reddit_direct_reply_count(comment: dict) -> int | None:
+    replies = comment.get("replies")
+    if not isinstance(replies, dict):
+        return 0 if replies == "" else None
+    return sum(
+        1
+        for child in replies.get("data", {}).get("children", [])
+        if child.get("kind") == "t1"
+    )
+
+
 def _refresh_reddit(targets: list[dict]) -> list[dict]:
     updates = []
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(
-            headless=True,
-            args=["--no-sandbox"],
+    headers = {
+        "User-Agent": _env(
+            "REDDIT_USER_AGENT",
+            "Mozilla/5.0 Chrome/124 Safari/537.36 "
+            "user-behavior-lakehouse/1.0",
         )
-        context = browser.new_context(
-            user_agent=_env(
-                "REDDIT_USER_AGENT",
-                "Mozilla/5.0 Chrome/124 Safari/537.36 "
-                "user-behavior-lakehouse/1.0",
-            )
-        )
-        page = context.new_page()
+    }
+    timeout = int(_env("REDDIT_REFRESH_TIMEOUT_SECONDS", "15"))
+    for target in targets:
+        comment_id = _reddit_comment_id(target["url"])
+        if not comment_id:
+            continue
         try:
-            for target in targets:
-                comment_id = _reddit_comment_id(target["url"])
-                if not comment_id:
-                    continue
-                try:
-                    reddit_url = target["url"].replace(
-                        "https://www.reddit.com",
-                        "https://old.reddit.com",
-                    )
-                    page.goto(
-                        reddit_url,
-                        wait_until="domcontentloaded",
-                        timeout=60000,
-                    )
-                    comment = page.locator(
-                        f'div.thing.comment[data-fullname="t1_{comment_id}"]'
-                    ).first
-                    comment.wait_for(state="attached", timeout=15000)
-                    score_values = [
-                        comment.get_attribute("data-score"),
-                    ]
-                    score = comment.locator(".score")
-                    if score.count():
-                        score_values.extend(
-                            [
-                                score.first.get_attribute("title"),
-                                score.first.inner_text(),
-                            ]
-                        )
-                    update = _base_update(target)
-                    update["score"] = next(
-                        (
-                            parsed
-                            for value in score_values
-                            if (parsed := parse_count(value)) is not None
-                        ),
-                        None,
-                    )
-                    update["reply_count"] = comment.locator(
-                        ":scope > .child > .sitetable > .thing.comment"
-                    ).count()
-                    updates.append(update)
-                except (PlaywrightTimeoutError, PlaywrightError) as exc:
-                    print(
-                        "Unable to refresh Reddit insights for "
-                        f"{target['url']}: {exc}"
-                    )
-        finally:
-            browser.close()
+            response = requests.get(
+                _reddit_comment_json_url(target["url"]),
+                headers=headers,
+                timeout=timeout,
+            )
+            if response.status_code in {403, 429}:
+                print(
+                    "Skipping Reddit insight refresh: Reddit JSON endpoint "
+                    f"returned HTTP {response.status_code}"
+                )
+                SKIPPED_REFRESH_SOURCES.add("reddit")
+                return updates
+            response.raise_for_status()
+            comment = _find_reddit_comment(response.json(), comment_id)
+            if not comment:
+                print(
+                    "Unable to refresh Reddit insights for "
+                    f"{target['url']}: comment not found in JSON response"
+                )
+                continue
+            update = _base_update(target)
+            update["score"] = parse_count(comment.get("score"))
+            update["reply_count"] = _reddit_direct_reply_count(comment)
+            updates.append(update)
+        except (ValueError, requests.RequestException) as exc:
+            print(
+                "Unable to refresh Reddit insights for "
+                f"{target['url']}: {exc}"
+            )
     return updates
 
 
@@ -313,7 +369,7 @@ def main() -> None:
     print(
         f"Refreshed {len(updates)} of {len(targets)} {source} insight targets"
     )
-    if targets and not updates:
+    if targets and not updates and source not in SKIPPED_REFRESH_SOURCES:
         raise RuntimeError(f"No {source} insight target could be refreshed")
 
 
