@@ -25,6 +25,64 @@ def format_engagement_total(series):
     return f"{int(values.sum()):,}"
 
 
+def normalize_collaborators(value):
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if str(item)]
+    if hasattr(value, "tolist"):
+        return normalize_collaborators(value.tolist())
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, str):
+        value = value.strip()
+        return [value] if value else []
+    return []
+
+
+def format_collaborators(value):
+    collaborators = normalize_collaborators(value)
+    if collaborators is None:
+        return "N/A"
+    if not collaborators:
+        return "Aucun"
+    return ", ".join(collaborators)
+
+
+def collaborator_count(value):
+    collaborators = normalize_collaborators(value)
+    return pd.NA if collaborators is None else len(collaborators)
+
+
+def format_optional_text(value):
+    if value is None:
+        return "N/A"
+    try:
+        if pd.isna(value):
+            return "N/A"
+    except (TypeError, ValueError):
+        pass
+    value = str(value).strip()
+    if not value or value.lower() in {"none", "nan", "<na>"}:
+        return "N/A"
+    return value
+
+
+def format_count(value):
+    if pd.isna(value):
+        return "N/A"
+    return f"{int(value):,}"
+
+
+def format_rate(value):
+    if pd.isna(value):
+        return "N/A"
+    return f"{float(value):.1f}%"
+
+
 st.set_page_config(
     page_title="Social Media Lakehouse Dashboard",
     layout="wide",
@@ -271,6 +329,98 @@ if not engagement_chart_data.empty:
     )
     st.plotly_chart(fig_engagement, width="stretch")
 
+st.subheader("Auteurs et collaborations YouTube")
+youtube_df = df_filtered[df_filtered["source"] == "youtube"].copy()
+if youtube_df.empty:
+    st.info("Aucun événement YouTube dans la sélection actuelle.")
+else:
+    youtube_unique_df = youtube_df.drop_duplicates(["url"]).copy()
+    youtube_df = youtube_unique_df
+    youtube_df["collaborator_count"] = youtube_df[
+        "collaborator_channel_ids"
+    ].apply(collaborator_count)
+    youtube_df["collaborators"] = youtube_df[
+        "collaborator_channel_ids"
+    ].apply(format_collaborators)
+
+    known_collaborators = youtube_df["collaborator_count"].dropna()
+    videos_with_collaborators = (
+        int((known_collaborators > 0).sum())
+        if not known_collaborators.empty
+        else 0
+    )
+    distinct_collaborator_ids = sorted(
+        {
+            collaborator
+            for value in youtube_df["collaborator_channel_ids"]
+            for collaborator in (normalize_collaborators(value) or [])
+        }
+    )
+
+    yt_metrics = st.columns(4)
+    yt_metrics[0].metric("Vidéos YouTube", f"{len(youtube_df):,}")
+    yt_metrics[1].metric(
+        "Owners connus",
+        f"{youtube_df['owner_channel_id'].dropna().nunique():,}",
+    )
+    yt_metrics[2].metric(
+        "Avec collaborateurs",
+        f"{videos_with_collaborators:,}",
+    )
+    yt_metrics[3].metric(
+        "Collaborateurs uniques",
+        f"{len(distinct_collaborator_ids):,}",
+    )
+
+    youtube_author_rows = (
+        youtube_df.sort_values("created_at", ascending=False)
+        .drop_duplicates(["url"])
+        [
+            [
+                "created_at",
+                "text",
+                "owner_channel_id",
+                "collaborator_count",
+                "collaborators",
+                "url",
+            ]
+        ]
+        .head(100)
+    )
+    youtube_author_rows["created_at"] = youtube_author_rows[
+        "created_at"
+    ].dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    youtube_author_rows["created_at"] = youtube_author_rows[
+        "created_at"
+    ].fillna("N/A")
+    youtube_author_rows["text"] = (
+        youtube_author_rows["text"].fillna("").str.slice(0, 180)
+    )
+    youtube_author_rows["owner_channel_id"] = youtube_author_rows[
+        "owner_channel_id"
+    ].apply(format_optional_text)
+    st.dataframe(
+        youtube_author_rows,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "created_at": "Timestamp",
+            "text": "Titre",
+            "owner_channel_id": "Owner channel ID",
+            "collaborator_count": st.column_config.NumberColumn(
+                "Collaborateurs",
+                format="%d",
+            ),
+            "collaborators": "Collaborator channel IDs",
+            "url": st.column_config.LinkColumn("URL"),
+        },
+    )
+    st.caption(
+        "`N/A` signifie que la page YouTube n'a pas permis de confirmer la "
+        "liste. `Aucun` signifie que la vidéo a été lue et qu'aucun "
+        "collaborateur accepté n'a été trouvé."
+    )
+
 st.subheader("Événements par source")
 source_counts = (
     df_filtered.groupby("source")
@@ -312,6 +462,314 @@ if not df_time.empty:
     st.plotly_chart(fig_time, width="stretch")
 else:
     st.info("Aucun timestamp valide pour les filtres actuels.")
+
+st.subheader("Suivi par identifiant")
+user_tracking_df = df_filtered.dropna(subset=["author_hash"]).copy()
+
+if user_tracking_df.empty:
+    st.info("Aucun identifiant disponible pour les filtres actuels.")
+else:
+    for column in ENGAGEMENT_COLUMNS:
+        user_tracking_df[column] = pd.to_numeric(
+            user_tracking_df[column],
+            errors="coerce",
+        )
+
+    user_activity = (
+        user_tracking_df.groupby("author_hash")
+        .agg(
+            events=("author_hash", "size"),
+            sources=(
+                "source",
+                lambda s: ", ".join(sorted(s.dropna().unique())),
+            ),
+            first_activity=("created_at", "min"),
+            last_activity=("created_at", "max"),
+            active_days=(
+                "created_at",
+                lambda s: s.dropna().dt.date.nunique(),
+            ),
+            avg_text_words=("text_len_words", "mean"),
+            events_with_replies=(
+                "reply_count",
+                lambda s: (s.fillna(0) > 0).sum(),
+            ),
+            reply_observations=("reply_count", lambda s: s.notna().sum()),
+        )
+        .reset_index()
+    )
+
+    for column in ENGAGEMENT_COLUMNS:
+        totals = (
+            user_tracking_df.groupby("author_hash")[column]
+            .sum(min_count=1)
+            .rename(f"total_{column}")
+        )
+        averages = (
+            user_tracking_df.groupby("author_hash")[column]
+            .mean()
+            .rename(f"avg_{column}")
+        )
+        user_activity = user_activity.merge(
+            totals,
+            on="author_hash",
+            how="left",
+        ).merge(
+            averages,
+            on="author_hash",
+            how="left",
+        )
+
+    total_columns = [f"total_{column}" for column in ENGAGEMENT_COLUMNS]
+    user_activity["total_engagement"] = (
+        user_activity[total_columns].fillna(0).sum(axis=1)
+    )
+    user_activity["avg_engagement_per_event"] = (
+        user_activity["total_engagement"] / user_activity["events"]
+    )
+    user_activity["reply_rate_pct"] = (
+        user_activity["events_with_replies"]
+        / user_activity["reply_observations"].replace(0, pd.NA)
+        * 100
+    )
+    user_activity["author_display"] = user_activity["author_hash"].str.slice(
+        0,
+        12,
+    )
+
+    ranking_options = {
+        "events": "Activité",
+        "total_engagement": "Engagement total",
+        "avg_engagement_per_event": "Engagement moyen",
+        "total_like_count": "Likes",
+        "total_view_count": "Vues",
+        "total_reply_count": "Réponses",
+        "reply_rate_pct": "Taux de réponses",
+    }
+    ranking_metric = st.selectbox(
+        "Classer les identifiants par",
+        options=list(ranking_options),
+        format_func=ranking_options.get,
+    )
+
+    top_users = (
+        user_activity.sort_values(
+            [ranking_metric, "events"],
+            ascending=False,
+            na_position="last",
+        )
+        .head(25)
+        .copy()
+    )
+    top_users_table = top_users[
+        [
+            "author_display",
+            "sources",
+            "events",
+            "active_days",
+            "reply_rate_pct",
+            "total_like_count",
+            "total_view_count",
+            "total_reply_count",
+            "total_comment_count",
+            "total_engagement",
+            "avg_engagement_per_event",
+            "last_activity",
+        ]
+    ].rename(
+        columns={
+            "author_display": "Identifiant",
+            "sources": "Sources",
+            "events": "Événements",
+            "active_days": "Jours actifs",
+            "reply_rate_pct": "Taux de réponses (%)",
+            "total_like_count": "Likes",
+            "total_view_count": "Vues",
+            "total_reply_count": "Réponses",
+            "total_comment_count": "Commentaires",
+            "total_engagement": "Engagement total",
+            "avg_engagement_per_event": "Engagement moyen",
+            "last_activity": "Dernière activité",
+        }
+    )
+    st.dataframe(
+        top_users_table,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "Événements": st.column_config.NumberColumn(format="%d"),
+            "Jours actifs": st.column_config.NumberColumn(format="%d"),
+            "Taux de réponses (%)": st.column_config.NumberColumn(
+                format="%.1f"
+            ),
+            "Likes": st.column_config.NumberColumn(format="%d"),
+            "Vues": st.column_config.NumberColumn(format="%d"),
+            "Réponses": st.column_config.NumberColumn(format="%d"),
+            "Commentaires": st.column_config.NumberColumn(format="%d"),
+            "Engagement total": st.column_config.NumberColumn(format="%d"),
+            "Engagement moyen": st.column_config.NumberColumn(format="%.1f"),
+        },
+    )
+
+    selector_options = top_users["author_hash"].tolist()
+    if selector_options:
+        selector_labels = {
+            row.author_hash: (
+                f"{row.author_display} - {int(row.events)} event(s) - "
+                f"{row.sources}"
+            )
+            for row in top_users.itertuples()
+        }
+        selected_author = st.selectbox(
+            "Identifiant à suivre",
+            options=selector_options,
+            format_func=selector_labels.get,
+        )
+        selected_user = user_activity[
+            user_activity["author_hash"] == selected_author
+        ].iloc[0]
+        selected_events = user_tracking_df[
+            user_tracking_df["author_hash"] == selected_author
+        ].copy()
+
+        user_metrics = st.columns(6)
+        user_metrics[0].metric("Événements", format_count(selected_user.events))
+        user_metrics[1].metric(
+            "Jours actifs",
+            format_count(selected_user.active_days),
+        )
+        user_metrics[2].metric(
+            "Taux de réponses",
+            format_rate(selected_user.reply_rate_pct),
+        )
+        user_metrics[3].metric(
+            "Likes",
+            format_count(selected_user.total_like_count),
+        )
+        user_metrics[4].metric(
+            "Vues",
+            format_count(selected_user.total_view_count),
+        )
+        user_metrics[5].metric(
+            "Engagement moyen",
+            f"{selected_user.avg_engagement_per_event:.1f}",
+        )
+
+        dated_user_events = selected_events.dropna(
+            subset=["created_at"]
+        ).copy()
+        if not dated_user_events.empty:
+            dated_user_events["date"] = dated_user_events[
+                "created_at"
+            ].dt.date
+            daily_user_progress = (
+                dated_user_events.groupby("date")
+                .agg(
+                    events=("author_hash", "size"),
+                    likes=("like_count", "sum"),
+                    views=("view_count", "sum"),
+                    replies=("reply_count", "sum"),
+                    comments=("comment_count", "sum"),
+                )
+                .reset_index()
+                .sort_values("date")
+            )
+            cumulative_columns = {
+                "events": "Événements cumulés",
+                "likes": "Likes cumulés",
+                "views": "Vues cumulées",
+                "replies": "Réponses cumulées",
+                "comments": "Commentaires cumulés",
+            }
+            for column in cumulative_columns:
+                daily_user_progress[f"cumulative_{column}"] = (
+                    daily_user_progress[column].fillna(0).cumsum()
+                )
+            progress_chart = daily_user_progress.melt(
+                id_vars="date",
+                value_vars=[
+                    f"cumulative_{column}"
+                    for column in cumulative_columns
+                ],
+                var_name="metric",
+                value_name="value",
+            )
+            progress_chart["metric"] = progress_chart["metric"].replace(
+                {
+                    f"cumulative_{column}": label
+                    for column, label in cumulative_columns.items()
+                }
+            )
+            fig_user_progress = px.line(
+                progress_chart,
+                x="date",
+                y="value",
+                color="metric",
+                markers=True,
+                labels={
+                    "date": "Date",
+                    "value": "Total cumulé",
+                    "metric": "Métrique",
+                },
+            )
+            st.plotly_chart(fig_user_progress, width="stretch")
+        else:
+            st.info("Aucune date valide pour cet identifiant.")
+
+        selected_recent = selected_events.sort_values(
+            "created_at",
+            ascending=False,
+        ).head(25)
+        selected_recent = selected_recent[
+            [
+                "source",
+                "created_at",
+                "text",
+                "like_count",
+                "view_count",
+                "comment_count",
+                "reply_count",
+                "url",
+            ]
+        ].copy()
+        selected_recent["created_at"] = selected_recent[
+            "created_at"
+        ].dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        selected_recent["text"] = (
+            selected_recent["text"].fillna("").str.slice(0, 180)
+        )
+        st.dataframe(
+            selected_recent,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "source": "Source",
+                "created_at": "Timestamp",
+                "text": "Contenu",
+                "like_count": st.column_config.NumberColumn(
+                    "Likes",
+                    format="%d",
+                ),
+                "view_count": st.column_config.NumberColumn(
+                    "Vues",
+                    format="%d",
+                ),
+                "comment_count": st.column_config.NumberColumn(
+                    "Commentaires",
+                    format="%d",
+                ),
+                "reply_count": st.column_config.NumberColumn(
+                    "Réponses",
+                    format="%d",
+                ),
+                "url": st.column_config.LinkColumn("URL"),
+            },
+        )
+    st.caption(
+        "Le taux de réponses correspond à la part des événements de cet "
+        "identifiant qui ont au moins une réponse observée. Les métriques "
+        "restent dépendantes de ce que chaque plateforme expose."
+    )
 
 col1, col2 = st.columns(2)
 
@@ -394,11 +852,19 @@ recent_df["created_at"] = recent_df["created_at"].dt.strftime(
 )
 recent_df["created_at"] = recent_df["created_at"].fillna("N/A")
 recent_df["error"] = recent_df["error"].fillna("")
+recent_df["owner_channel_id"] = recent_df["owner_channel_id"].apply(
+    format_optional_text
+)
+recent_df["collaborators"] = recent_df["collaborator_channel_ids"].apply(
+    format_collaborators
+)
 recent_df = recent_df[
     [
         "source",
         "created_at",
         "author_hash",
+        "owner_channel_id",
+        "collaborators",
         "text",
         *ENGAGEMENT_COLUMNS,
         "url",
@@ -414,6 +880,8 @@ st.dataframe(
         "source": "Source",
         "created_at": "Timestamp",
         "author_hash": "Identifiant hash",
+        "owner_channel_id": "Owner channel ID",
+        "collaborators": "Collaborator channel IDs",
         "text": "Contenu nettoyé",
         **{
             column: st.column_config.NumberColumn(label, format="%d")
