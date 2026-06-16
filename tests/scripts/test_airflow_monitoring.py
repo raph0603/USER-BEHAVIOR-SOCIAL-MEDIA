@@ -91,6 +91,28 @@ class AirflowMonitoringTests(unittest.TestCase):
             "en attente depuis 1 min 30 s",
         )
 
+    def test_crawler_configuration_allows_thousand_events_per_run(self):
+        configuration_source = (
+            ROOT / "dashboard" / "pages" / "1_Configuration.py"
+        ).read_text(encoding="utf-8")
+        crawler_source = (
+            ROOT / "orchestrator" / "dags" / "crawler_configuration.py"
+        ).read_text(encoding="utf-8")
+        dag_source = (
+            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py"
+        ).read_text(encoding="utf-8")
+
+        for source in (configuration_source, crawler_source):
+            with self.subTest():
+                self.assertIn('"youtube_event_count": 1000', source)
+                self.assertIn('"x_event_count": 1000', source)
+                self.assertIn('"reddit_event_count": 1000', source)
+
+        self.assertIn('"max_events_per_source": 1000', configuration_source)
+        self.assertIn('"max_events_per_source": 1000', crawler_source)
+        self.assertIn("max_value=1000", configuration_source)
+        self.assertIn("maximum=1000", dag_source)
+
 
 if __name__ == "__main__":
     unittest.main()

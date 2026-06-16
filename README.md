@@ -169,9 +169,9 @@ an elevated PowerShell:
 When manually triggering `user_behavior_lakehouse` from the Airflow interface,
 the trigger form exposes three limits:
 
-- `youtube_event_count`: maximum number of new YouTube videos, from 1 to 500;
-- `x_event_count`: maximum number of new X posts, from 1 to 500;
-- `reddit_event_count`: maximum number of new Reddit comments, from 1 to 500.
+- `youtube_event_count`: maximum number of new YouTube videos, from 1 to 1000;
+- `x_event_count`: maximum number of new X posts, from 1 to 1000;
+- `reddit_event_count`: maximum number of new Reddit comments, from 1 to 1000.
 
 These are upper limits. A collector can return fewer events when the online
 search does not contain enough unprocessed results. Scheduled runs use the
@@ -343,7 +343,7 @@ for an externally managed CDP endpoint.
 
 Log in to X in that browser window. When triggering the DAG from the Airflow
 UI, set `x_event_count` to the maximum number of new X posts to collect
-(between 1 and 500). For a direct `docker compose run`, `X_MAX_EVENTS` in
+(between 1 and 1000). For a direct `docker compose run`, `X_MAX_EVENTS` in
 `.env` provides the limit. If fewer new posts are available, the collector
 publishes fewer events. When X collection is enabled, a crawler or CDP
 failure fails the Airflow task and the DAG.

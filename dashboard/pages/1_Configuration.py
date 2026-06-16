@@ -27,12 +27,12 @@ DEFAULT_KEYWORDS = [
 ]
 DEFAULT_CRAWLER_CONFIG = {
     "youtube_keywords": DEFAULT_KEYWORDS,
-    "youtube_event_count": 500,
+    "youtube_event_count": 1000,
     "youtube_search_language": "en",
     "youtube_keyword_match_mode": "OR",
     "youtube_search_order": "date",
     "x_keywords": DEFAULT_KEYWORDS,
-    "x_event_count": 500,
+    "x_event_count": 1000,
     "x_search_language": "en",
     "x_keyword_match_mode": "OR",
     "x_scroll_rounds": 5,
@@ -40,13 +40,13 @@ DEFAULT_CRAWLER_CONFIG = {
     "x_exclude_replies": True,
     "reddit_keywords": DEFAULT_KEYWORDS,
     "reddit_keyword_match_mode": "OR",
-    "reddit_event_count": 500,
+    "reddit_event_count": 1000,
     "reddit_subreddits": ["electricvehicles", "teslamotors"],
     "reddit_comment_scan_limit": 100,
 }
 DEFAULT_INSIGHT_CONFIG = {
     "lookback_days": 15,
-    "max_events_per_source": 500,
+    "max_events_per_source": 1000,
     "x_headless": True,
 }
 
@@ -179,7 +179,7 @@ with youtube_tab:
         youtube_event_count = st.number_input(
             "Nombre maximal de vidéos",
             min_value=1,
-            max_value=500,
+            max_value=1000,
             value=int(crawler_config["youtube_event_count"]),
         )
         youtube_language_label = st.selectbox(
@@ -256,7 +256,7 @@ with x_tab:
         x_event_count = st.number_input(
             "Nombre maximal de posts",
             min_value=1,
-            max_value=500,
+            max_value=1000,
             value=int(crawler_config["x_event_count"]),
         )
         x_scroll_rounds = st.number_input(
@@ -347,7 +347,7 @@ with reddit_tab:
         reddit_event_count = st.number_input(
             "Nombre maximal de commentaires",
             min_value=1,
-            max_value=500,
+            max_value=1000,
             value=int(crawler_config["reddit_event_count"]),
         )
         reddit_scan_limit = st.number_input(

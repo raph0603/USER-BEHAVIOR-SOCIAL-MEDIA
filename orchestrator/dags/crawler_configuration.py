@@ -24,7 +24,7 @@ DEFAULT_CRAWLER_CONFIG = {
         "EV charging",
         "battery range",
     ],
-    "youtube_event_count": 500,
+    "youtube_event_count": 1000,
     "youtube_search_queries": [
         '"electric vehicle" | EV | "electric car" | Tesla | '
         '"EV charging" | "battery range"'
@@ -40,7 +40,7 @@ DEFAULT_CRAWLER_CONFIG = {
         "EV charging",
         "battery range",
     ],
-    "x_event_count": 500,
+    "x_event_count": 1000,
     "x_search_queries": [
         '(electric vehicle OR EV OR "electric car") lang:en -filter:replies',
         '(Tesla OR "EV charging" OR "battery range") lang:en -filter:replies',
@@ -50,7 +50,7 @@ DEFAULT_CRAWLER_CONFIG = {
     "x_scroll_rounds": 5,
     "x_content_filter": "",
     "x_exclude_replies": True,
-    "reddit_event_count": 500,
+    "reddit_event_count": 1000,
     "reddit_keywords": [
         "electric vehicle",
         "EV",
@@ -65,7 +65,7 @@ DEFAULT_CRAWLER_CONFIG = {
 }
 DEFAULT_INSIGHT_CONFIG = {
     "lookback_days": 15,
-    "max_events_per_source": 500,
+    "max_events_per_source": 1000,
     "x_headless": True,
 }
 

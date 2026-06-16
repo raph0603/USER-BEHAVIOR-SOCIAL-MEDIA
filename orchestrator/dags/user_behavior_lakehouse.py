@@ -106,7 +106,7 @@ with DAG(
             CRAWLER_CONFIG["youtube_event_count"],
             type="integer",
             minimum=1,
-            maximum=500,
+            maximum=1000,
             title="Nombre d'evenements YouTube",
             description=(
                 "Nombre maximal de nouvelles videos YouTube a publier dans Kafka."
@@ -134,7 +134,7 @@ with DAG(
             CRAWLER_CONFIG["x_event_count"],
             type="integer",
             minimum=1,
-            maximum=500,
+            maximum=1000,
             title="Nombre d'evenements X",
             description=(
                 "Nombre maximal de nouveaux posts X à publier dans Kafka."
@@ -158,7 +158,7 @@ with DAG(
             CRAWLER_CONFIG["reddit_event_count"],
             type="integer",
             minimum=1,
-            maximum=500,
+            maximum=1000,
             title="Nombre d'evenements Reddit",
             description=(
                 "Nombre maximal de nouveaux commentaires Reddit a publier "
