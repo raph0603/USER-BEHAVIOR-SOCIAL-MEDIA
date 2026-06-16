@@ -193,10 +193,15 @@ YouTube is API-based, and Reddit remains headless inside its Docker container.
 docker compose up -d --build
 ```
 
+This starts MinIO, Kafka, Spark, Airflow and the Streamlit dashboard. The
+dashboard is exposed at http://localhost:8501 and uses the internal Docker
+endpoints `http://minio:9000` and `http://airflow-webserver:8080`.
+
 ### Run the local dashboard
 
-The Streamlit dashboard reads the cleaned events directly from
-`lakehouse.silver.events` in MinIO. Start MinIO before launching it:
+The Streamlit dashboard is containerized by default. For local dashboard
+development without Docker, it can still be launched from the host. Start
+MinIO before launching it:
 
 ```powershell
 docker compose up -d minio minio-init

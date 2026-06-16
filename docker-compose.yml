@@ -157,6 +157,34 @@ services:
     ports:
       - "9002:9000"
 
+  dashboard:
+    build:
+      context: ./dashboard
+    logging: *default-logging
+
+    container_name: dashboard
+    restart: unless-stopped
+
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      airflow-webserver:
+        condition: service_started
+
+    environment:
+      - DASHBOARD_ICEBERG_TABLE_PATH=${DASHBOARD_ICEBERG_TABLE_PATH:-s3://lakehouse/warehouse/silver/events}
+      - DASHBOARD_MINIO_ENDPOINT=http://minio:9000
+      - DASHBOARD_MINIO_ACCESS_KEY=${DASHBOARD_MINIO_ACCESS_KEY:-minioadmin}
+      - DASHBOARD_MINIO_SECRET_KEY=${DASHBOARD_MINIO_SECRET_KEY:-minioadmin}
+      - DASHBOARD_MINIO_REGION=${DASHBOARD_MINIO_REGION:-us-east-1}
+      - DASHBOARD_AIRFLOW_URL=http://airflow-webserver:8080
+      - DASHBOARD_AIRFLOW_USERNAME=${DASHBOARD_AIRFLOW_USERNAME:-admin}
+      - DASHBOARD_AIRFLOW_PASSWORD=${DASHBOARD_AIRFLOW_PASSWORD:-admin}
+      - DASHBOARD_AIRFLOW_TIMEOUT_SECONDS=${DASHBOARD_AIRFLOW_TIMEOUT_SECONDS:-10}
+
+    ports:
+      - "8501:8501"
+
   youtube-collector:
     build:
       context: ./playwright
