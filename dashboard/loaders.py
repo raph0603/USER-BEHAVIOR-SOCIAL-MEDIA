@@ -9,12 +9,7 @@ DEFAULT_TABLE_PATH = "s3://lakehouse/warehouse/silver/events"
 DEFAULT_MINIO_ENDPOINT = "http://localhost:9000"
 ENGAGEMENT_COLUMNS = (
     "like_count",
-    "comment_count",
-    "reply_count",
     "view_count",
-    "retweet_count",
-    "bookmark_count",
-    "score",
 )
 AUTHOR_METADATA_COLUMNS = (
     "platform_event_id",
@@ -39,12 +34,7 @@ def _select_silver_events(connection, table_path, optional_columns=None):
             source,
             error,
 {metadata_columns}            like_count,
-            comment_count,
-            reply_count,
             view_count,
-            retweet_count,
-            bookmark_count,
-            score,
             event_date
         FROM iceberg_scan(?, allow_moved_paths = true)
         """,
