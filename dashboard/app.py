@@ -17,6 +17,12 @@ ENGAGEMENT_LABELS = {
     "score": "Score Reddit",
 }
 
+TRACKING_ROLE_ORDER = [
+    "Auteur",
+    "Owner YouTube",
+    "Collaborateur YouTube",
+]
+
 
 def format_engagement_total(series):
     values = series.dropna()
@@ -55,6 +61,58 @@ def format_collaborators(value):
 def collaborator_count(value):
     collaborators = normalize_collaborators(value)
     return pd.NA if collaborators is None else len(collaborators)
+
+
+def build_user_tracking_rows(dataframe):
+    tracking_frames = []
+
+    if "author_hash" in dataframe.columns:
+        author_rows = dataframe.dropna(subset=["author_hash"]).copy()
+        if not author_rows.empty:
+            author_rows["tracked_identifier"] = author_rows[
+                "author_hash"
+            ].astype("string")
+            author_rows["identifier_role"] = "Auteur"
+            tracking_frames.append(author_rows)
+
+    if {"source", "owner_channel_id"}.issubset(dataframe.columns):
+        owner_rows = dataframe[
+            (dataframe["source"] == "youtube")
+            & dataframe["owner_channel_id"].notna()
+        ].copy()
+        if not owner_rows.empty:
+            owner_rows["tracked_identifier"] = owner_rows[
+                "owner_channel_id"
+            ].astype("string")
+            owner_rows["identifier_role"] = "Owner YouTube"
+            tracking_frames.append(owner_rows)
+
+    if {"source", "collaborator_channel_ids"}.issubset(dataframe.columns):
+        collaborator_records = []
+        youtube_rows = dataframe[dataframe["source"] == "youtube"]
+        for _, row in youtube_rows.iterrows():
+            collaborators = normalize_collaborators(
+                row.get("collaborator_channel_ids")
+            )
+            if not collaborators:
+                continue
+            for collaborator in collaborators:
+                collaborator_row = row.copy()
+                collaborator_row["tracked_identifier"] = collaborator
+                collaborator_row["identifier_role"] = "Collaborateur YouTube"
+                collaborator_records.append(collaborator_row)
+
+        if collaborator_records:
+            tracking_frames.append(pd.DataFrame(collaborator_records))
+
+    if not tracking_frames:
+        return pd.DataFrame(columns=[*dataframe.columns, "identifier_role"])
+
+    tracking_df = pd.concat(tracking_frames, ignore_index=True)
+    tracking_df["author_hash"] = tracking_df["tracked_identifier"].astype(
+        "string"
+    )
+    return tracking_df.drop(columns=["tracked_identifier"])
 
 
 def format_optional_text(value):
@@ -464,11 +522,42 @@ else:
     st.info("Aucun timestamp valide pour les filtres actuels.")
 
 st.subheader("Suivi par identifiant")
-user_tracking_df = df_filtered.dropna(subset=["author_hash"]).copy()
+user_tracking_df = build_user_tracking_rows(df_filtered)
 
 if user_tracking_df.empty:
     st.info("Aucun identifiant disponible pour les filtres actuels.")
 else:
+    role_summary = (
+        user_tracking_df.groupby("identifier_role")["author_hash"]
+        .nunique()
+        .reindex(TRACKING_ROLE_ORDER, fill_value=0)
+    )
+    role_metrics = st.columns(len(TRACKING_ROLE_ORDER))
+    for index, role in enumerate(TRACKING_ROLE_ORDER):
+        role_metrics[index].metric(role, format_count(role_summary[role]))
+
+    available_roles = sorted(
+        set(user_tracking_df["identifier_role"].dropna().unique().tolist())
+        - set(TRACKING_ROLE_ORDER)
+    )
+    role_options = [*TRACKING_ROLE_ORDER, *available_roles]
+    selected_roles = st.multiselect(
+        "Types d'identifiants à inclure",
+        options=role_options,
+        default=role_options,
+    )
+    user_tracking_df = user_tracking_df[
+        user_tracking_df["identifier_role"].isin(selected_roles)
+    ].copy()
+
+    if user_tracking_df.empty:
+        st.info("Aucun identifiant disponible pour ces types.")
+    else:
+        st.caption(
+            "Les owners et collaborateurs YouTube sont inclus comme "
+            "identifiants de contribution séparés des auteurs de commentaires."
+        )
+
     for column in ENGAGEMENT_COLUMNS:
         user_tracking_df[column] = pd.to_numeric(
             user_tracking_df[column],
@@ -481,6 +570,10 @@ else:
             events=("author_hash", "size"),
             sources=(
                 "source",
+                lambda s: ", ".join(sorted(s.dropna().unique())),
+            ),
+            roles=(
+                "identifier_role",
                 lambda s: ", ".join(sorted(s.dropna().unique())),
             ),
             first_activity=("created_at", "min"),
@@ -564,6 +657,7 @@ else:
     top_users_table = top_users[
         [
             "author_display",
+            "roles",
             "sources",
             "events",
             "active_days",
@@ -579,6 +673,7 @@ else:
     ].rename(
         columns={
             "author_display": "Identifiant",
+            "roles": "Type",
             "sources": "Sources",
             "events": "Événements",
             "active_days": "Jours actifs",
@@ -616,7 +711,7 @@ else:
         selector_labels = {
             row.author_hash: (
                 f"{row.author_display} - {int(row.events)} event(s) - "
-                f"{row.sources}"
+                f"{row.roles}"
             )
             for row in top_users.itertuples()
         }
@@ -723,6 +818,7 @@ else:
         selected_recent = selected_recent[
             [
                 "source",
+                "identifier_role",
                 "created_at",
                 "text",
                 "like_count",
@@ -744,6 +840,7 @@ else:
             hide_index=True,
             column_config={
                 "source": "Source",
+                "identifier_role": "Type",
                 "created_at": "Timestamp",
                 "text": "Contenu",
                 "like_count": st.column_config.NumberColumn(
