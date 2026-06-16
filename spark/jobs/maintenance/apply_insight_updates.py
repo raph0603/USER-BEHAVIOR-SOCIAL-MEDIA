@@ -14,12 +14,7 @@ from pyspark.sql.types import (
 
 METRIC_COLUMNS = (
     "like_count",
-    "comment_count",
-    "reply_count",
     "view_count",
-    "retweet_count",
-    "bookmark_count",
-    "score",
 )
 AUTHOR_COLUMNS = (
     "owner_channel_id",
