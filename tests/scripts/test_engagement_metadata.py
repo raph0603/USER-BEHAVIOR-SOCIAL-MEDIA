@@ -159,6 +159,14 @@ class EngagementMetadataTests(unittest.TestCase):
                 for field_name in expected:
                     self.assertIn(field_name, source)
 
+    def test_cleaning_tolerates_malformed_avro_records(self):
+        source = (
+            ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('{"mode": "PERMISSIVE"}', source)
+        self.assertNotIn("FAILFAST", source)
+
     def test_reddit_collector_discovers_recent_comments(self):
         producer = (ROOT / "playwright" / "producer.py").read_text(
             encoding="utf-8"

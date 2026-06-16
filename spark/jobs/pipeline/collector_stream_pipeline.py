@@ -111,7 +111,11 @@ def main() -> None:
                 "_kafka_topic",
                 "_kafka_partition",
                 "_kafka_offset",
-                from_avro(col("avro_value"), schema).alias("data"),
+                from_avro(
+                    col("avro_value"),
+                    schema,
+                    {"mode": "PERMISSIVE"},
+                ).alias("data"),
             )
             .select("_kafka_topic", "_kafka_partition", "_kafka_offset", "data.*")
         )
