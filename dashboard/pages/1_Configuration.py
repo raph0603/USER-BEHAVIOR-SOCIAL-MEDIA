@@ -58,14 +58,14 @@ def label_for_value(options, value):
     )
 
 
-@st.dialog("Confirmer la suppression")
+@st.dialog("Confirm deletion")
 def confirm_item_deletion(state_key, index, item):
-    st.write(f"Supprimer **{item}** ?")
+    st.write(f"Delete **{item}**?")
     cancel_column, delete_column = st.columns(2)
-    if cancel_column.button("Annuler", width="stretch"):
+    if cancel_column.button("Cancel", width="stretch"):
         st.rerun()
     if delete_column.button(
-        "Supprimer",
+        "Delete",
         type="primary",
         icon=":material/delete:",
         width="stretch",
@@ -93,7 +93,7 @@ def render_item_list(state_key, title, empty_message):
             if st.button(
                 ":material/delete:",
                 key=f"remove_{state_key}_{index}",
-                help=f"Supprimer {item}",
+                help=f"Delete {item}",
                 type="tertiary",
                 width="content",
             ):
@@ -116,12 +116,12 @@ def config_value(config, platform_key, legacy_key, fallback):
     return config.get(platform_key, config.get(legacy_key, fallback))
 
 
-st.set_page_config(page_title="Configuration des crawlers", layout="wide")
+st.set_page_config(page_title="Crawler configuration", layout="wide")
 render_navigation()
-st.title("Configuration des crawlers")
+st.title("Crawler configuration")
 st.caption(
-    "Chaque plateforme possède ses propres mots-clés, filtres et limites. "
-    "Les recherches finales sont générées automatiquement."
+    "Each platform has its own keywords, filters, and limits. "
+    "Final search queries are generated automatically."
 )
 
 client = AirflowClient()
@@ -135,7 +135,7 @@ try:
         DEFAULT_INSIGHT_CONFIG,
     )
 except Exception as exc:
-    st.warning(f"Configuration Airflow indisponible: {exc}")
+    st.warning(f"Airflow configuration unavailable: {exc}")
     crawler_config = DEFAULT_CRAWLER_CONFIG.copy()
     insight_config = DEFAULT_INSIGHT_CONFIG.copy()
 
@@ -165,25 +165,25 @@ for state_key, values in state_defaults.items():
         st.session_state[state_key] = normalize_items(values)
 
 youtube_tab, x_tab, reddit_tab, refresh_tab = st.tabs(
-    ["YouTube", "X", "Reddit", "Rafraîchissement"]
+    ["YouTube", "X", "Reddit", "Refresh"]
 )
 
 with youtube_tab:
-    st.subheader("Recherche YouTube")
+    st.subheader("YouTube search")
     st.caption(
-        "La langue privilégie les résultats correspondants. Le tri est appliqué "
-        "directement par l'API YouTube."
+        "Language prioritizes matching results. Sorting is applied "
+        "directly by the YouTube API."
     )
     youtube_settings, youtube_terms = st.columns([1, 2])
     with youtube_settings:
         youtube_event_count = st.number_input(
-            "Nombre maximal de vidéos",
+            "Maximum videos",
             min_value=1,
             max_value=1000,
             value=int(crawler_config["youtube_event_count"]),
         )
         youtube_language_label = st.selectbox(
-            "Langue privilégiée",
+            "Preferred language",
             options=list(LANGUAGES),
             index=list(LANGUAGES).index(
                 label_for_value(
@@ -199,7 +199,7 @@ with youtube_tab:
             key="youtube_language",
         )
         youtube_match_mode = st.selectbox(
-            "Correspondance",
+            "Match mode",
             options=["OR", "AND"],
             index=0
             if config_value(
@@ -210,13 +210,13 @@ with youtube_tab:
             )
             == "OR"
             else 1,
-            format_func=lambda value: "Au moins un mot (OU)"
+            format_func=lambda value: "At least one keyword (OR)"
             if value == "OR"
-            else "Tous les mots (ET)",
+            else "All keywords (AND)",
             key="youtube_match_mode",
         )
         youtube_order_label = st.selectbox(
-            "Trier les résultats",
+            "Sort results",
             options=list(YOUTUBE_ORDERS),
             index=list(YOUTUBE_ORDERS).index(
                 label_for_value(
@@ -229,44 +229,44 @@ with youtube_tab:
         render_add_form(
             "youtube_keywords",
             "add_youtube_keyword",
-            "Ajouter un mot-clé YouTube",
-            "Ajouter",
+            "Add a YouTube keyword",
+            "Add",
         )
         render_item_list(
             "youtube_keywords",
-            "Mots-clés YouTube",
-            "Ajoutez au moins un mot-clé YouTube.",
+            "YouTube keywords",
+            "Add at least one YouTube keyword.",
         )
 
     youtube_query = build_youtube_query(
         st.session_state.youtube_keywords,
         youtube_match_mode,
     )
-    st.markdown("**Aperçu envoyé à YouTube**")
-    st.code(youtube_query or "Aucun mot-clé", wrap_lines=True)
+    st.markdown("**Preview sent to YouTube**")
+    st.code(youtube_query or "No keyword", wrap_lines=True)
 
 with x_tab:
-    st.subheader("Recherche X")
+    st.subheader("X search")
     st.caption(
-        "Les opérateurs de langue, de contenu et d'exclusion sont ajoutés à la "
-        "requête X générée."
+        "Language, content, and exclusion operators are added to the "
+        "generated X query."
     )
     x_settings, x_terms = st.columns([1, 2])
     with x_settings:
         x_event_count = st.number_input(
-            "Nombre maximal de posts",
+            "Maximum posts",
             min_value=1,
             max_value=1000,
             value=int(crawler_config["x_event_count"]),
         )
         x_scroll_rounds = st.number_input(
-            "Scrolls par recherche",
+            "Scrolls per search",
             min_value=1,
             max_value=50,
             value=int(crawler_config["x_scroll_rounds"]),
         )
         x_language_label = st.selectbox(
-            "Langue",
+            "Language",
             options=list(LANGUAGES),
             index=list(LANGUAGES).index(
                 label_for_value(
@@ -282,7 +282,7 @@ with x_tab:
             key="x_language",
         )
         x_match_mode = st.selectbox(
-            "Correspondance",
+            "Match mode",
             options=["OR", "AND"],
             index=0
             if config_value(
@@ -293,13 +293,13 @@ with x_tab:
             )
             == "OR"
             else 1,
-            format_func=lambda value: "Au moins un mot (OU)"
+            format_func=lambda value: "At least one keyword (OR)"
             if value == "OR"
-            else "Tous les mots (ET)",
+            else "All keywords (AND)",
             key="x_match_mode",
         )
         x_filter_label = st.selectbox(
-            "Type de contenu",
+            "Content type",
             options=list(X_CONTENT_FILTERS),
             index=list(X_CONTENT_FILTERS).index(
                 label_for_value(
@@ -309,20 +309,20 @@ with x_tab:
             ),
         )
         x_exclude_replies = st.checkbox(
-            "Exclure les réponses",
+            "Exclude replies",
             value=bool(crawler_config["x_exclude_replies"]),
         )
     with x_terms:
         render_add_form(
             "x_keywords",
             "add_x_keyword",
-            "Ajouter un mot-clé X",
-            "Ajouter",
+            "Add an X keyword",
+            "Add",
         )
         render_item_list(
             "x_keywords",
-            "Mots-clés X",
-            "Ajoutez au moins un mot-clé X.",
+            "X keywords",
+            "Add at least one X keyword.",
         )
 
     x_language = LANGUAGES[x_language_label]
@@ -333,69 +333,69 @@ with x_tab:
         X_CONTENT_FILTERS[x_filter_label],
         x_exclude_replies,
     )
-    st.markdown("**Aperçu envoyé à X**")
-    st.code(x_query or "Aucun mot-clé", wrap_lines=True)
+    st.markdown("**Preview sent to X**")
+    st.code(x_query or "No keyword", wrap_lines=True)
 
 with reddit_tab:
-    st.subheader("Collecte Reddit")
+    st.subheader("Reddit collection")
     st.caption(
-        "Reddit fournit les commentaires récents par subreddit. Les mots-clés "
-        "sont ensuite appliqués localement au texte des commentaires."
+        "Reddit provides recent comments by subreddit. Keywords "
+        "are then applied locally to comment text."
     )
     reddit_settings, reddit_terms = st.columns([1, 2])
     with reddit_settings:
         reddit_event_count = st.number_input(
-            "Nombre maximal de commentaires",
+            "Maximum comments",
             min_value=1,
             max_value=1000,
             value=int(crawler_config["reddit_event_count"]),
         )
         reddit_scan_limit = st.number_input(
-            "Commentaires inspectés par subreddit",
+            "Comments inspected per subreddit",
             min_value=1,
             max_value=100,
             value=int(crawler_config["reddit_comment_scan_limit"]),
         )
         reddit_match_mode = st.selectbox(
-            "Correspondance des mots-clés",
+            "Keyword match mode",
             options=["OR", "AND"],
             index=0
             if crawler_config["reddit_keyword_match_mode"] == "OR"
             else 1,
-            format_func=lambda value: "Au moins un mot (OU)"
+            format_func=lambda value: "At least one keyword (OR)"
             if value == "OR"
-            else "Tous les mots (ET)",
+            else "All keywords (AND)",
         )
         st.info(
-            "Le flux public Reddit ne propose pas de filtre de langue natif."
+            "The public Reddit feed does not provide a native language filter."
         )
     with reddit_terms:
         render_add_form(
             "reddit_keywords",
             "add_reddit_keyword",
-            "Ajouter un mot-clé Reddit",
-            "Ajouter",
+            "Add a Reddit keyword",
+            "Add",
         )
         render_item_list(
             "reddit_keywords",
-            "Mots-clés Reddit",
-            "Ajoutez au moins un mot-clé Reddit.",
+            "Reddit keywords",
+            "Add at least one Reddit keyword.",
         )
 
-    st.markdown("**Subreddits surveillés**")
+    st.markdown("**Monitored subreddits**")
     render_add_form(
         "crawler_subreddits",
         "add_subreddit",
-        "Ajouter un subreddit",
-        "Ajouter",
+        "Add a subreddit",
+        "Add",
         normalizer=normalize_subreddit,
     )
     render_item_list(
         "crawler_subreddits",
-        "Liste des subreddits",
-        "Ajoutez au moins un subreddit.",
+        "Subreddit list",
+        "Add at least one subreddit.",
     )
-    st.markdown("**Aperçu du filtrage Reddit**")
+    st.markdown("**Reddit filtering preview**")
     st.code(
         f"{reddit_match_mode}: "
         + ", ".join(st.session_state.reddit_keywords),
@@ -403,37 +403,37 @@ with reddit_tab:
     )
 
 with refresh_tab:
-    st.subheader("Rafraîchissement des métadonnées")
+    st.subheader("Metadata refresh")
     st.caption(
-        "Ces réglages concernent le DAG qui actualise les likes, vues, réponses "
-        "et autres métriques des événements déjà présents dans Silver."
+        "These settings control the DAG that refreshes likes, views, replies, "
+        "and other metrics for events already present in Silver."
     )
     refresh_column, refresh_actions = st.columns([2, 1])
     with refresh_column:
         lookback_days = st.number_input(
-            "Fenêtre en jours",
+            "Lookback window in days",
             min_value=1,
             max_value=365,
             value=int(insight_config["lookback_days"]),
         )
         max_events_per_source = st.number_input(
-            "Limite d'événements par source",
+            "Event limit per source",
             min_value=1,
             max_value=2000,
             value=int(insight_config["max_events_per_source"]),
         )
         refresh_x_headless = st.checkbox(
-            "X en mode headless",
+            "Run X headless",
             value=bool(insight_config["x_headless"]),
         )
     with refresh_actions:
         save_refresh = st.button(
-            "Enregistrer",
+            "Save",
             key="save_refresh",
             width="stretch",
         )
         launch_refresh = st.button(
-            "Enregistrer et lancer",
+            "Save and run",
             key="launch_refresh",
             type="primary",
             width="stretch",
@@ -453,18 +453,18 @@ with refresh_tab:
                     refresh_config,
                 )
                 st.success(
-                    "Rafraîchissement lancé: "
-                    f"{run.get('dag_run_id', 'nouveau run')}"
+                    "Refresh started: "
+                    f"{run.get('dag_run_id', 'new run')}"
                 )
             else:
-                st.success("Configuration de rafraîchissement enregistrée.")
+                st.success("Refresh configuration saved.")
         except Exception as exc:
-            st.error(f"Impossible d'enregistrer: {exc}")
+            st.error(f"Unable to save: {exc}")
 
 st.divider()
-st.subheader("Enregistrer ou lancer la collecte")
+st.subheader("Save or run collection")
 st.caption(
-    "Cette action applique ensemble les réglages YouTube, X et Reddit ci-dessus."
+    "This action applies the YouTube, X, and Reddit settings above together."
 )
 pipeline_column, save_column, launch_column = st.columns([2, 1, 1])
 with pipeline_column:
@@ -476,12 +476,12 @@ with pipeline_column:
         ],
     )
 save_collection = save_column.button(
-    "Enregistrer",
+    "Save",
     key="save_collection",
     width="stretch",
 )
 launch_collection = launch_column.button(
-    "Enregistrer et lancer",
+    "Save and run",
     key="launch_collection",
     type="primary",
     width="stretch",
@@ -499,11 +499,11 @@ if save_collection or launch_collection:
     ]
     if missing_platforms:
         st.error(
-            "Ajoutez au moins un mot-clé pour: "
+            "Add at least one keyword for: "
             + ", ".join(missing_platforms)
         )
     elif not st.session_state.crawler_subreddits:
-        st.error("Ajoutez au moins un subreddit.")
+        st.error("Add at least one subreddit.")
     else:
         collection_config = {
             "youtube_keywords": st.session_state.youtube_keywords,
@@ -531,9 +531,9 @@ if save_collection or launch_collection:
             if launch_collection:
                 run = client.trigger_dag(dag_id, collection_config)
                 st.success(
-                    f"Collecte lancée: {run.get('dag_run_id', dag_id)}"
+                    f"Collection started: {run.get('dag_run_id', dag_id)}"
                 )
             else:
-                st.success("Configuration de collecte enregistrée.")
+                st.success("Collection configuration saved.")
         except Exception as exc:
-            st.error(f"Impossible d'enregistrer: {exc}")
+            st.error(f"Unable to save: {exc}")

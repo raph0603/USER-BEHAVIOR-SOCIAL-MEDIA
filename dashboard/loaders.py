@@ -163,10 +163,10 @@ def load_iceberg_data(config=None):
                 ]
     except Exception as exc:
         raise RuntimeError(
-            "Impossible de lire la table Iceberg Silver. "
+            "Unable to read the Iceberg Silver table. "
             f"Table: {config['table_path']} | "
             f"MinIO: {config['endpoint_url']} | "
-            f"Erreur: {exc}"
+            f"Error: {exc}"
         ) from exc
     finally:
         if connection is not None:

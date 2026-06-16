@@ -10,14 +10,14 @@ class DashboardUserProgressionTests(unittest.TestCase):
         source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
 
         expected = [
-            "Suivi par identifiant",
-            "Taux de réponses",
-            "Engagement moyen",
-            "Événements cumulés",
-            "Likes cumulés",
-            "Vues cumulées",
-            "Réponses cumulées",
-            "Classer les identifiants par",
+            "Identifier tracking",
+            "Reply rate",
+            "Average engagement",
+            "Cumulative events",
+            "Cumulative likes",
+            "Cumulative views",
+            "Cumulative replies",
+            "Rank identifiers by",
         ]
         for value in expected:
             with self.subTest(value=value):
@@ -30,7 +30,7 @@ class DashboardUserProgressionTests(unittest.TestCase):
         self.assertIn("def build_analytics_rows", source)
         self.assertIn("analytics_df = build_analytics_rows(df_filtered)", source)
         self.assertIn("deduplicate_youtube_videos(df_filtered)", source)
-        self.assertIn("regroupees par video", source)
+        self.assertIn("grouped by video", source)
 
     def test_dashboard_links_balancing_report(self):
         source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
@@ -39,7 +39,7 @@ class DashboardUserProgressionTests(unittest.TestCase):
             "DEFAULT_BALANCING_REPORT_PATH",
             "DASHBOARD_BALANCING_REPORT_PATH",
             "def get_balancing_report",
-            "Dataset équilibré par source",
+            "Dataset balanced by source",
             "distribution_before",
             "distribution_after",
             "build_balanced_comment_dataset",

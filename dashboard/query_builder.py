@@ -1,26 +1,26 @@
 LANGUAGES = {
-    "Toutes les langues": "",
-    "Anglais": "en",
-    "Français": "fr",
-    "Espagnol": "es",
-    "Allemand": "de",
-    "Italien": "it",
-    "Portugais": "pt",
+    "All languages": "",
+    "English": "en",
+    "French": "fr",
+    "Spanish": "es",
+    "German": "de",
+    "Italian": "it",
+    "Portuguese": "pt",
 }
 
 X_CONTENT_FILTERS = {
-    "Tous les contenus": "",
-    "Avec média": "filter:media",
-    "Avec liens": "filter:links",
-    "Vidéos": "filter:videos",
+    "All content": "",
+    "With media": "filter:media",
+    "With links": "filter:links",
+    "Videos": "filter:videos",
     "Images": "filter:images",
 }
 
 YOUTUBE_ORDERS = {
-    "Plus récentes": "date",
-    "Pertinence": "relevance",
-    "Plus vues": "viewCount",
-    "Mieux notées": "rating",
+    "Newest": "date",
+    "Relevance": "relevance",
+    "Most viewed": "viewCount",
+    "Top rated": "rating",
 }
 
 

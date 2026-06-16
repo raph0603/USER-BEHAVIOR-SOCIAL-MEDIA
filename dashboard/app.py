@@ -13,18 +13,18 @@ from navigation import render_navigation
 
 ENGAGEMENT_LABELS = {
     "like_count": "Likes",
-    "view_count": "Vues",
-    "comment_count": "Commentaires",
-    "reply_count": "Réponses",
+    "view_count": "Views",
+    "comment_count": "Comments",
+    "reply_count": "Replies",
     "retweet_count": "Retweets",
-    "bookmark_count": "Favoris",
+    "bookmark_count": "Bookmarks",
     "score": "Score Reddit",
 }
 
 TRACKING_ROLE_ORDER = [
-    "Auteur",
+    "Author",
     "Owner YouTube",
-    "Collaborateur YouTube",
+    "YouTube collaborator",
 ]
 
 VIDEO_LEVEL_ENGAGEMENT_COLUMNS = (
@@ -65,7 +65,7 @@ def format_collaborators(value):
     if collaborators is None:
         return "N/A"
     if not collaborators:
-        return "Aucun"
+        return "None"
     return ", ".join(collaborators)
 
 
@@ -126,7 +126,7 @@ def build_user_tracking_rows(dataframe):
             author_rows["tracked_identifier"] = author_rows[
                 "author_hash"
             ].astype("string")
-            author_rows["identifier_role"] = "Auteur"
+            author_rows["identifier_role"] = "Author"
             tracking_frames.append(author_rows)
 
     if {"source", "owner_channel_id"}.issubset(analytics_rows.columns):
@@ -155,7 +155,7 @@ def build_user_tracking_rows(dataframe):
             for collaborator in collaborators:
                 collaborator_row = row.copy()
                 collaborator_row["tracked_identifier"] = collaborator
-                collaborator_row["identifier_role"] = "Collaborateur YouTube"
+                collaborator_row["identifier_role"] = "YouTube collaborator"
                 collaborator_records.append(collaborator_row)
 
         if collaborator_records:
@@ -206,11 +206,11 @@ render_navigation()
 
 st.title("Social Media Lakehouse Dashboard")
 st.caption(
-    "Monitoring des événements nettoyés reçus dans la table Iceberg Silver"
+    "Monitoring cleaned events received in the Iceberg Silver table"
 )
 
 
-@st.cache_data(ttl=60, show_spinner="Lecture de la table Iceberg Silver...")
+@st.cache_data(ttl=60, show_spinner="Reading the Iceberg Silver table...")
 def get_data():
     return load_iceberg_data()
 
@@ -236,59 +236,59 @@ def get_balancing_report():
 
 @st.fragment(run_every="15s")
 def render_airflow_monitoring():
-    st.subheader("Orchestration Airflow")
+    st.subheader("Airflow orchestration")
 
     try:
         status = get_airflow_status()
     except Exception as exc:
-        st.warning(f"Monitoring Airflow indisponible: {exc}")
+        st.warning(f"Airflow monitoring unavailable: {exc}")
         return
 
     active_runs = status["active_runs"]
     next_runs = status["next_runs"]
 
     if active_runs:
-        st.caption(f"{len(active_runs)} job(s) actif(s)")
+        st.caption(f"{len(active_runs)} active job(s)")
         for run in active_runs:
             label = (
                 f"{run['dag_id']} - {run['state']} - "
-                f"{run['completed_tasks']}/{run['total_tasks']} tâches"
+                f"{run['completed_tasks']}/{run['total_tasks']} tasks"
             )
             st.write(f"**{label}**")
             st.progress(
                 run["progress"],
-                text=f"{run['progress']} % terminé",
+                text=f"{run['progress']} % complete",
             )
             if run["failed_tasks"]:
                 st.error(
-                    f"{run['failed_tasks']} tâche(s) en échec dans ce run"
+                    f"{run['failed_tasks']} failed task(s) in this run"
                 )
     else:
-        st.success("Aucun job Airflow en cours")
+        st.success("No Airflow job currently running")
 
     if next_runs:
         next_run = next_runs[0]
         metric_columns = st.columns(3)
         metric_columns[0].metric(
-            "Prochain job",
+            "Next job",
             next_run["dag_id"],
         )
         metric_columns[1].metric(
-            "Planification",
+            "Scheduled in",
             next_run["countdown"],
         )
         metric_columns[2].metric(
-            "Heure prévue",
+            "Scheduled time",
             next_run["next_run"].astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         )
 
         schedule_rows = [
             {
                 "Job": run["dag_id"],
-                "Prochaine exécution": run["next_run"]
+                "Next run": run["next_run"]
                 .astimezone()
                 .strftime("%Y-%m-%d %H:%M:%S"),
-                "Dans": run["countdown"],
+                "In": run["countdown"],
             }
             for run in next_runs
         ]
@@ -298,11 +298,11 @@ def render_airflow_monitoring():
             hide_index=True,
         )
     else:
-        st.info("Aucune prochaine exécution planifiée")
+        st.info("No next run scheduled")
 
     st.caption(
-        "Actualisation automatique toutes les 15 secondes. "
-        f"Dernière vérification: "
+        "Auto-refresh every 15 seconds. "
+        f"Last check: "
         f"{status['checked_at'].astimezone().strftime('%H:%M:%S')}"
     )
 
@@ -311,11 +311,11 @@ render_airflow_monitoring()
 
 config = get_iceberg_config()
 
-st.sidebar.header("Données")
+st.sidebar.header("Data")
 st.sidebar.caption(f"Table: `{config['table_path']}`")
 st.sidebar.caption(f"MinIO: `{config['endpoint_url']}`")
 
-if st.sidebar.button("Actualiser les données", width="stretch"):
+if st.sidebar.button("Refresh data", width="stretch"):
     st.cache_data.clear()
     st.rerun()
 
@@ -324,16 +324,16 @@ try:
 except RuntimeError as exc:
     st.error(str(exc))
     st.info(
-        "Démarre au minimum MinIO avec "
-        "`docker compose up -d minio minio-init`, puis relance le dashboard."
+        "Start at least MinIO with "
+        "`docker compose up -d minio minio-init`, then restart the dashboard."
     )
     st.stop()
 
 if df.empty:
-    st.warning("La table Iceberg Silver est accessible mais ne contient aucun événement.")
+    st.warning("The Iceberg Silver table is accessible but contains no events.")
     st.stop()
 
-st.sidebar.header("Filtres")
+st.sidebar.header("Filters")
 
 available_sources = sorted(df["source"].dropna().unique())
 sources = st.sidebar.multiselect(
@@ -349,7 +349,7 @@ if not df_dated.empty:
     min_date = df_dated["created_at"].min().date()
     max_date = df_dated["created_at"].max().date()
     date_range = st.sidebar.date_input(
-        "Période",
+        "Period",
         value=(min_date, max_date),
         min_value=min_date,
         max_value=max_date,
@@ -365,7 +365,7 @@ if not df_dated.empty:
             )
         ]
 else:
-    st.sidebar.warning("Aucune date valide pour la sélection actuelle.")
+    st.sidebar.warning("No valid date for the current selection.")
 
 analytics_df = build_analytics_rows(df_filtered)
 
@@ -383,19 +383,19 @@ pipeline_error_pct = (
 )
 
 c1, c2, c3, c4, c5, c6 = st.columns(6)
-c1.metric("Événements", f"{total_records:,}")
+c1.metric("Events", f"{total_records:,}")
 c2.metric(
-    "Dernière activité",
+    "Last activity",
     latest_activity.strftime("%Y-%m-%d %H:%M")
     if pd.notna(latest_activity)
     else "N/A",
 )
-c3.metric("Identifiants uniques", f"{unique_identifiers:,}")
-c4.metric("Longueur moyenne", f"{avg_text_words:.1f} mots")
-c5.metric("Dates manquantes", f"{missing_timestamps_pct:.1f}%")
-c6.metric("Erreurs pipeline", f"{pipeline_error_pct:.1f}%")
+c3.metric("Unique identifiers", f"{unique_identifiers:,}")
+c4.metric("Average length", f"{avg_text_words:.1f} words")
+c5.metric("Missing dates", f"{missing_timestamps_pct:.1f}%")
+c6.metric("Pipeline errors", f"{pipeline_error_pct:.1f}%")
 
-st.subheader("Métadonnées d'engagement")
+st.subheader("Engagement metadata")
 engagement_metrics = st.columns(len(ENGAGEMENT_LABELS))
 for metric, (column, label) in zip(
     engagement_metrics,
@@ -419,12 +419,12 @@ st.dataframe(
     },
 )
 st.caption(
-    "Les valeurs N/A correspondent aux métriques non disponibles pour la "
-    "plateforme. Le score Reddit est conservé séparément des likes."
+    "N/A values are metrics unavailable for the "
+    "platform. Reddit score is kept separate from likes."
 )
 
 st.caption(
-    "Note: les metriques YouTube sont regroupees par video avant aggregation."
+    "Note: YouTube metrics are grouped by video before aggregation."
 )
 
 common_engagement_columns = [
@@ -459,14 +459,14 @@ if not engagement_chart_data.empty:
         y="value",
         color="metric",
         barmode="group",
-        labels={"value": "Total", "metric": "Métrique"},
+        labels={"value": "Total", "metric": "Metric"},
     )
     st.plotly_chart(fig_engagement, width="stretch")
 
-st.subheader("Auteurs et collaborations YouTube")
+st.subheader("YouTube authors and collaborations")
 youtube_df = deduplicate_youtube_videos(df_filtered)
 if youtube_df.empty:
-    st.info("Aucun événement YouTube dans la sélection actuelle.")
+    st.info("No YouTube event in the current selection.")
 else:
     youtube_df["collaborator_count"] = youtube_df[
         "collaborator_channel_ids"
@@ -490,17 +490,17 @@ else:
     )
 
     yt_metrics = st.columns(4)
-    yt_metrics[0].metric("Vidéos YouTube", f"{len(youtube_df):,}")
+    yt_metrics[0].metric("YouTube videos", f"{len(youtube_df):,}")
     yt_metrics[1].metric(
-        "Owners connus",
+        "Known owners",
         f"{youtube_df['owner_channel_id'].dropna().nunique():,}",
     )
     yt_metrics[2].metric(
-        "Avec collaborateurs",
+        "With collaborators",
         f"{videos_with_collaborators:,}",
     )
     yt_metrics[3].metric(
-        "Collaborateurs uniques",
+        "Unique collaborators",
         f"{len(distinct_collaborator_ids):,}",
     )
 
@@ -536,10 +536,10 @@ else:
         hide_index=True,
         column_config={
             "created_at": "Timestamp",
-            "text": "Titre",
+            "text": "Title",
             "owner_channel_id": "Owner channel ID",
             "collaborator_count": st.column_config.NumberColumn(
-                "Collaborateurs",
+                "Collaborators",
                 format="%d",
             ),
             "collaborators": "Collaborator channel IDs",
@@ -547,12 +547,12 @@ else:
         },
     )
     st.caption(
-        "`N/A` signifie que la page YouTube n'a pas permis de confirmer la "
-        "liste. `Aucun` signifie que la vidéo a été lue et qu'aucun "
-        "collaborateur accepté n'a été trouvé."
+        "`N/A` means the YouTube page did not allow confirming the "
+        "collaborator list. `None` means the video was read and no "
+        "accepted collaborator was found."
     )
 
-st.subheader("Événements par source")
+st.subheader("Events by source")
 source_counts = (
     analytics_df.groupby("source")
     .size()
@@ -566,13 +566,13 @@ if not source_counts.empty:
         x="source",
         y="records",
         color="source",
-        labels={"source": "Source", "records": "Événements"},
+        labels={"source": "Source", "records": "Events"},
     )
     st.plotly_chart(fig_source, width="stretch")
 else:
-    st.info("Aucun événement pour les filtres actuels.")
+    st.info("No event for the current filters.")
 
-st.subheader("Activité dans le temps")
+st.subheader("Activity over time")
 df_time = analytics_df.dropna(subset=["created_at"]).copy()
 
 if not df_time.empty:
@@ -588,32 +588,32 @@ if not df_time.empty:
         y="records",
         color="source",
         markers=True,
-        labels={"date": "Date", "records": "Événements", "source": "Source"},
+        labels={"date": "Date", "records": "Events", "source": "Source"},
     )
     st.plotly_chart(fig_time, width="stretch")
 else:
-    st.info("Aucun timestamp valide pour les filtres actuels.")
+    st.info("No valid timestamp for the current filters.")
 
-st.subheader("Dataset équilibré par source")
+st.subheader("Dataset balanced by source")
 balancing_report = get_balancing_report()
 if not balancing_report:
     st.info(
-        "Aucun rapport de balancing disponible. Lance le DAG "
-        "`build_balanced_comment_dataset` pour générer "
+        "No balancing report available. Run the DAG "
+        "`build_balanced_comment_dataset` to generate "
         "`data/balancing/report.json`."
     )
 else:
     balance_metrics = st.columns(5)
     balance_metrics[0].metric(
-        "Lignes source",
+        "Source rows",
         format_count(balancing_report.get("total_before")),
     )
     balance_metrics[1].metric(
-        "Lignes équilibrées",
+        "Balanced rows",
         format_count(balancing_report.get("total_after")),
     )
     balance_metrics[2].metric(
-        "Cible par source",
+        "Target per source",
         format_count(balancing_report.get("effective_target_per_group")),
     )
     balance_metrics[3].metric("Seed", balancing_report.get("seed", "N/A"))
@@ -623,15 +623,15 @@ else:
     )
 
     st.caption(
-        "Table cible: "
+        "Target table: "
         f"`{balancing_report.get('output_table', 'N/A')}` | "
-        f"Rapport: `{balancing_report.get('_report_path')}` | "
-        "Dernière génération: "
+        f"Report: `{balancing_report.get('_report_path')}` | "
+        "Last generation: "
         f"{balancing_report.get('_modified_at').strftime('%Y-%m-%d %H:%M:%S')}"
     )
     constraints = balancing_report.get("constraints") or []
     if constraints:
-        st.warning("Contraintes: " + " | ".join(constraints))
+        st.warning("Constraints: " + " | ".join(constraints))
 
     before_distribution = pd.DataFrame(
         balancing_report.get("distribution_before", [])
@@ -641,8 +641,8 @@ else:
     )
     if not before_distribution.empty and not after_distribution.empty:
         dimensions = balancing_report.get("dimensions", [])
-        before_distribution["dataset"] = "Avant"
-        after_distribution["dataset"] = "Après"
+        before_distribution["dataset"] = "Before"
+        after_distribution["dataset"] = "After"
         distribution = pd.concat(
             [before_distribution, after_distribution],
             ignore_index=True,
@@ -662,7 +662,7 @@ else:
             barmode="group",
             labels={
                 "group": "Source",
-                "count": "Lignes",
+                "count": "Rows",
                 "dataset": "Dataset",
             },
         )
@@ -675,9 +675,9 @@ else:
             columns={
                 "source": "Source",
                 "engagement_band": "Engagement",
-                "comment_type": "Type commentaire",
+                "comment_type": "Comment type",
                 "dataset": "Dataset",
-                "count": "Lignes",
+                "count": "Rows",
             }
         )
         st.dataframe(
@@ -685,15 +685,15 @@ else:
             width="stretch",
             hide_index=True,
             column_config={
-                "Lignes": st.column_config.NumberColumn(format="%d"),
+                "Rows": st.column_config.NumberColumn(format="%d"),
             },
         )
 
-st.subheader("Suivi par identifiant")
+st.subheader("Identifier tracking")
 user_tracking_df = build_user_tracking_rows(df_filtered)
 
 if user_tracking_df.empty:
-    st.info("Aucun identifiant disponible pour les filtres actuels.")
+    st.info("No identifier available for the current filters.")
 else:
     role_summary = (
         user_tracking_df.groupby("identifier_role")["author_hash"]
@@ -710,7 +710,7 @@ else:
     )
     role_options = [*TRACKING_ROLE_ORDER, *available_roles]
     selected_roles = st.multiselect(
-        "Types d'identifiants à inclure",
+        "Identifier types to include",
         options=role_options,
         default=role_options,
     )
@@ -719,11 +719,11 @@ else:
     ].copy()
 
     if user_tracking_df.empty:
-        st.info("Aucun identifiant disponible pour ces types.")
+        st.info("No identifier available for these types.")
     else:
         st.caption(
-            "Les owners et collaborateurs YouTube sont inclus comme "
-            "identifiants de contribution séparés des auteurs de commentaires."
+            "YouTube owners and collaborators are included as "
+            "contribution identifiers separate from comment authors."
         )
 
     for column in ENGAGEMENT_COLUMNS:
@@ -799,16 +799,16 @@ else:
     )
 
     ranking_options = {
-        "events": "Activité",
+        "events": "Activity",
         "total_engagement": "Engagement total",
-        "avg_engagement_per_event": "Engagement moyen",
+        "avg_engagement_per_event": "Average engagement",
         "total_like_count": "Likes",
-        "total_view_count": "Vues",
-        "total_reply_count": "Réponses",
-        "reply_rate_pct": "Taux de réponses",
+        "total_view_count": "Views",
+        "total_reply_count": "Replies",
+        "reply_rate_pct": "Reply rate",
     }
     ranking_metric = st.selectbox(
-        "Classer les identifiants par",
+        "Rank identifiers by",
         options=list(ranking_options),
         format_func=ranking_options.get,
     )
@@ -840,19 +840,19 @@ else:
         ]
     ].rename(
         columns={
-            "author_display": "Identifiant",
+            "author_display": "Identifier",
             "roles": "Type",
             "sources": "Sources",
-            "events": "Événements",
-            "active_days": "Jours actifs",
-            "reply_rate_pct": "Taux de réponses (%)",
+            "events": "Events",
+            "active_days": "Active days",
+            "reply_rate_pct": "Reply rate (%)",
             "total_like_count": "Likes",
-            "total_view_count": "Vues",
-            "total_reply_count": "Réponses",
-            "total_comment_count": "Commentaires",
+            "total_view_count": "Views",
+            "total_reply_count": "Replies",
+            "total_comment_count": "Comments",
             "total_engagement": "Engagement total",
-            "avg_engagement_per_event": "Engagement moyen",
-            "last_activity": "Dernière activité",
+            "avg_engagement_per_event": "Average engagement",
+            "last_activity": "Last activity",
         }
     )
     st.dataframe(
@@ -860,17 +860,17 @@ else:
         width="stretch",
         hide_index=True,
         column_config={
-            "Événements": st.column_config.NumberColumn(format="%d"),
-            "Jours actifs": st.column_config.NumberColumn(format="%d"),
-            "Taux de réponses (%)": st.column_config.NumberColumn(
+            "Events": st.column_config.NumberColumn(format="%d"),
+            "Active days": st.column_config.NumberColumn(format="%d"),
+            "Reply rate (%)": st.column_config.NumberColumn(
                 format="%.1f"
             ),
             "Likes": st.column_config.NumberColumn(format="%d"),
-            "Vues": st.column_config.NumberColumn(format="%d"),
-            "Réponses": st.column_config.NumberColumn(format="%d"),
-            "Commentaires": st.column_config.NumberColumn(format="%d"),
+            "Views": st.column_config.NumberColumn(format="%d"),
+            "Replies": st.column_config.NumberColumn(format="%d"),
+            "Comments": st.column_config.NumberColumn(format="%d"),
             "Engagement total": st.column_config.NumberColumn(format="%d"),
-            "Engagement moyen": st.column_config.NumberColumn(format="%.1f"),
+            "Average engagement": st.column_config.NumberColumn(format="%.1f"),
         },
     )
 
@@ -884,7 +884,7 @@ else:
             for row in top_users.itertuples()
         }
         selected_author = st.selectbox(
-            "Identifiant à suivre",
+            "Identifier to track",
             options=selector_options,
             format_func=selector_labels.get,
         )
@@ -896,13 +896,13 @@ else:
         ].copy()
 
         user_metrics = st.columns(6)
-        user_metrics[0].metric("Événements", format_count(selected_user.events))
+        user_metrics[0].metric("Events", format_count(selected_user.events))
         user_metrics[1].metric(
-            "Jours actifs",
+            "Active days",
             format_count(selected_user.active_days),
         )
         user_metrics[2].metric(
-            "Taux de réponses",
+            "Reply rate",
             format_rate(selected_user.reply_rate_pct),
         )
         user_metrics[3].metric(
@@ -910,11 +910,11 @@ else:
             format_count(selected_user.total_like_count),
         )
         user_metrics[4].metric(
-            "Vues",
+            "Views",
             format_count(selected_user.total_view_count),
         )
         user_metrics[5].metric(
-            "Engagement moyen",
+            "Average engagement",
             f"{selected_user.avg_engagement_per_event:.1f}",
         )
 
@@ -938,11 +938,11 @@ else:
                 .sort_values("date")
             )
             cumulative_columns = {
-                "events": "Événements cumulés",
-                "likes": "Likes cumulés",
-                "views": "Vues cumulées",
-                "replies": "Réponses cumulées",
-                "comments": "Commentaires cumulés",
+                "events": "Cumulative events",
+                "likes": "Cumulative likes",
+                "views": "Cumulative views",
+                "replies": "Cumulative replies",
+                "comments": "Cumulative comments",
             }
             for column in cumulative_columns:
                 daily_user_progress[f"cumulative_{column}"] = (
@@ -971,13 +971,13 @@ else:
                 markers=True,
                 labels={
                     "date": "Date",
-                    "value": "Total cumulé",
-                    "metric": "Métrique",
+                    "value": "Cumulative total",
+                    "metric": "Metric",
                 },
             )
             st.plotly_chart(fig_user_progress, width="stretch")
         else:
-            st.info("Aucune date valide pour cet identifiant.")
+            st.info("No valid date for this identifier.")
 
         selected_recent = selected_events.sort_values(
             "created_at",
@@ -1010,36 +1010,36 @@ else:
                 "source": "Source",
                 "identifier_role": "Type",
                 "created_at": "Timestamp",
-                "text": "Contenu",
+                "text": "Content",
                 "like_count": st.column_config.NumberColumn(
                     "Likes",
                     format="%d",
                 ),
                 "view_count": st.column_config.NumberColumn(
-                    "Vues",
+                    "Views",
                     format="%d",
                 ),
                 "comment_count": st.column_config.NumberColumn(
-                    "Commentaires",
+                    "Comments",
                     format="%d",
                 ),
                 "reply_count": st.column_config.NumberColumn(
-                    "Réponses",
+                    "Replies",
                     format="%d",
                 ),
                 "url": st.column_config.LinkColumn("URL"),
             },
         )
     st.caption(
-        "Le taux de réponses correspond à la part des événements de cet "
-        "identifiant qui ont au moins une réponse observée. Les métriques "
-        "restent dépendantes de ce que chaque plateforme expose."
+        "Reply rate is the share of events for this "
+        "identifier with at least one observed reply. Metrics "
+        "still depend on what each platform exposes."
     )
 
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("Identifiants uniques par source")
+    st.subheader("Unique identifiers by source")
     identifiers_by_source = (
         analytics_df.groupby("source")["author_hash"]
         .nunique()
@@ -1051,12 +1051,12 @@ with col1:
         x="source",
         y="identifiers",
         color="source",
-        labels={"source": "Source", "identifiers": "Identifiants uniques"},
+        labels={"source": "Source", "identifiers": "Unique identifiers"},
     )
     st.plotly_chart(fig_identifiers, width="stretch")
 
 with col2:
-    st.subheader("Longueur moyenne des textes")
+    st.subheader("Average text length")
     text_length_by_source = (
         analytics_df.groupby("source")["text_len_words"]
         .mean()
@@ -1070,12 +1070,12 @@ with col2:
         color="source",
         labels={
             "source": "Source",
-            "text_len_words": "Longueur moyenne en mots",
+            "text_len_words": "Average length in words",
         },
     )
     st.plotly_chart(fig_length, width="stretch")
 
-st.subheader("Qualité des données par source")
+st.subheader("Data quality by source")
 quality_by_source = (
     analytics_df.groupby("source")
     .agg(
@@ -1093,18 +1093,18 @@ quality_by_source = (
     .rename(
         columns={
             "source": "Source",
-            "total_records": "Événements",
-            "missing_text_pct": "Texte manquant (%)",
-            "missing_author_hash_pct": "Identifiant manquant (%)",
-            "missing_created_at_pct": "Timestamp manquant (%)",
-            "missing_url_pct": "URL manquante (%)",
-            "pipeline_error_pct": "Erreur pipeline (%)",
+            "total_records": "Events",
+            "missing_text_pct": "Missing text (%)",
+            "missing_author_hash_pct": "Missing identifier (%)",
+            "missing_created_at_pct": "Missing timestamp (%)",
+            "missing_url_pct": "Missing URL (%)",
+            "pipeline_error_pct": "Pipeline error (%)",
         }
     )
 )
 st.dataframe(quality_by_source, width="stretch", hide_index=True)
 
-st.subheader("Événements récents")
+st.subheader("Recent events")
 recent_df = analytics_df.copy()
 recent_df["text"] = recent_df["text"].fillna("").str.strip().str.slice(0, 240)
 recent_df["url"] = recent_df["url"].fillna("N/A")
@@ -1155,17 +1155,17 @@ st.dataframe(
     column_config={
         "source": "Source",
         "created_at": "Timestamp",
-        "author_hash": "Identifiant hash",
-        "platform_event_id": "ID plateforme",
-        "metadata_refreshed_at": "Dernier refresh metadata",
+        "author_hash": "Identifier hash",
+        "platform_event_id": "Platform ID",
+        "metadata_refreshed_at": "Last metadata refresh",
         "owner_channel_id": "Owner channel ID",
         "collaborators": "Collaborator channel IDs",
-        "text": "Contenu nettoyé",
+        "text": "Cleaned content",
         **{
             column: st.column_config.NumberColumn(label, format="%d")
             for column, label in ENGAGEMENT_LABELS.items()
         },
         "url": st.column_config.LinkColumn("URL"),
-        "error": "Erreur",
+        "error": "Error",
     },
 )
