@@ -98,7 +98,7 @@ class EngagementMetadataTests(unittest.TestCase):
 
         self.assertEqual(ENGAGEMENT.extract_x_metric(article, "like"), 23)
 
-    def test_avro_contract_contains_available_engagement_metadata(self):
+    def test_avro_contract_contains_only_common_engagement_metadata(self):
         schema_path = ROOT / "schemas" / "playwright_event.avsc"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         field_names = {field["name"] for field in schema["fields"]}
@@ -106,14 +106,17 @@ class EngagementMetadataTests(unittest.TestCase):
         expected = {
             "platform_event_id",
             "like_count",
+            "view_count",
+        }
+        removed = {
+            "bookmark_count",
             "comment_count",
             "reply_count",
-            "view_count",
             "retweet_count",
-            "bookmark_count",
             "score",
         }
         self.assertTrue(expected.issubset(field_names))
+        self.assertFalse(removed & field_names)
         self.assertFalse(
             {
                 "content_type",
@@ -126,19 +129,20 @@ class EngagementMetadataTests(unittest.TestCase):
             & field_names
         )
 
-    def test_engagement_metrics_are_propagated_to_silver(self):
+    def test_common_engagement_metrics_are_propagated_to_silver(self):
         expected = {
             "platform_event_id",
             "like_count",
+            "view_count",
+        }
+        removed = {
+            "bookmark_count",
             "comment_count",
             "reply_count",
-            "view_count",
             "retweet_count",
-            "bookmark_count",
             "score",
         }
         paths = [
-            ROOT / "playwright" / "producer.py",
             ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py",
             ROOT
             / "spark"
@@ -151,6 +155,12 @@ class EngagementMetadataTests(unittest.TestCase):
             / "jobs"
             / "batch"
             / "bronze_to_silver_from_kafka.py",
+            ROOT
+            / "spark"
+            / "jobs"
+            / "maintenance"
+            / "apply_insight_updates.py",
+            ROOT / "playwright" / "insight_refresh.py",
         ]
 
         for path in paths:
@@ -158,6 +168,16 @@ class EngagementMetadataTests(unittest.TestCase):
             with self.subTest(path=path):
                 for field_name in expected:
                     self.assertIn(field_name, source)
+                for field_name in removed:
+                    self.assertNotIn(field_name, source)
+
+    def test_reddit_is_not_mapped_to_like_count_from_score(self):
+        source = (ROOT / "playwright" / "insight_refresh.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn('update["score"]', source)
+        self.assertNotIn('"score",', source)
 
     def test_cleaning_tolerates_malformed_avro_records(self):
         source = (
