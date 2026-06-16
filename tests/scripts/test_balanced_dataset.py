@@ -34,6 +34,7 @@ class BalancedDatasetTests(unittest.TestCase):
 
         self.assertIn("BALANCE_SEED", source)
         self.assertIn("BALANCE_DIMENSIONS", source)
+        self.assertIn('DEFAULT_DIMENSIONS = ("source",)', source)
         self.assertIn("BALANCE_TARGET_PER_GROUP", source)
         self.assertIn("sha2(", source)
         self.assertIn("row_number().over", source)
@@ -50,6 +51,7 @@ class BalancedDatasetTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn('dag_id="build_balanced_comment_dataset"', source)
+        self.assertIn('"source"', source)
         self.assertIn("BALANCE_DATASET_SCHEDULE_MINUTES", source)
         self.assertIn("acquire_pipeline_lock_command", source)
         self.assertIn("release_pipeline_lock_command", source)

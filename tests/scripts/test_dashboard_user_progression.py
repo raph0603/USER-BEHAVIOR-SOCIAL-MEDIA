@@ -39,7 +39,7 @@ class DashboardUserProgressionTests(unittest.TestCase):
             "DEFAULT_BALANCING_REPORT_PATH",
             "DASHBOARD_BALANCING_REPORT_PATH",
             "def get_balancing_report",
-            "Dataset equilibr",
+            "Dataset équilibré par source",
             "distribution_before",
             "distribution_after",
             "build_balanced_comment_dataset",

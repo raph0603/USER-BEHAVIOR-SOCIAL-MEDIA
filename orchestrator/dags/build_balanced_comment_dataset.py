@@ -49,10 +49,10 @@ with DAG(
             0,
             type="integer",
             minimum=0,
-            title="Rows per group; 0 uses the smallest group",
+            title="Rows per source; 0 uses the smallest source",
         ),
         "dimensions": Param(
-            "source,engagement_band,comment_type",
+            "source",
             type="string",
             title="Comma-separated balancing dimensions",
         ),

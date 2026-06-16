@@ -594,7 +594,7 @@ if not df_time.empty:
 else:
     st.info("Aucun timestamp valide pour les filtres actuels.")
 
-st.subheader("Dataset equilibré")
+st.subheader("Dataset équilibré par source")
 balancing_report = get_balancing_report()
 if not balancing_report:
     st.info(
@@ -613,7 +613,7 @@ else:
         format_count(balancing_report.get("total_after")),
     )
     balance_metrics[2].metric(
-        "Cible par groupe",
+        "Cible par source",
         format_count(balancing_report.get("effective_target_per_group")),
     )
     balance_metrics[3].metric("Seed", balancing_report.get("seed", "N/A"))
@@ -661,7 +661,7 @@ else:
             color="dataset",
             barmode="group",
             labels={
-                "group": "Groupe",
+                "group": "Source",
                 "count": "Lignes",
                 "dataset": "Dataset",
             },

@@ -34,7 +34,7 @@ ALLOWED_DIMENSIONS = {
     "event_date",
     *DERIVED_DIMENSIONS,
 }
-DEFAULT_DIMENSIONS = ("source", "engagement_band", "comment_type")
+DEFAULT_DIMENSIONS = ("source",)
 
 
 def _env(name: str, default: str) -> str:

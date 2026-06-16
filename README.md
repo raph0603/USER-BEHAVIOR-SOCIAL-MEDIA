@@ -278,10 +278,10 @@ from `lakehouse.silver.events`. It writes the Iceberg table
 `lakehouse.silver.balanced_events` and a JSON report to
 `data/balancing/report.json`.
 
-By default, balancing dimensions are `source`, `engagement_band` and
-`comment_type`. `engagement_band` is derived from total available engagement
-metadata (`none`, `low`, `medium`, `high`), and `comment_type` is derived from
-whether replies are observed. Sampling order is deterministic from
+By default, balancing is done by `source` only, so YouTube, X and Reddit keep
+the same number of rows in the balanced output. `engagement_band` and
+`comment_type` are still derived and kept in the output for analysis, but they
+are not part of the default balancing key. Sampling order is deterministic from
 `BALANCE_SEED` and stable platform/event fields, so the same input and seed
 produce the same output.
 
@@ -289,11 +289,11 @@ produce the same output.
 BALANCE_DATASET_SCHEDULE_MINUTES=0
 BALANCE_SEED=42
 BALANCE_TARGET_PER_GROUP=0
-BALANCE_DIMENSIONS=source,engagement_band,comment_type
+BALANCE_DIMENSIONS=source
 ```
 
-`BALANCE_TARGET_PER_GROUP=0` uses the smallest available group size. If a
-requested target is larger than the smallest group, the job lowers the
+`BALANCE_TARGET_PER_GROUP=0` uses the smallest available source size. If a
+requested target is larger than the smallest source, the job lowers the
 effective target and records that constraint in the report instead of
 duplicating rows.
 
