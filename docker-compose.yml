@@ -181,9 +181,13 @@ services:
       - DASHBOARD_AIRFLOW_USERNAME=${DASHBOARD_AIRFLOW_USERNAME:-admin}
       - DASHBOARD_AIRFLOW_PASSWORD=${DASHBOARD_AIRFLOW_PASSWORD:-admin}
       - DASHBOARD_AIRFLOW_TIMEOUT_SECONDS=${DASHBOARD_AIRFLOW_TIMEOUT_SECONDS:-10}
+      - DASHBOARD_BALANCING_REPORT_PATH=/app/balancing/report.json
 
     ports:
       - "8501:8501"
+
+    volumes:
+      - ${HOST_PROJECT_DIR:-.}/data/balancing:/app/balancing:ro
 
   youtube-collector:
     build:

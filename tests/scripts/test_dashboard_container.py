@@ -28,6 +28,14 @@ class DashboardContainerTests(unittest.TestCase):
             "DASHBOARD_AIRFLOW_URL=http://airflow-webserver:8080",
             compose,
         )
+        self.assertIn(
+            "DASHBOARD_BALANCING_REPORT_PATH=/app/balancing/report.json",
+            compose,
+        )
+        self.assertIn(
+            "${HOST_PROJECT_DIR:-.}/data/balancing:/app/balancing:ro",
+            compose,
+        )
 
 
 if __name__ == "__main__":

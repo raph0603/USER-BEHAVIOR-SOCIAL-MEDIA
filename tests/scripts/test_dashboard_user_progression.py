@@ -32,6 +32,22 @@ class DashboardUserProgressionTests(unittest.TestCase):
         self.assertIn("deduplicate_youtube_videos(df_filtered)", source)
         self.assertIn("regroupees par video", source)
 
+    def test_dashboard_links_balancing_report(self):
+        source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
+
+        expected = [
+            "DEFAULT_BALANCING_REPORT_PATH",
+            "DASHBOARD_BALANCING_REPORT_PATH",
+            "def get_balancing_report",
+            "Dataset equilibr",
+            "distribution_before",
+            "distribution_after",
+            "build_balanced_comment_dataset",
+        ]
+        for value in expected:
+            with self.subTest(value=value):
+                self.assertIn(value, source)
+
 
 if __name__ == "__main__":
     unittest.main()

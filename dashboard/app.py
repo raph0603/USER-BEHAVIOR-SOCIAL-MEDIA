@@ -1,3 +1,7 @@
+import json
+import os
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -28,6 +32,7 @@ VIDEO_LEVEL_ENGAGEMENT_COLUMNS = (
     "view_count",
     "comment_count",
 )
+DEFAULT_BALANCING_REPORT_PATH = "/app/balancing/report.json"
 
 
 def format_engagement_total(series):
@@ -213,6 +218,20 @@ def get_data():
 @st.cache_data(ttl=10, show_spinner=False)
 def get_airflow_status():
     return AirflowClient().load_status()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_balancing_report():
+    report_path = Path(
+        os.getenv("DASHBOARD_BALANCING_REPORT_PATH", DEFAULT_BALANCING_REPORT_PATH)
+    )
+    if not report_path.is_file():
+        return None
+    with report_path.open(encoding="utf-8") as report_file:
+        report = json.load(report_file)
+    report["_report_path"] = str(report_path)
+    report["_modified_at"] = pd.Timestamp(report_path.stat().st_mtime, unit="s")
+    return report
 
 
 @st.fragment(run_every="15s")
@@ -574,6 +593,101 @@ if not df_time.empty:
     st.plotly_chart(fig_time, width="stretch")
 else:
     st.info("Aucun timestamp valide pour les filtres actuels.")
+
+st.subheader("Dataset equilibré")
+balancing_report = get_balancing_report()
+if not balancing_report:
+    st.info(
+        "Aucun rapport de balancing disponible. Lance le DAG "
+        "`build_balanced_comment_dataset` pour générer "
+        "`data/balancing/report.json`."
+    )
+else:
+    balance_metrics = st.columns(5)
+    balance_metrics[0].metric(
+        "Lignes source",
+        format_count(balancing_report.get("total_before")),
+    )
+    balance_metrics[1].metric(
+        "Lignes équilibrées",
+        format_count(balancing_report.get("total_after")),
+    )
+    balance_metrics[2].metric(
+        "Cible par groupe",
+        format_count(balancing_report.get("effective_target_per_group")),
+    )
+    balance_metrics[3].metric("Seed", balancing_report.get("seed", "N/A"))
+    balance_metrics[4].metric(
+        "Dimensions",
+        ", ".join(balancing_report.get("dimensions", [])) or "N/A",
+    )
+
+    st.caption(
+        "Table cible: "
+        f"`{balancing_report.get('output_table', 'N/A')}` | "
+        f"Rapport: `{balancing_report.get('_report_path')}` | "
+        "Dernière génération: "
+        f"{balancing_report.get('_modified_at').strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    constraints = balancing_report.get("constraints") or []
+    if constraints:
+        st.warning("Contraintes: " + " | ".join(constraints))
+
+    before_distribution = pd.DataFrame(
+        balancing_report.get("distribution_before", [])
+    )
+    after_distribution = pd.DataFrame(
+        balancing_report.get("distribution_after", [])
+    )
+    if not before_distribution.empty and not after_distribution.empty:
+        dimensions = balancing_report.get("dimensions", [])
+        before_distribution["dataset"] = "Avant"
+        after_distribution["dataset"] = "Après"
+        distribution = pd.concat(
+            [before_distribution, after_distribution],
+            ignore_index=True,
+        )
+        if dimensions:
+            distribution["group"] = distribution[dimensions].astype(str).agg(
+                " | ".join,
+                axis=1,
+            )
+        else:
+            distribution["group"] = "all"
+        fig_balance = px.bar(
+            distribution,
+            x="group",
+            y="count",
+            color="dataset",
+            barmode="group",
+            labels={
+                "group": "Groupe",
+                "count": "Lignes",
+                "dataset": "Dataset",
+            },
+        )
+        fig_balance.update_layout(xaxis_tickangle=-45)
+        st.plotly_chart(fig_balance, width="stretch")
+
+        distribution_table = distribution[
+            [*dimensions, "dataset", "count"]
+        ].rename(
+            columns={
+                "source": "Source",
+                "engagement_band": "Engagement",
+                "comment_type": "Type commentaire",
+                "dataset": "Dataset",
+                "count": "Lignes",
+            }
+        )
+        st.dataframe(
+            distribution_table,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Lignes": st.column_config.NumberColumn(format="%d"),
+            },
+        )
 
 st.subheader("Suivi par identifiant")
 user_tracking_df = build_user_tracking_rows(df_filtered)
