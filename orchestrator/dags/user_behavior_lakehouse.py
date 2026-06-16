@@ -90,6 +90,25 @@ def wait_clean_command(
     """
 
 
+def build_balancing_report_command() -> str:
+    return r"""
+    set -euo pipefail
+    mkdir -p /workspace/data/balancing
+    docker exec \
+      -e BALANCE_SEED="${BALANCE_SEED:-42}" \
+      -e BALANCE_TARGET_PER_GROUP="${BALANCE_TARGET_PER_GROUP:-0}" \
+      -e BALANCE_DIMENSIONS="${BALANCE_DIMENSIONS:-source}" \
+      -e BALANCE_REPORT_PATH=/opt/spark/balancing/report.json \
+      spark-master /opt/spark/bin/spark-submit \
+      --master spark://spark-master:7077 \
+      --driver-memory 512m \
+      --executor-memory 512m \
+      --conf spark.cores.max=2 \
+      --conf spark.executor.cores=1 \
+      /opt/spark/jobs/maintenance/build_balanced_dataset.py
+    """
+
+
 CRAWLER_CONFIG = load_crawler_config()
 
 
@@ -479,6 +498,12 @@ with DAG(
         """,
     )
 
+    update_balancing_report = BashOperator(
+        task_id="update_balancing_report",
+        execution_timeout=timedelta(hours=1),
+        bash_command=build_balancing_report_command(),
+    )
+
     stop_realtime_streams = BashOperator(
         task_id="terminate_pipeline_spark_jobs",
         trigger_rule=TriggerRule.ALL_DONE,
@@ -523,7 +548,8 @@ with DAG(
     start_bronze_stream >> wait_bronze
     wait_bronze >> start_silver_stream
     start_silver_stream >> wait_silver
-    wait_silver >> stop_realtime_streams >> release_pipeline_lock
+    wait_silver >> update_balancing_report >> stop_realtime_streams
+    stop_realtime_streams >> release_pipeline_lock
     [
         run_youtube_collection,
         run_x_collection,
@@ -533,6 +559,7 @@ with DAG(
         wait_clean_reddit,
         wait_bronze,
         wait_silver,
+        update_balancing_report,
         stop_realtime_streams,
         acquire_pipeline_lock,
         release_pipeline_lock,

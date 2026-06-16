@@ -18,6 +18,14 @@ class BalancedDatasetTests(unittest.TestCase):
             / "orchestrator"
             / "dags"
             / "build_balanced_comment_dataset.py",
+            ROOT
+            / "orchestrator"
+            / "dags"
+            / "user_behavior_lakehouse.py",
+            ROOT
+            / "orchestrator"
+            / "dags"
+            / "user_behavior_lakehouse_no_row_checks.py",
         ]
         for path in paths:
             with self.subTest(path=path):
@@ -56,6 +64,21 @@ class BalancedDatasetTests(unittest.TestCase):
         self.assertIn("acquire_pipeline_lock_command", source)
         self.assertIn("release_pipeline_lock_command", source)
         self.assertIn("build_balanced_dataset.py", source)
+
+    def test_crawl_dags_refresh_balancing_report_after_silver(self):
+        for dag_name in (
+            "user_behavior_lakehouse.py",
+            "user_behavior_lakehouse_no_row_checks.py",
+        ):
+            source = (
+                ROOT / "orchestrator" / "dags" / dag_name
+            ).read_text(encoding="utf-8")
+            with self.subTest(dag=dag_name):
+                self.assertIn('task_id="update_balancing_report"', source)
+                self.assertIn("build_balancing_report_command()", source)
+                self.assertIn("BALANCE_DIMENSIONS", source)
+                self.assertIn("build_balanced_dataset.py", source)
+                self.assertIn("update_balancing_report >> stop_realtime_streams", source)
 
 
 if __name__ == "__main__":

@@ -277,6 +277,8 @@ The `build_balanced_comment_dataset` DAG builds a reproducible balanced sample
 from `lakehouse.silver.events`. It writes the Iceberg table
 `lakehouse.silver.balanced_events` and a JSON report to
 `data/balancing/report.json`.
+The crawl DAGs also refresh this balanced table and report automatically after
+Silver has been updated, so the dashboard reflects the latest crawl results.
 
 By default, balancing is done by `source` only, so YouTube, X and Reddit keep
 the same number of rows in the balanced output. `engagement_band` and
