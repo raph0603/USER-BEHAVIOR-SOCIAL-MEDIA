@@ -49,7 +49,6 @@ def main() -> None:
 
     spark = _build_spark("bronze-to-silver", warehouse)
 
-    # Parallelism tuning: allow environment to influence shuffle partitions
     workers_env = os.getenv("SPARK_WORKER_COUNT")
     cores_env = os.getenv("SPARK_WORKER_CORES")
     try:
@@ -90,12 +89,7 @@ def main() -> None:
         "owner_channel_id",
         "collaborator_channel_ids",
         "like_count",
-        "comment_count",
-        "reply_count",
         "view_count",
-        "retweet_count",
-        "bookmark_count",
-        "score",
         "event_date",
     ]
 
@@ -122,12 +116,7 @@ def main() -> None:
           owner_channel_id STRING,
           collaborator_channel_ids ARRAY<STRING>,
           like_count BIGINT,
-          comment_count BIGINT,
-          reply_count BIGINT,
           view_count BIGINT,
-          retweet_count BIGINT,
-          bookmark_count BIGINT,
-          score BIGINT,
           event_date DATE
         )
         USING iceberg
@@ -143,12 +132,7 @@ def main() -> None:
             "metadata_refreshed_at": "TIMESTAMP",
             "collaborator_channel_ids": "ARRAY<STRING>",
             "like_count": "BIGINT",
-            "comment_count": "BIGINT",
-            "reply_count": "BIGINT",
             "view_count": "BIGINT",
-            "retweet_count": "BIGINT",
-            "bookmark_count": "BIGINT",
-            "score": "BIGINT",
         },
     )
 
@@ -166,7 +150,6 @@ def main() -> None:
 
     checkpoint = f"s3a://{bucket}/checkpoints/silver/events/incremental"
 
-    # Processing mode: 'continuous' or 'availableNow'
     processing_mode = _env("PROCESSING_MODE", "continuous")
     trigger_interval = _env("PROCESSING_TRIGGER", "30 seconds")
 
@@ -178,20 +161,18 @@ def main() -> None:
         .select(*silver_columns)
     )
 
-    # Dedup and idempotent upsert per micro-batch using MERGE INTO
     def _foreach_batch(df, epoch_id: int):
         if df.rdd.isEmpty():
             return
 
         batch_df = df.dropDuplicates(
             ["source", "platform_event_id", "user_id", "url", "event_ts"]
-        )  # dedupe within batch
+        )
         temp_view = f"microbatch_{epoch_id}"
         batch_df.createOrReplaceTempView(temp_view)
         batch_spark = batch_df.sparkSession
 
         cols = ", ".join(silver_columns)
-        # Perform an idempotent MERGE INTO using the micro-batch
         merge_sql = f"""
         MERGE INTO {silver_table} AS t
         USING {temp_view} AS s
@@ -229,12 +210,7 @@ def main() -> None:
             t.collaborator_channel_ids
           ),
           t.like_count = COALESCE(s.like_count, t.like_count),
-          t.comment_count = COALESCE(s.comment_count, t.comment_count),
-          t.reply_count = COALESCE(s.reply_count, t.reply_count),
-          t.view_count = COALESCE(s.view_count, t.view_count),
-          t.retweet_count = COALESCE(s.retweet_count, t.retweet_count),
-          t.bookmark_count = COALESCE(s.bookmark_count, t.bookmark_count),
-          t.score = COALESCE(s.score, t.score)
+          t.view_count = COALESCE(s.view_count, t.view_count)
         WHEN NOT MATCHED THEN
           INSERT ({cols}) VALUES ({', '.join([f's.{c}' for c in silver_columns])})
         """
@@ -258,7 +234,6 @@ def main() -> None:
 
         query.awaitTermination()
     else:
-        # continuous streaming mode: micro-batches are processed and merged into silver concurrently
         checkpoint_rt = f"s3a://{bucket}/checkpoints/silver/events/realtime"
 
         query = (
