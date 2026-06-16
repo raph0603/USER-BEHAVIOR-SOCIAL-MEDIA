@@ -89,12 +89,7 @@ def main() -> None:
         "owner_channel_id",
         "collaborator_channel_ids",
         "like_count",
-        "comment_count",
-        "reply_count",
         "view_count",
-        "retweet_count",
-        "bookmark_count",
-        "score",
         "event_date",
     ]
 
@@ -113,12 +108,7 @@ def main() -> None:
           owner_channel_id STRING,
           collaborator_channel_ids ARRAY<STRING>,
           like_count BIGINT,
-          comment_count BIGINT,
-          reply_count BIGINT,
           view_count BIGINT,
-          retweet_count BIGINT,
-          bookmark_count BIGINT,
-          score BIGINT,
           event_date DATE
         )
         USING iceberg
@@ -134,16 +124,10 @@ def main() -> None:
             "metadata_refreshed_at": "TIMESTAMP",
             "collaborator_channel_ids": "ARRAY<STRING>",
             "like_count": "BIGINT",
-            "comment_count": "BIGINT",
-            "reply_count": "BIGINT",
             "view_count": "BIGINT",
-            "retweet_count": "BIGINT",
-            "bookmark_count": "BIGINT",
-            "score": "BIGINT",
         },
     )
 
-    # define schema for the JSON payload produced by Bronze
     schema = StructType(
         [
             StructField("user_id", StringType()),
@@ -160,12 +144,7 @@ def main() -> None:
                 ArrayType(StringType()),
             ),
             StructField("like_count", LongType()),
-            StructField("comment_count", LongType()),
-            StructField("reply_count", LongType()),
             StructField("view_count", LongType()),
-            StructField("retweet_count", LongType()),
-            StructField("bookmark_count", LongType()),
-            StructField("score", LongType()),
             StructField("event_ts", TimestampType()),
         ]
     )
@@ -243,15 +222,7 @@ def main() -> None:
                 t.collaborator_channel_ids
               ),
               t.like_count = COALESCE(s.like_count, t.like_count),
-              t.comment_count = COALESCE(s.comment_count, t.comment_count),
-              t.reply_count = COALESCE(s.reply_count, t.reply_count),
-              t.view_count = COALESCE(s.view_count, t.view_count),
-              t.retweet_count = COALESCE(s.retweet_count, t.retweet_count),
-              t.bookmark_count = COALESCE(
-                s.bookmark_count,
-                t.bookmark_count
-              ),
-              t.score = COALESCE(s.score, t.score)
+              t.view_count = COALESCE(s.view_count, t.view_count)
             WHEN NOT MATCHED THEN
               INSERT ({cols}) VALUES ({', '.join([f's.{c}' for c in silver_columns])})
             """
