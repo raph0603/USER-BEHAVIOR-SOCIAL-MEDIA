@@ -24,16 +24,10 @@ AUTHOR_METADATA_COLUMNS = (
 )
 
 
-def _select_silver_events(connection, table_path, include_author_metadata=True):
-    author_columns = (
-        """
-                owner_channel_id,
-                collaborator_channel_ids,
-                platform_event_id,
-                metadata_refreshed_at,
-"""
-        if include_author_metadata
-        else ""
+def _select_silver_events(connection, table_path, optional_columns=None):
+    optional_columns = optional_columns or []
+    metadata_columns = "".join(
+        f"            {column},\n" for column in optional_columns
     )
     return connection.execute(
         f"""
@@ -44,7 +38,7 @@ def _select_silver_events(connection, table_path, include_author_metadata=True):
             event_ts,
             source,
             error,
-{author_columns}            like_count,
+{metadata_columns}            like_count,
             comment_count,
             reply_count,
             view_count,
@@ -145,23 +139,28 @@ def load_iceberg_data(config=None):
 
     try:
         connection = _connect_iceberg(config)
-        try:
-            df = _select_silver_events(
-                connection,
-                config["table_path"],
-                include_author_metadata=True,
-            )
-        except Exception as author_metadata_exc:
-            if not any(
-                column in str(author_metadata_exc)
-                for column in AUTHOR_METADATA_COLUMNS
-            ):
-                raise
-            df = _select_silver_events(
-                connection,
-                config["table_path"],
-                include_author_metadata=False,
-            )
+        optional_columns = list(AUTHOR_METADATA_COLUMNS)
+        while True:
+            try:
+                df = _select_silver_events(
+                    connection,
+                    config["table_path"],
+                    optional_columns=optional_columns,
+                )
+                break
+            except Exception as author_metadata_exc:
+                missing_columns = [
+                    column
+                    for column in optional_columns
+                    if column in str(author_metadata_exc)
+                ]
+                if not missing_columns:
+                    raise
+                optional_columns = [
+                    column
+                    for column in optional_columns
+                    if column not in missing_columns
+                ]
     except Exception as exc:
         raise RuntimeError(
             "Impossible de lire la table Iceberg Silver. "

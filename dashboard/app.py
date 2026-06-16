@@ -23,6 +23,12 @@ TRACKING_ROLE_ORDER = [
     "Collaborateur YouTube",
 ]
 
+VIDEO_LEVEL_ENGAGEMENT_COLUMNS = (
+    "like_count",
+    "view_count",
+    "comment_count",
+)
+
 
 def format_engagement_total(series):
     values = series.dropna()
@@ -63,11 +69,54 @@ def collaborator_count(value):
     return pd.NA if collaborators is None else len(collaborators)
 
 
+def youtube_video_key(dataframe):
+    if "platform_event_id" in dataframe.columns:
+        platform_ids = dataframe["platform_event_id"].astype("string")
+    else:
+        platform_ids = pd.Series(pd.NA, index=dataframe.index, dtype="string")
+    urls = dataframe["url"].astype("string") if "url" in dataframe else platform_ids
+    return platform_ids.fillna(urls)
+
+
+def deduplicate_youtube_videos(dataframe):
+    if "source" not in dataframe.columns:
+        return dataframe.copy()
+
+    youtube_rows = dataframe[dataframe["source"] == "youtube"].copy()
+    if youtube_rows.empty:
+        return youtube_rows
+
+    youtube_rows["_video_key"] = youtube_video_key(youtube_rows)
+    sort_columns = [
+        column
+        for column in ("created_at", "metadata_refreshed_at")
+        if column in youtube_rows.columns
+    ]
+    youtube_rows = youtube_rows.sort_values(
+        sort_columns,
+        ascending=False,
+        na_position="last",
+    ) if sort_columns else youtube_rows
+    return youtube_rows.drop_duplicates("_video_key").drop(
+        columns=["_video_key"]
+    )
+
+
+def build_analytics_rows(dataframe):
+    if "source" not in dataframe.columns:
+        return dataframe.copy()
+
+    youtube_rows = deduplicate_youtube_videos(dataframe)
+    other_rows = dataframe[dataframe["source"] != "youtube"].copy()
+    return pd.concat([other_rows, youtube_rows], ignore_index=True)
+
+
 def build_user_tracking_rows(dataframe):
     tracking_frames = []
+    analytics_rows = build_analytics_rows(dataframe)
 
-    if "author_hash" in dataframe.columns:
-        author_rows = dataframe.dropna(subset=["author_hash"]).copy()
+    if "author_hash" in analytics_rows.columns:
+        author_rows = analytics_rows.dropna(subset=["author_hash"]).copy()
         if not author_rows.empty:
             author_rows["tracked_identifier"] = author_rows[
                 "author_hash"
@@ -75,10 +124,10 @@ def build_user_tracking_rows(dataframe):
             author_rows["identifier_role"] = "Auteur"
             tracking_frames.append(author_rows)
 
-    if {"source", "owner_channel_id"}.issubset(dataframe.columns):
-        owner_rows = dataframe[
-            (dataframe["source"] == "youtube")
-            & dataframe["owner_channel_id"].notna()
+    if {"source", "owner_channel_id"}.issubset(analytics_rows.columns):
+        owner_rows = analytics_rows[
+            (analytics_rows["source"] == "youtube")
+            & analytics_rows["owner_channel_id"].notna()
         ].copy()
         if not owner_rows.empty:
             owner_rows["tracked_identifier"] = owner_rows[
@@ -87,9 +136,11 @@ def build_user_tracking_rows(dataframe):
             owner_rows["identifier_role"] = "Owner YouTube"
             tracking_frames.append(owner_rows)
 
-    if {"source", "collaborator_channel_ids"}.issubset(dataframe.columns):
+    if {"source", "collaborator_channel_ids"}.issubset(
+        analytics_rows.columns
+    ):
         collaborator_records = []
-        youtube_rows = dataframe[dataframe["source"] == "youtube"]
+        youtube_rows = analytics_rows[analytics_rows["source"] == "youtube"]
         for _, row in youtube_rows.iterrows():
             collaborators = normalize_collaborators(
                 row.get("collaborator_channel_ids")
@@ -297,15 +348,17 @@ if not df_dated.empty:
 else:
     st.sidebar.warning("Aucune date valide pour la sélection actuelle.")
 
-total_records = len(df_filtered)
-latest_activity = df_filtered["created_at"].max()
-unique_identifiers = df_filtered["author_hash"].dropna().nunique()
-avg_text_words = df_filtered["text_len_words"].mean() if total_records else 0
+analytics_df = build_analytics_rows(df_filtered)
+
+total_records = len(analytics_df)
+latest_activity = analytics_df["created_at"].max()
+unique_identifiers = analytics_df["author_hash"].dropna().nunique()
+avg_text_words = analytics_df["text_len_words"].mean() if total_records else 0
 missing_timestamps_pct = (
-    df_filtered["created_at"].isna().mean() * 100 if total_records else 0
+    analytics_df["created_at"].isna().mean() * 100 if total_records else 0
 )
 pipeline_error_pct = (
-    df_filtered["error"].fillna("").str.strip().ne("").mean() * 100
+    analytics_df["error"].fillna("").str.strip().ne("").mean() * 100
     if total_records
     else 0
 )
@@ -329,10 +382,10 @@ for metric, (column, label) in zip(
     engagement_metrics,
     ENGAGEMENT_LABELS.items(),
 ):
-    metric.metric(label, format_engagement_total(df_filtered[column]))
+    metric.metric(label, format_engagement_total(analytics_df[column]))
 
 engagement_by_source = (
-    df_filtered.groupby("source")[list(ENGAGEMENT_COLUMNS)]
+    analytics_df.groupby("source")[list(ENGAGEMENT_COLUMNS)]
     .sum(min_count=1)
     .reset_index()
     .rename(columns={"source": "Source", **ENGAGEMENT_LABELS})
@@ -349,6 +402,10 @@ st.dataframe(
 st.caption(
     "Les valeurs N/A correspondent aux métriques non disponibles pour la "
     "plateforme. Le score Reddit est conservé séparément des likes."
+)
+
+st.caption(
+    "Note: les metriques YouTube sont regroupees par video avant aggregation."
 )
 
 common_engagement_columns = [
@@ -388,12 +445,10 @@ if not engagement_chart_data.empty:
     st.plotly_chart(fig_engagement, width="stretch")
 
 st.subheader("Auteurs et collaborations YouTube")
-youtube_df = df_filtered[df_filtered["source"] == "youtube"].copy()
+youtube_df = deduplicate_youtube_videos(df_filtered)
 if youtube_df.empty:
     st.info("Aucun événement YouTube dans la sélection actuelle.")
 else:
-    youtube_unique_df = youtube_df.drop_duplicates(["url"]).copy()
-    youtube_df = youtube_unique_df
     youtube_df["collaborator_count"] = youtube_df[
         "collaborator_channel_ids"
     ].apply(collaborator_count)
@@ -432,7 +487,6 @@ else:
 
     youtube_author_rows = (
         youtube_df.sort_values("created_at", ascending=False)
-        .drop_duplicates(["url"])
         [
             [
                 "created_at",
@@ -481,7 +535,7 @@ else:
 
 st.subheader("Événements par source")
 source_counts = (
-    df_filtered.groupby("source")
+    analytics_df.groupby("source")
     .size()
     .reset_index(name="records")
     .sort_values("records", ascending=False)
@@ -500,7 +554,7 @@ else:
     st.info("Aucun événement pour les filtres actuels.")
 
 st.subheader("Activité dans le temps")
-df_time = df_filtered.dropna(subset=["created_at"]).copy()
+df_time = analytics_df.dropna(subset=["created_at"]).copy()
 
 if not df_time.empty:
     df_time["date"] = df_time["created_at"].dt.date
@@ -873,7 +927,7 @@ col1, col2 = st.columns(2)
 with col1:
     st.subheader("Identifiants uniques par source")
     identifiers_by_source = (
-        df_filtered.groupby("source")["author_hash"]
+        analytics_df.groupby("source")["author_hash"]
         .nunique()
         .reset_index(name="identifiers")
         .sort_values("identifiers", ascending=False)
@@ -890,7 +944,7 @@ with col1:
 with col2:
     st.subheader("Longueur moyenne des textes")
     text_length_by_source = (
-        df_filtered.groupby("source")["text_len_words"]
+        analytics_df.groupby("source")["text_len_words"]
         .mean()
         .reset_index()
         .sort_values("text_len_words", ascending=False)
@@ -909,7 +963,7 @@ with col2:
 
 st.subheader("Qualité des données par source")
 quality_by_source = (
-    df_filtered.groupby("source")
+    analytics_df.groupby("source")
     .agg(
         total_records=("source", "size"),
         missing_text_pct=("text", lambda s: s.isna().mean() * 100),
@@ -937,7 +991,7 @@ quality_by_source = (
 st.dataframe(quality_by_source, width="stretch", hide_index=True)
 
 st.subheader("Événements récents")
-recent_df = df_filtered.copy()
+recent_df = analytics_df.copy()
 recent_df["text"] = recent_df["text"].fillna("").str.strip().str.slice(0, 240)
 recent_df["url"] = recent_df["url"].fillna("N/A")
 recent_df["author_hash"] = (

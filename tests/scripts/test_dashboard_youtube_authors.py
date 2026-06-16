@@ -24,7 +24,8 @@ class DashboardYouTubeAuthorTests(unittest.TestCase):
                 self.assertIn(field, loader_source)
                 self.assertIn(field, app_source)
 
-        self.assertIn("include_author_metadata=False", loader_source)
+        self.assertIn("optional_columns=optional_columns", loader_source)
+        self.assertIn("missing_columns", loader_source)
         self.assertIn("Auteurs et collaborations YouTube", app_source)
         self.assertIn("format_collaborators", app_source)
         self.assertIn("Owner channel ID", app_source)
