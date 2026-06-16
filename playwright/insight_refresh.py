@@ -18,12 +18,7 @@ from youtube_authors import fetch_youtube_collaborators
 
 METRIC_COLUMNS = (
     "like_count",
-    "comment_count",
-    "reply_count",
     "view_count",
-    "retweet_count",
-    "bookmark_count",
-    "score",
 )
 SKIPPED_REFRESH_SOURCES = set()
 
@@ -122,9 +117,6 @@ def _refresh_youtube(targets: list[dict]) -> list[dict]:
                         item["id"]
                     ),
                     "like_count": parse_count(statistics.get("likeCount")),
-                    "comment_count": parse_count(
-                        statistics.get("commentCount")
-                    ),
                     "view_count": parse_count(statistics.get("viewCount")),
                 }
             )
@@ -220,21 +212,9 @@ def _refresh_x(targets: list[dict]) -> list[dict]:
                     update.update(
                         {
                             "like_count": extract_x_metric(article, "like"),
-                            "reply_count": extract_x_metric(
-                                article,
-                                "reply",
-                            ),
                             "view_count": extract_x_metric(
                                 article,
                                 "analytics",
-                            ),
-                            "retweet_count": extract_x_metric(
-                                article,
-                                "retweet",
-                            ),
-                            "bookmark_count": extract_x_metric(
-                                article,
-                                "bookmark",
                             ),
                         }
                     )
@@ -277,17 +257,6 @@ def _find_reddit_comment(node, comment_id: str) -> dict | None:
     return _find_reddit_comment(data.get("children", []), comment_id)
 
 
-def _reddit_direct_reply_count(comment: dict) -> int | None:
-    replies = comment.get("replies")
-    if not isinstance(replies, dict):
-        return 0 if replies == "" else None
-    return sum(
-        1
-        for child in replies.get("data", {}).get("children", [])
-        if child.get("kind") == "t1"
-    )
-
-
 def _refresh_reddit(targets: list[dict]) -> list[dict]:
     updates = []
     headers = {
@@ -323,10 +292,7 @@ def _refresh_reddit(targets: list[dict]) -> list[dict]:
                     f"{target['url']}: comment not found in JSON response"
                 )
                 continue
-            update = _base_update(target)
-            update["score"] = parse_count(comment.get("score"))
-            update["reply_count"] = _reddit_direct_reply_count(comment)
-            updates.append(update)
+            updates.append(_base_update(target))
         except (ValueError, requests.RequestException) as exc:
             print(
                 "Unable to refresh Reddit insights for "
