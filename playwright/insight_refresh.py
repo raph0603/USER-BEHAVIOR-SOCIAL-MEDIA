@@ -2,6 +2,7 @@ import json
 import os
 import re
 import socket
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -52,6 +53,8 @@ def _base_update(target: dict) -> dict:
         "url": target["url"],
         "event_ts": target["event_ts"],
         "source": target["source"],
+        "platform_event_id": target.get("platform_event_id"),
+        "metadata_refreshed_at": datetime.now(timezone.utc).isoformat(),
     }
     update.update({column: None for column in METRIC_COLUMNS})
     update["owner_channel_id"] = None

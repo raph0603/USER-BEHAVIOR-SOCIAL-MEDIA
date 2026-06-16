@@ -124,6 +124,7 @@ def main() -> None:
                 StructField("timestamp", StringType()),
                 StructField("source", StringType()),
                 StructField("error", StringType()),
+                StructField("platform_event_id", StringType()),
                 StructField("owner_channel_id", StringType()),
                 StructField(
                     "collaborator_channel_ids",
@@ -185,6 +186,7 @@ def main() -> None:
                 "timestamp",
                 "source",
                 "error",
+                "platform_event_id",
                 "owner_channel_id",
                 "collaborator_channel_ids",
                 "like_count",
@@ -209,6 +211,7 @@ def main() -> None:
                 "timestamp",
                 "source",
                 "error",
+                "platform_event_id",
                 "owner_channel_id",
                 "collaborator_channel_ids",
                 "like_count",

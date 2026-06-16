@@ -218,6 +218,7 @@ def _extract_reddit_comment_event(comment, fallback_url: str) -> dict | None:
 
     return {
         "event_id": comment_id,
+        "platform_event_id": comment_id,
         "user_id": f"reddit-{_hash_identity(author)}",
         "url": comment_url,
         "title": text,
@@ -791,6 +792,7 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                             events.append(
                                 {
                                     "event_id": status_id,
+                                    "platform_event_id": status_id,
                                     "user_id": f"x-{_hash_identity(screen_name)}",
                                     "url": tweet_url,
                                     "title": text,
@@ -1033,6 +1035,8 @@ def main() -> None:
                     or datetime.now(timezone.utc).isoformat(),
                     "source": event["source"],
                     "error": None,
+                    "platform_event_id": event.get("platform_event_id")
+                    or event.get("event_id"),
                     "owner_channel_id": event.get("owner_channel_id"),
                     "collaborator_channel_ids": event.get(
                         "collaborator_channel_ids"
@@ -1157,6 +1161,7 @@ def main() -> None:
                 events.append(
                     {
                         "event_id": video_id,
+                        "platform_event_id": video_id,
                         "user_id": f"youtube-{video_id}",
                         "url": f"https://www.youtube.com/watch?v={video_id}",
                         "title": (metadata or {}).get("snippet", {}).get("title"),

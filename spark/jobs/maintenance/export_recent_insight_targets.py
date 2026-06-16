@@ -57,6 +57,13 @@ def _build_spark() -> SparkSession:
     )
 
 
+def _ensure_columns(spark: SparkSession, table: str, columns: dict[str, str]) -> None:
+    current_columns = set(spark.table(table).columns)
+    for name, data_type in columns.items():
+        if name not in current_columns:
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN {name} {data_type}")
+
+
 def main() -> None:
     lookback_days = _env_int("INSIGHT_REFRESH_LOOKBACK_DAYS", 15)
     max_per_source = _env_int("INSIGHT_REFRESH_MAX_PER_SOURCE", 100)
@@ -69,6 +76,14 @@ def main() -> None:
 
     spark = _build_spark()
     spark.sparkContext.setLogLevel("WARN")
+    _ensure_columns(
+        spark,
+        "lakehouse.silver.events",
+        {
+            "platform_event_id": "STRING",
+            "metadata_refreshed_at": "TIMESTAMP",
+        },
+    )
 
     recent = (
         spark.table("lakehouse.silver.events")
@@ -78,7 +93,9 @@ def main() -> None:
             >= current_timestamp() - expr(f"INTERVAL {lookback_days} DAYS")
         )
         .filter(col("url").isNotNull())
-        .dropDuplicates(["user_id", "url", "event_ts", "source"])
+        .dropDuplicates(
+            ["source", "platform_event_id", "user_id", "url", "event_ts"]
+        )
         .withColumn(
             "_rank",
             row_number().over(
@@ -90,6 +107,7 @@ def main() -> None:
             "user_id",
             "url",
             "title",
+            "platform_event_id",
             col("event_ts").cast("string").alias("event_ts"),
             "source",
         )

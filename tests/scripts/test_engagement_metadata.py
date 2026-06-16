@@ -104,6 +104,7 @@ class EngagementMetadataTests(unittest.TestCase):
         field_names = {field["name"] for field in schema["fields"]}
 
         expected = {
+            "platform_event_id",
             "like_count",
             "comment_count",
             "reply_count",
@@ -127,6 +128,7 @@ class EngagementMetadataTests(unittest.TestCase):
 
     def test_engagement_metrics_are_propagated_to_silver(self):
         expected = {
+            "platform_event_id",
             "like_count",
             "comment_count",
             "reply_count",

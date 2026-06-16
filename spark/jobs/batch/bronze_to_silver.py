@@ -85,6 +85,8 @@ def main() -> None:
         "event_ts",
         "source",
         "error",
+        "platform_event_id",
+        "metadata_refreshed_at",
         "owner_channel_id",
         "collaborator_channel_ids",
         "like_count",
@@ -98,6 +100,14 @@ def main() -> None:
     ]
 
     spark.sql("CREATE NAMESPACE IF NOT EXISTS lakehouse.silver")
+    _ensure_columns(
+        spark,
+        bronze_table,
+        {
+            "platform_event_id": "STRING",
+            "metadata_refreshed_at": "TIMESTAMP",
+        },
+    )
     spark.sql(
         """
         CREATE TABLE IF NOT EXISTS lakehouse.silver.events (
@@ -107,6 +117,8 @@ def main() -> None:
           event_ts TIMESTAMP,
           source STRING,
           error STRING,
+          platform_event_id STRING,
+          metadata_refreshed_at TIMESTAMP,
           owner_channel_id STRING,
           collaborator_channel_ids ARRAY<STRING>,
           like_count BIGINT,
@@ -127,6 +139,8 @@ def main() -> None:
         silver_table,
         {
             "owner_channel_id": "STRING",
+            "platform_event_id": "STRING",
+            "metadata_refreshed_at": "TIMESTAMP",
             "collaborator_channel_ids": "ARRAY<STRING>",
             "like_count": "BIGINT",
             "comment_count": "BIGINT",
@@ -169,7 +183,9 @@ def main() -> None:
         if df.rdd.isEmpty():
             return
 
-        batch_df = df.dropDuplicates(["user_id", "url", "event_ts"])  # dedupe within batch
+        batch_df = df.dropDuplicates(
+            ["source", "platform_event_id", "user_id", "url", "event_ts"]
+        )  # dedupe within batch
         temp_view = f"microbatch_{epoch_id}"
         batch_df.createOrReplaceTempView(temp_view)
         batch_spark = batch_df.sparkSession
@@ -180,13 +196,30 @@ def main() -> None:
         MERGE INTO {silver_table} AS t
         USING {temp_view} AS s
         ON t.event_date = s.event_date
-           AND t.user_id = s.user_id
-           AND t.url = s.url
-           AND t.event_ts = s.event_ts
+           AND (
+             (
+               s.platform_event_id IS NOT NULL
+               AND t.platform_event_id = s.platform_event_id
+             )
+             OR (
+               s.platform_event_id IS NULL
+               AND t.user_id = s.user_id
+               AND t.url = s.url
+               AND t.event_ts = s.event_ts
+             )
+           )
         WHEN MATCHED THEN UPDATE SET
           t.title = s.title,
           t.source = s.source,
           t.error = s.error,
+          t.platform_event_id = COALESCE(
+            s.platform_event_id,
+            t.platform_event_id
+          ),
+          t.metadata_refreshed_at = COALESCE(
+            s.metadata_refreshed_at,
+            t.metadata_refreshed_at
+          ),
           t.owner_channel_id = COALESCE(
             s.owner_channel_id,
             t.owner_channel_id
@@ -211,7 +244,9 @@ def main() -> None:
     if processing_mode == "availableNow":
         checkpoint = f"s3a://{bucket}/checkpoints/silver/events/incremental"
         updates = (
-            source_stream.dropDuplicates(["user_id", "url", "event_ts"]) 
+            source_stream.dropDuplicates(
+                ["source", "platform_event_id", "user_id", "url", "event_ts"]
+            )
         )
 
         query = (

@@ -17,6 +17,8 @@ ENGAGEMENT_COLUMNS = (
     "score",
 )
 AUTHOR_METADATA_COLUMNS = (
+    "platform_event_id",
+    "metadata_refreshed_at",
     "owner_channel_id",
     "collaborator_channel_ids",
 )
@@ -27,6 +29,8 @@ def _select_silver_events(connection, table_path, include_author_metadata=True):
         """
                 owner_channel_id,
                 collaborator_channel_ids,
+                platform_event_id,
+                metadata_refreshed_at,
 """
         if include_author_metadata
         else ""
@@ -186,6 +190,12 @@ def load_iceberg_data(config=None):
         if column not in df.columns:
             df[column] = pd.NA
     df["owner_channel_id"] = df["owner_channel_id"].astype("string")
+    df["platform_event_id"] = df["platform_event_id"].astype("string")
+    df["metadata_refreshed_at"] = pd.to_datetime(
+        df["metadata_refreshed_at"],
+        errors="coerce",
+        utc=True,
+    )
     df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce", utc=True)
     for column in ENGAGEMENT_COLUMNS:
         df[column] = pd.to_numeric(df[column], errors="coerce").astype("Int64")

@@ -21,9 +21,18 @@ class InsightRefreshTests(unittest.TestCase):
             / "maintenance"
             / "apply_insight_updates.py",
             ROOT
+            / "spark"
+            / "jobs"
+            / "maintenance"
+            / "build_balanced_dataset.py",
+            ROOT
             / "orchestrator"
             / "dags"
             / "refresh_recent_engagement_insights.py",
+            ROOT
+            / "orchestrator"
+            / "dags"
+            / "build_balanced_comment_dataset.py",
         ]
         for path in paths:
             with self.subTest(path=path):
@@ -71,9 +80,33 @@ class InsightRefreshTests(unittest.TestCase):
 
         self.assertIn("MERGE INTO", source)
         self.assertIn("COALESCE", source)
+        self.assertIn("platform_event_id", source)
+        self.assertIn("metadata_refreshed_at", source)
+        self.assertIn("to_timestamp(s.metadata_refreshed_at)", source)
         self.assertIn("lakehouse.bronze.events", source)
         self.assertIn("lakehouse.silver.events", source)
         self.assertNotIn("WHEN NOT MATCHED", source)
+
+    def test_refresh_targets_and_merge_prefer_stable_platform_ids(self):
+        export_source = (
+            ROOT
+            / "spark"
+            / "jobs"
+            / "maintenance"
+            / "export_recent_insight_targets.py"
+        ).read_text(encoding="utf-8")
+        apply_source = (
+            ROOT
+            / "spark"
+            / "jobs"
+            / "maintenance"
+            / "apply_insight_updates.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("platform_event_id", export_source)
+        self.assertIn(".dropDuplicates(", export_source)
+        self.assertIn("s.platform_event_id IS NOT NULL", apply_source)
+        self.assertIn("t.platform_event_id = s.platform_event_id", apply_source)
 
     def test_x_refresh_keeps_shared_cdp_browser_open(self):
         source = (

@@ -14,7 +14,12 @@ class DashboardYouTubeAuthorTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        for field in ("owner_channel_id", "collaborator_channel_ids"):
+        for field in (
+            "platform_event_id",
+            "metadata_refreshed_at",
+            "owner_channel_id",
+            "collaborator_channel_ids",
+        ):
             with self.subTest(field=field):
                 self.assertIn(field, loader_source)
                 self.assertIn(field, app_source)

@@ -25,6 +25,9 @@ AUTHOR_COLUMNS = (
     "owner_channel_id",
     "collaborator_channel_ids",
 )
+METADATA_COLUMNS = (
+    "platform_event_id",
+)
 
 
 def _env(name: str, default: str) -> str:
@@ -85,16 +88,32 @@ def _load_updates(path: Path) -> list[dict]:
 def _merge_updates(spark: SparkSession, table: str) -> None:
     assignments = ",\n".join(
         f"t.{column} = COALESCE(s.{column}, t.{column})"
-        for column in (*AUTHOR_COLUMNS, *METRIC_COLUMNS)
+        for column in (*METADATA_COLUMNS, *AUTHOR_COLUMNS, *METRIC_COLUMNS)
+    )
+    assignments = (
+        f"{assignments},\n"
+        "t.metadata_refreshed_at = COALESCE("
+        "to_timestamp(s.metadata_refreshed_at), "
+        "t.metadata_refreshed_at"
+        ")"
     )
     spark.sql(
         f"""
         MERGE INTO {table} AS t
         USING insight_updates AS s
-        ON t.user_id = s.user_id
-           AND t.url = s.url
-           AND t.source = s.source
-           AND t.event_ts = to_timestamp(s.event_ts)
+        ON t.source = s.source
+           AND (
+             (
+               s.platform_event_id IS NOT NULL
+               AND t.platform_event_id = s.platform_event_id
+             )
+             OR (
+               s.platform_event_id IS NULL
+               AND t.user_id = s.user_id
+               AND t.url = s.url
+               AND t.event_ts = to_timestamp(s.event_ts)
+             )
+           )
         WHEN MATCHED THEN UPDATE SET
           {assignments}
         """
@@ -124,6 +143,8 @@ def main() -> None:
             StructField("url", StringType(), False),
             StructField("event_ts", StringType(), False),
             StructField("source", StringType(), False),
+            StructField("platform_event_id", StringType(), True),
+            StructField("metadata_refreshed_at", StringType(), True),
             StructField("owner_channel_id", StringType(), True),
             StructField(
                 "collaborator_channel_ids",
@@ -139,11 +160,19 @@ def main() -> None:
     spark = _build_spark()
     spark.sparkContext.setLogLevel("WARN")
     spark.createDataFrame(updates, schema=schema).dropDuplicates(
-        ["user_id", "url", "event_ts", "source"]
+        ["source", "platform_event_id", "user_id", "url", "event_ts"]
     ).createOrReplaceTempView("insight_updates")
 
     for table in ("lakehouse.bronze.events", "lakehouse.silver.events"):
         current_columns = set(spark.table(table).columns)
+        if "platform_event_id" not in current_columns:
+            spark.sql(
+                f"ALTER TABLE {table} ADD COLUMN platform_event_id STRING"
+            )
+        if "metadata_refreshed_at" not in current_columns:
+            spark.sql(
+                f"ALTER TABLE {table} ADD COLUMN metadata_refreshed_at TIMESTAMP"
+            )
         if "owner_channel_id" not in current_columns:
             spark.sql(
                 f"ALTER TABLE {table} ADD COLUMN owner_channel_id STRING"

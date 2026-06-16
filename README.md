@@ -131,6 +131,9 @@ The separate `refresh_recent_engagement_insights` DAG refreshes engagement
 metrics for events already stored in Silver. It runs once per day by default,
 selects events from the previous 15 days, recollects the metrics available for
 YouTube, X and Reddit, then updates the matching Bronze and Silver rows.
+Rows are matched by `platform_event_id` when available, with the older
+`source`, `user_id`, `url` and `event_ts` key kept as a fallback for legacy
+records. Successful refreshes persist `metadata_refreshed_at`.
 
 ```env
 INSIGHT_REFRESH_SCHEDULE_MINUTES=1440
@@ -247,6 +250,7 @@ events to Kafka using the same event schema as the other producers.
 Collector events carry a nullable engagement contract through the privacy
 cleaning topics, Iceberg Bronze and Iceberg Silver:
 
+- stable matching field: `platform_event_id`;
 - shared nullable fields: `like_count`, `comment_count`, `reply_count` and
   `view_count`;
 - X-specific fields: `retweet_count` and `bookmark_count`;
@@ -259,6 +263,34 @@ cleaning topics, Iceberg Bronze and Iceberg Silver:
 Unsupported or unavailable metrics remain null, preserving the original
 platform semantics for downstream score calculation. Existing Bronze and
 Silver tables are evolved automatically when new columns are first used.
+`metadata_refreshed_at` is null for initial collection rows and is set by the
+refresh job when mutable metadata is recollected.
+
+### Balanced dataset
+
+The `build_balanced_comment_dataset` DAG builds a reproducible balanced sample
+from `lakehouse.silver.events`. It writes the Iceberg table
+`lakehouse.silver.balanced_events` and a JSON report to
+`data/balancing/report.json`.
+
+By default, balancing dimensions are `source`, `engagement_band` and
+`comment_type`. `engagement_band` is derived from total available engagement
+metadata (`none`, `low`, `medium`, `high`), and `comment_type` is derived from
+whether replies are observed. Sampling order is deterministic from
+`BALANCE_SEED` and stable platform/event fields, so the same input and seed
+produce the same output.
+
+```env
+BALANCE_DATASET_SCHEDULE_MINUTES=0
+BALANCE_SEED=42
+BALANCE_TARGET_PER_GROUP=0
+BALANCE_DIMENSIONS=source,engagement_band,comment_type
+```
+
+`BALANCE_TARGET_PER_GROUP=0` uses the smallest available group size. If a
+requested target is larger than the smallest group, the job lowers the
+effective target and records that constraint in the report instead of
+duplicating rows.
 
 ### YouTube owners and collaborators
 

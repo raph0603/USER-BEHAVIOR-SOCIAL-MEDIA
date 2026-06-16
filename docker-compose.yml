@@ -297,6 +297,7 @@ services:
       - ${HOST_PROJECT_DIR:-.}/schemas:/opt/spark/schemas:ro
       - ${HOST_PROJECT_DIR:-.}/tests/spark:/opt/spark/tests
       - ${HOST_PROJECT_DIR:-.}/data/insight-refresh:/opt/spark/insight-refresh
+      - ${HOST_PROJECT_DIR:-.}/data/balancing:/opt/spark/balancing
 
   spark-worker:
     build:
@@ -328,6 +329,7 @@ services:
       - ${HOST_PROJECT_DIR:-.}/schemas:/opt/spark/schemas:ro
       - ${HOST_PROJECT_DIR:-.}/tests/spark:/opt/spark/tests
       - ${HOST_PROJECT_DIR:-.}/data/insight-refresh:/opt/spark/insight-refresh
+      - ${HOST_PROJECT_DIR:-.}/data/balancing:/opt/spark/balancing
 
   airflow-postgres:
     image: postgres:15-alpine

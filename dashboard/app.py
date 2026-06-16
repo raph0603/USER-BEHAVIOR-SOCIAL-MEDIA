@@ -948,6 +948,15 @@ recent_df["created_at"] = recent_df["created_at"].dt.strftime(
     "%Y-%m-%d %H:%M:%S UTC"
 )
 recent_df["created_at"] = recent_df["created_at"].fillna("N/A")
+recent_df["metadata_refreshed_at"] = recent_df[
+    "metadata_refreshed_at"
+].dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+recent_df["metadata_refreshed_at"] = recent_df[
+    "metadata_refreshed_at"
+].fillna("N/A")
+recent_df["platform_event_id"] = recent_df["platform_event_id"].apply(
+    format_optional_text
+)
 recent_df["error"] = recent_df["error"].fillna("")
 recent_df["owner_channel_id"] = recent_df["owner_channel_id"].apply(
     format_optional_text
@@ -956,13 +965,15 @@ recent_df["collaborators"] = recent_df["collaborator_channel_ids"].apply(
     format_collaborators
 )
 recent_df = recent_df[
-    [
-        "source",
-        "created_at",
-        "author_hash",
-        "owner_channel_id",
-        "collaborators",
-        "text",
+        [
+            "source",
+            "created_at",
+            "author_hash",
+            "platform_event_id",
+            "metadata_refreshed_at",
+            "owner_channel_id",
+            "collaborators",
+            "text",
         *ENGAGEMENT_COLUMNS,
         "url",
         "error",
@@ -977,6 +988,8 @@ st.dataframe(
         "source": "Source",
         "created_at": "Timestamp",
         "author_hash": "Identifiant hash",
+        "platform_event_id": "ID plateforme",
+        "metadata_refreshed_at": "Dernier refresh metadata",
         "owner_channel_id": "Owner channel ID",
         "collaborators": "Collaborator channel IDs",
         "text": "Contenu nettoyé",
