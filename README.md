@@ -256,17 +256,15 @@ Collector events carry a nullable engagement contract through the privacy
 cleaning topics, Iceberg Bronze and Iceberg Silver:
 
 - stable matching field: `platform_event_id`;
-- shared nullable fields: `like_count`, `comment_count`, `reply_count` and
-  `view_count`;
-- X-specific fields: `retweet_count` and `bookmark_count`;
-- Reddit-specific field: `score`;
-- YouTube videos populate likes, comments, replies found in fetched threads,
-  and views;
-- X posts populate likes, replies, views, retweets and bookmarks;
-- Reddit comments populate direct replies and their native score.
+- shared nullable fields: `like_count` and `view_count`;
+- YouTube and X populate likes and views when available;
+- Reddit keeps both fields null because public comment data does not expose
+  reliable equivalents. Reddit score is not mapped to likes.
 
-Unsupported or unavailable metrics remain null, preserving the original
-platform semantics for downstream score calculation. Existing Bronze and
+Platform-specific metrics are intentionally excluded from the Kafka and
+lakehouse contract instead of being mapped to misleading common fields.
+Timestamps remain ISO-8601 strings in the existing Avro contract and are
+converted to native timestamps by the lakehouse jobs. Existing Bronze and
 Silver tables are evolved automatically when new columns are first used.
 `metadata_refreshed_at` is null for initial collection rows and is set by the
 refresh job when mutable metadata is recollected.

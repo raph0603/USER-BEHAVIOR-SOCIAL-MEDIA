@@ -192,9 +192,24 @@ class EngagementMetadataTests(unittest.TestCase):
             encoding="utf-8"
         )
 
+        self.assertIn("LOGGER = logging.getLogger(__name__)", producer)
         self.assertIn('f"https://old.reddit.com/r/{subreddit}/comments/"', producer)
         self.assertIn("REDDIT_COMMENT_SCAN_LIMIT", producer)
         self.assertNotIn("?sort=top&t=month", producer)
+
+    def test_producer_emits_only_contract_engagement_metrics(self):
+        producer = (ROOT / "playwright" / "producer.py").read_text(
+            encoding="utf-8"
+        )
+
+        for field_name in (
+            "comment_count",
+            "reply_count",
+            "retweet_count",
+            "bookmark_count",
+            "score",
+        ):
+            self.assertNotIn(f'"{field_name}"', producer)
 
     def test_youtube_search_supports_multiple_pages(self):
         producer = (ROOT / "playwright" / "producer.py").read_text(

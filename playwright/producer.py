@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import os
 import re
 import socket
@@ -24,6 +25,9 @@ from playwright.sync_api import sync_playwright
 
 from engagement import extract_x_metric, parse_count
 from youtube_authors import fetch_youtube_collaborators
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 DEFAULT_X_QUERIES = [
@@ -146,37 +150,6 @@ def _matches_keywords(text: str, keywords: list[str], match_mode: str) -> bool:
     return all(matches) if match_mode == "AND" else any(matches)
 
 
-def _extract_reddit_reply_count(comment) -> int | None:
-    try:
-        direct_replies = comment.locator(
-            ":scope > .child > .sitetable > .thing.comment"
-        )
-        return direct_replies.count()
-    except (PlaywrightTimeoutError, PlaywrightError):
-        return None
-
-
-def _extract_reddit_score(comment) -> int | None:
-    try:
-        score_locator = comment.locator(".score")
-        raw_values = [comment.get_attribute("data-score")]
-        if score_locator.count():
-            raw_values.extend(
-                [
-                    score_locator.first.get_attribute("title", timeout=1000),
-                    score_locator.first.inner_text(timeout=1000),
-                ]
-            )
-    except (PlaywrightTimeoutError, PlaywrightError):
-        return None
-
-    for raw_value in raw_values:
-        parsed = parse_count(raw_value)
-        if parsed is not None:
-            return parsed
-    return None
-
-
 def _extract_reddit_comment_event(comment, fallback_url: str) -> dict | None:
     fullname = comment.get_attribute("data-fullname") or ""
     comment_id = fullname.removeprefix("t1_")
@@ -225,21 +198,8 @@ def _extract_reddit_comment_event(comment, fallback_url: str) -> dict | None:
         "timestamp": timestamp,
         "source": "reddit",
         "like_count": None,
-        "comment_count": None,
-        "reply_count": _extract_reddit_reply_count(comment),
         "view_count": None,
-        "retweet_count": None,
-        "bookmark_count": None,
-        "score": _extract_reddit_score(comment),
     }
-
-
-def _youtube_reply_count(comment_pages: list[dict]) -> int:
-    return sum(
-        parse_count(item.get("snippet", {}).get("totalReplyCount")) or 0
-        for page in comment_pages
-        for item in page.get("items", [])
-    )
 
 
 def _hash_identity(value: str | None) -> str:
@@ -802,24 +762,10 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                                         article,
                                         "like",
                                     ),
-                                    "comment_count": None,
-                                    "reply_count": extract_x_metric(
-                                        article,
-                                        "reply",
-                                    ),
                                     "view_count": extract_x_metric(
                                         article,
                                         "analytics",
                                     ),
-                                    "retweet_count": extract_x_metric(
-                                        article,
-                                        "retweet",
-                                    ),
-                                    "bookmark_count": extract_x_metric(
-                                        article,
-                                        "bookmark",
-                                    ),
-                                    "score": None,
                                 }
                             )
                             seen_ids.add(status_id)
@@ -1042,12 +988,7 @@ def main() -> None:
                         "collaborator_channel_ids"
                     ),
                     "like_count": event.get("like_count"),
-                    "comment_count": event.get("comment_count"),
-                    "reply_count": event.get("reply_count"),
                     "view_count": event.get("view_count"),
-                    "retweet_count": event.get("retweet_count"),
-                    "bookmark_count": event.get("bookmark_count"),
-                    "score": event.get("score"),
                 },
                 on_delivery=delivery_report,
             )
@@ -1174,18 +1115,9 @@ def main() -> None:
                         "like_count": parse_count(
                             (metadata or {}).get("statistics", {}).get("likeCount")
                         ),
-                        "comment_count": parse_count(
-                            (metadata or {})
-                            .get("statistics", {})
-                            .get("commentCount")
-                        ),
-                        "reply_count": _youtube_reply_count(comments),
                         "view_count": parse_count(
                             (metadata or {}).get("statistics", {}).get("viewCount")
                         ),
-                        "retweet_count": None,
-                        "bookmark_count": None,
-                        "score": None,
                     }
                 )
         elif mode == "x":
