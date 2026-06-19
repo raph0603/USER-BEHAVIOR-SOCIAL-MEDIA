@@ -61,7 +61,7 @@ with DAG(
             INSIGHT_CONFIG["max_events_per_source"],
             type="integer",
             minimum=1,
-            maximum=2000,
+            maximum=5000,
             title="Maximum events refreshed per source",
         ),
         "x_headless": Param(

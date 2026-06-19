@@ -821,9 +821,10 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
         "REDDIT_KEYWORD_MATCH_MODE",
         "OR",
     ).upper()
-    scan_limit = min(
-        100,
-        max(1, configured_scan_limit, max_events if max_events > 0 else 0),
+    scan_limit = max(
+        1,
+        configured_scan_limit,
+        max_events if max_events > 0 else 0,
     )
     wait_ms = _env_int("REDDIT_WAIT_MS", 750)
     events = []
@@ -841,29 +842,53 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
         page = context.new_page()
 
         for subreddit in subreddits:
-            listing_url = (
-                f"https://old.reddit.com/r/{subreddit}/comments/"
-                f"?limit={scan_limit}"
-            )
-            page.goto(listing_url, wait_until="domcontentloaded", timeout=60000)
-            comments = page.locator("div.thing.comment")
-            discovered_comments += comments.count()
-            for index in range(comments.count()):
-                event = _extract_reddit_comment_event(
-                    comments.nth(index),
-                    listing_url,
-                )
-                if event is None or state.contains("reddit", event["event_id"]):
-                    continue
-                if not _matches_keywords(
-                    event["title"],
-                    keywords,
-                    keyword_match_mode,
-                ):
-                    continue
-                candidates[event["event_id"]] = event
+            listing_url = f"https://old.reddit.com/r/{subreddit}/comments/?limit=100"
+            visited_pages = set()
+            scanned_comments = 0
 
-            page.wait_for_timeout(wait_ms)
+            while listing_url and scanned_comments < scan_limit:
+                if listing_url in visited_pages:
+                    break
+                visited_pages.add(listing_url)
+                page.goto(
+                    listing_url,
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                )
+                comments = page.locator("div.thing.comment")
+                page_comment_count = min(
+                    comments.count(),
+                    scan_limit - scanned_comments,
+                )
+                discovered_comments += page_comment_count
+                scanned_comments += page_comment_count
+
+                for index in range(page_comment_count):
+                    event = _extract_reddit_comment_event(
+                        comments.nth(index),
+                        listing_url,
+                    )
+                    if event is None or state.contains(
+                        "reddit",
+                        event["event_id"],
+                    ):
+                        continue
+                    if not _matches_keywords(
+                        event["title"],
+                        keywords,
+                        keyword_match_mode,
+                    ):
+                        continue
+                    candidates[event["event_id"]] = event
+
+                next_link = page.locator("span.next-button a")
+                next_href = (
+                    next_link.first.get_attribute("href")
+                    if next_link.count()
+                    else None
+                )
+                listing_url = urljoin(listing_url, next_href) if next_href else None
+                page.wait_for_timeout(wait_ms)
 
         if discovered_comments == 0:
             browser.close()

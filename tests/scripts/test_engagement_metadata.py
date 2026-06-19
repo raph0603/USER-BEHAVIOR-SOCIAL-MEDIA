@@ -193,8 +193,10 @@ class EngagementMetadataTests(unittest.TestCase):
         )
 
         self.assertIn("LOGGER = logging.getLogger(__name__)", producer)
-        self.assertIn('f"https://old.reddit.com/r/{subreddit}/comments/"', producer)
+        self.assertIn('f"https://old.reddit.com/r/{subreddit}/comments/', producer)
         self.assertIn("REDDIT_COMMENT_SCAN_LIMIT", producer)
+        self.assertIn('page.locator("span.next-button a")', producer)
+        self.assertIn("while listing_url and scanned_comments < scan_limit:", producer)
         self.assertNotIn("?sort=top&t=month", producer)
 
     def test_producer_emits_only_contract_engagement_metrics(self):
