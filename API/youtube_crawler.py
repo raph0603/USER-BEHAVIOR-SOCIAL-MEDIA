@@ -6,6 +6,11 @@ import os
 import time
 from pathlib import Path
 import sys
+import time
+import random
+
+# AJOUT : Importation de la bibliothèque tierce pour les sous-titres
+from youtube_transcript_api import YouTubeTranscriptApi
 
 # =========================
 # CONFIGURATION
@@ -41,6 +46,48 @@ def fetch_video_metadata(youtube, video_id):
         return items[0] if items else None
     except HttpError as e:
         print(f"\n[ERREUR HTTP] Métadonnées pour {video_id} : {e}")
+        return None
+
+# AJOUT : Nouvelle fonction pour récupérer la transcription textuelle
+def fetch_video_transcript(video_id):
+    """
+    Récupère la transcription de la vidéo de manière robuste.
+    Gère le repli sur le français/anglais et convertit l'objet en dictionnaire JSON.
+    """
+    try:
+        # CORRECTION : On enlève l'argument cookies_from_browser qui causait le TypeError
+        api = YouTubeTranscriptApi()
+        transcript_obj = api.fetch(video_id, languages=['en', 'fr'])
+        
+        if transcript_obj is None:
+            return None
+            
+        # Sécurité si l'objet renvoyé n'est pas directement listable
+        if not hasattr(transcript_obj, '__iter__'):
+            for attr in ['lines', 'entries', '_transcript', 'data']:
+                if hasattr(transcript_obj, attr):
+                    iterable = getattr(transcript_obj, attr)
+                    if hasattr(iterable, '__iter__'):
+                        transcript_obj = iterable
+                        break
+        
+        clean_transcript = []
+        for item in transcript_obj:
+            if isinstance(item, dict):
+                clean_transcript.append(item)
+            else:
+                # Extraction des attributs pour l'objet FetchedTranscript
+                clean_transcript.append({
+                    "text": getattr(item, "text", str(item)),
+                    "start": getattr(item, "start", 0.0),
+                    "duration": getattr(item, "duration", 0.0)
+                })
+        
+        return clean_transcript if clean_transcript else None
+
+    except Exception as e:
+        error_type = type(e).__name__
+        print(f"\n[DEBUG TRANSCRIPT] Impossible de récupérer pour {video_id} | Erreur : {error_type}")
         return None
 
 def fetch_all_comments_for_video(youtube, video_id, sleep_seconds=0.5):
@@ -104,16 +151,20 @@ def main():
         if metadata is None:
             continue
             
+        # MODIFICATION 1.5) Transcription
+        transcript = fetch_video_transcript(video_id)
+            
         # 2) Commentaires
         comment_pages = fetch_all_comments_for_video(youtube, video_id)
         
-        # 3) Sauvegarde
+        # 3) Sauvegarde enrichie
         payload = {
             "video_id": video_id,
             "video_metadata": metadata,
+            "video_transcript": transcript,  # AJOUT : Stockage de la transcription dans le JSON
             "comment_threads_pages": comment_pages,
         }
-        
+        time.sleep(random.uniform(3.0, 6.0))
         save_json(payload, out_file)
 
 if __name__ == "__main__":
