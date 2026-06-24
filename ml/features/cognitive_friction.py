@@ -28,8 +28,9 @@ _JARGON_EN = re.compile(
     r"\b(kwh?|kilowatt|regenerative|drivetrain|powertrain|lithium|electrolyte|inverter|"
     r"voltage|torque|thermal|aerodynamic|coefficient|payload|autonomy)\b", re.I)
 _JARGON_VI = re.compile(
-    r"(truyền động|biến tần|điện áp|mô[- ]?men|hệ số|khí động|nhiệt động|"
-    r"mật độ năng lượng|tái tạo|lithium|công suất|hiệu suất)", re.I)
+    r"(truyền động|biến tần|điện áp|mô[- ]?men( xoắn)?|hệ số|khí động|nhiệt động|"
+    r"mật độ năng lượng|tái tạo|lithium|công suất|hiệu suất|mã lực|"
+    r"kilowatt[- ]?giờ|vòng/phút)", re.I)
 
 _CONJ_EN = re.compile(
     r"\b(and|but|or|because|although|which|that|while|however|therefore|whereas)\b", re.I)
@@ -37,8 +38,10 @@ _CONJ_VI = re.compile(
     r"(và|nhưng|hoặc|vì|bởi|mà|nên|tuy nhiên|do đó|mặc dù|cho nên|vì vậy|trong khi)", re.I)
 
 _SENT_SPLIT = re.compile(r"[.!?]+(?=\s|$)")   # split on sentence punctuation, keep "77.4" intact
-_NUMBER = re.compile(r"\d[\d,.]*")
 _SHOUT_PUNCT = re.compile(r"[!?]{2,}")        # any run of !/? >= 2, incl. mixed "?!", "!?!?"
+# number + technical unit (kWh, Nm, %, km, mã lực...) — drift-proof tech-spec marker, language-agnostic.
+# Counts specs, NOT casual numbers ("3 tiếng", "2024"), so simple sentences don't spike f_info.
+_UNITS = re.compile(r"\d[\d.,]*\s*-?\s*(kwh|kw|wh|nm|hp|rpm|km/h|km|mph|kv|mã lực|kilowatt[- ]?giờ|%)", re.I)
 
 
 def _scale(x: float, lo: float, hi: float) -> float:
@@ -68,7 +71,11 @@ def _detect_lang(text: str) -> str:
 
 
 def cognitive_friction(text: str) -> dict:
-    """Return five sub-signals + composite score (all in [0, 1]) and the detected lang."""
+    """Return sub-signals + composite score (all in [0, 1]) and the detected lang.
+
+    f_word is NaN for Vietnamese (excluded from the composite). f_info counts
+    technical specs (number+unit) + hard jargon, not casual numbers.
+    """
     keys = ("f_word", "f_sent", "f_clause", "f_info", "f_visual")
     text = (text or "").strip()
     if not text:
@@ -80,29 +87,27 @@ def cognitive_friction(text: str) -> dict:
     sentences = [s for s in _SENT_SPLIT.split(text) if s.strip()]
     n_sent = max(len(sentences), 1)
 
-    # lexical difficulty: polysyllabic words (EN) vs long tokens (VI proxy for compounds/loanwords)
-    if lang == "en":
-        f_word = _scale(sum(_syllables(w) >= 3 for w in words) / n_words, 0.0, 0.30)
-    else:
-        f_word = _scale(sum(len(w) >= 7 for w in words) / n_words, 0.0, 0.25)
-
     jargon = len((_JARGON_VI if lang == "vi" else _JARGON_EN).findall(text))
     conj = len((_CONJ_VI if lang == "vi" else _CONJ_EN).findall(text))
-    numbers = len(_NUMBER.findall(text))
+    specs = len(_UNITS.findall(text))                        # number+unit tech specs (drift-proof)
     shout = sum(len(w) >= 3 and w.isupper() for w in words)  # ALL-CAPS words, not acronyms
 
     parts = {
-        "f_word": f_word,
+        # lexical difficulty: EN polysyllabic-word ratio. VI -> NaN (word length is not a valid
+        # difficulty proxy for a monosyllabic language), so it is excluded from the composite.
+        "f_word": _scale(sum(_syllables(w) >= 3 for w in words) / n_words, 0.0, 0.30)
+                  if lang == "en" else float("nan"),
         "f_sent": _scale(n_words / n_sent, 8.0, 30.0),                       # long sentences
         "f_clause": _scale((conj + text.count(",")) / n_sent, 0.0, 3.0),     # nested clauses
-        "f_info": _scale((numbers + jargon) / n_words, 0.0, 0.12),           # data/jargon density
+        "f_info": _scale((specs + jargon) / n_words, 0.0, 0.12),             # technical-spec density
         "f_visual": (                                                        # shouting + !!! + emoji/#
             _scale(shout / n_words, 0.0, 0.30)
             + _scale(len(_SHOUT_PUNCT.findall(text)), 0, 5)
             + _scale(len(_EMOJI.findall(text)) + text.count("#"), 0, 10)
         ) / 3,
     }
-    parts["cognitive_friction_score"] = round(sum(parts.values()) / len(parts), 4)
+    measured = [v for v in parts.values() if v == v]         # drop NaN (VI f_word)
+    parts["cognitive_friction_score"] = round(sum(measured) / len(measured), 4)
     parts["lang"] = lang
     return parts
 
@@ -114,6 +119,7 @@ if __name__ == "__main__":
                     "the thermal inverter coefficient, which fluctuates considerably, undermines payload "
                     "autonomy by 23.6% — A TRULY ALARMING RESULT!!! #EV #battery"),
         "VI low ": "Xe điện này vui. Nó chạy tốt. Mình thích nó.",
+        "VI emo ": "Pin xe hết sạch. Chết máy giữa đường. Mất 3 tiếng chờ.",  # low friction = correct
         "VI high": ("Mặc dù kiến trúc pin lithium-ion 77.4 kWh của hệ truyền động tái tạo, hệ số biến tần "
                     "nhiệt — vốn dao động đáng kể — làm giảm quãng đường tới 23.6%, MỘT KẾT QUẢ ĐÁNG BÁO "
                     "ĐỘNG!!! #xeđiện #pin"),
