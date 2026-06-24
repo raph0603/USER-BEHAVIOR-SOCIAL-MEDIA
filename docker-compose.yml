@@ -208,7 +208,9 @@ services:
       - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
       - YOUTUBE_OUTPUT_DIR=/app/api/yt_raw_json
       - YOUTUBE_SLEEP_SECONDS=0.5
-      - YOUTUBE_SEARCH_QUERY=electric vehicle review
+      - YOUTUBE_SEARCH_QUERIES=${YOUTUBE_SEARCH_QUERIES:-electric vehicle review||EV charging battery range||đánh giá xe điện||xe điện VinFast trạm sạc}
+      - YOUTUBE_SEARCH_LANGUAGES=${YOUTUBE_SEARCH_LANGUAGES:-en,vi}
+      - YOUTUBE_TRANSCRIPT_LANGUAGES=${YOUTUBE_TRANSCRIPT_LANGUAGES:-en,vi}
       - YOUTUBE_SEARCH_MAX_RESULTS=${YOUTUBE_SEARCH_MAX_RESULTS:-10}
       - YOUTUBE_SEARCH_LANGUAGE=${YOUTUBE_SEARCH_LANGUAGE:-en}
       - YOUTUBE_SEARCH_ORDER=${YOUTUBE_SEARCH_ORDER:-date}
@@ -247,7 +249,7 @@ services:
       - X_HEADLESS=${X_HEADLESS:-true}
       - X_GOOGLE_EMAIL=${X_GOOGLE_EMAIL:-}
       - X_GOOGLE_LOGIN_WAIT_SECONDS=${X_GOOGLE_LOGIN_WAIT_SECONDS:-90}
-      - X_SEARCH_QUERIES=${X_SEARCH_QUERIES:-(electric vehicle OR EV OR "electric car") lang:en -filter:replies||(Tesla OR "EV charging" OR "battery range") lang:en -filter:replies}
+      - X_SEARCH_QUERIES=${X_SEARCH_QUERIES:-(electric vehicle OR EV OR "electric car") lang:en -filter:replies||(Tesla OR "EV charging" OR "battery range") lang:en -filter:replies||("xe điện" OR "ô tô điện" OR "pin xe điện") lang:vi -filter:replies||(Tesla OR VinFast OR "trạm sạc") lang:vi -filter:replies}
       - X_SEARCH_WAIT_MS=${X_SEARCH_WAIT_MS:-20000}
       - X_SEARCH_RETRIES=${X_SEARCH_RETRIES:-3}
       - X_SEARCH_RETRY_SECONDS=${X_SEARCH_RETRY_SECONDS:-10}

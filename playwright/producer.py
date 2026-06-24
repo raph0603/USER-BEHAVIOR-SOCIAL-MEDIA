@@ -22,6 +22,7 @@ from googleapiclient.errors import HttpError
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
+from youtube_transcript_api import YouTubeTranscriptApi
 
 from engagement import extract_x_metric, parse_count
 from youtube_authors import fetch_youtube_collaborators
@@ -33,6 +34,15 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_X_QUERIES = [
     '(electric vehicle OR EV OR "electric car") lang:en -filter:replies',
     '(Tesla OR "EV charging" OR "battery range") lang:en -filter:replies',
+    '("xe điện" OR "ô tô điện" OR "pin xe điện") lang:vi -filter:replies',
+    '(Tesla OR VinFast OR "trạm sạc") lang:vi -filter:replies',
+]
+
+DEFAULT_YOUTUBE_QUERIES = [
+    "electric vehicle review",
+    "EV charging battery range",
+    "đánh giá xe điện",
+    "xe điện VinFast trạm sạc",
 ]
 
 
@@ -53,6 +63,22 @@ def _env_float(name: str, default: float) -> float:
 def _env_str(name: str, default: str) -> str:
     value = os.getenv(name, default)
     return value.strip() if value else default
+
+
+def _env_list(name: str, default: list[str]) -> list[str]:
+    value = os.getenv(name)
+    if not value:
+        return default
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    return items or default
+
+
+def _env_pipe_list(name: str, default: list[str]) -> list[str]:
+    value = os.getenv(name)
+    if not value:
+        return default
+    items = [item.strip() for item in value.split("||") if item.strip()]
+    return items or default
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -389,6 +415,27 @@ def _fetch_youtube_comments(youtube, video_id: str, sleep_seconds: float):
         except HttpError as exc:
             print(f"[YouTube] Comment fetch stopped for {video_id}: {exc}")
             return pages
+
+
+def _fetch_youtube_transcript(video_id: str, languages: list[str]) -> list[dict] | None:
+    try:
+        transcript = YouTubeTranscriptApi().fetch(video_id, languages=languages)
+        clean_transcript = []
+        for item in transcript:
+            if isinstance(item, dict):
+                clean_transcript.append(item)
+            else:
+                clean_transcript.append(
+                    {
+                        "text": getattr(item, "text", str(item)),
+                        "start": getattr(item, "start", 0.0),
+                        "duration": getattr(item, "duration", 0.0),
+                    }
+                )
+        return clean_transcript or None
+    except Exception as exc:
+        print(f"[YouTube] Transcript unavailable for {video_id}: {type(exc).__name__}")
+        return None
 
 
 def _x_is_authenticated(page) -> bool:
@@ -1034,29 +1081,34 @@ def main() -> None:
                 raise RuntimeError("YOUTUBE_API_KEY is required")
             youtube = _get_youtube_service(api_key)
             search_limit = _env_int("YOUTUBE_SEARCH_MAX_RESULTS", 10)
-            search_language = _env_str("YOUTUBE_SEARCH_LANGUAGE", "en")
+            search_languages = _env_list(
+                "YOUTUBE_SEARCH_LANGUAGES",
+                [_env_str("YOUTUBE_SEARCH_LANGUAGE", "en")],
+            )
+            transcript_languages = _env_list(
+                "YOUTUBE_TRANSCRIPT_LANGUAGES",
+                ["en", "vi"],
+            )
             search_order = _env_str("YOUTUBE_SEARCH_ORDER", "date")
             youtube_queries = _env_json_list(
                 "YOUTUBE_SEARCH_QUERIES_JSON",
-                [
-                    _env_str(
-                        "YOUTUBE_SEARCH_QUERY",
-                        "electric vehicle review",
-                    )
-                ],
+                _env_pipe_list("YOUTUBE_SEARCH_QUERIES", DEFAULT_YOUTUBE_QUERIES),
             )
             video_ids = []
             for search_query in youtube_queries:
-                discovered_ids = _search_youtube_video_ids(
-                    youtube,
-                    search_query,
-                    search_limit,
-                    search_language,
-                    search_order,
-                )
-                for video_id in discovered_ids:
-                    if video_id not in video_ids:
-                        video_ids.append(video_id)
+                for search_language in search_languages:
+                    discovered_ids = _search_youtube_video_ids(
+                        youtube,
+                        search_query,
+                        search_limit,
+                        search_language,
+                        search_order,
+                    )
+                    for video_id in discovered_ids:
+                        if video_id not in video_ids:
+                            video_ids.append(video_id)
+                        if len(video_ids) >= search_limit:
+                            break
                     if len(video_ids) >= search_limit:
                         break
                 if len(video_ids) >= search_limit:
@@ -1107,12 +1159,17 @@ def main() -> None:
                     video_id,
                     _env_float("YOUTUBE_SLEEP_SECONDS", 0.5),
                 )
+                transcript = _fetch_youtube_transcript(
+                    video_id,
+                    transcript_languages,
+                )
                 output_dir.mkdir(parents=True, exist_ok=True)
                 (output_dir / f"{video_id}.json").write_text(
                     json.dumps(
                         {
                             "video_id": video_id,
                             "video_metadata": metadata,
+                            "video_transcript": transcript,
                             "owner_channel_id": owner_channel_id,
                             "collaborator_channel_ids": (
                                 collaborator_channel_ids

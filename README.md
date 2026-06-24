@@ -249,6 +249,10 @@ docker compose run --rm youtube-collector
 
 The collector writes raw JSON under `API/yt_raw_json/` and emits YouTube
 events to Kafka using the same event schema as the other producers.
+By default, YouTube search and transcript fetching target English and
+Vietnamese (`YOUTUBE_SEARCH_LANGUAGES=en,vi`,
+`YOUTUBE_TRANSCRIPT_LANGUAGES=en,vi`). Use `YOUTUBE_SEARCH_QUERIES` with
+`||` separators to override the English and Vietnamese search terms.
 
 ### Engagement metadata
 

@@ -6,7 +6,6 @@ import os
 import time
 from pathlib import Path
 import sys
-import time
 import random
 
 # AJOUT : Importation de la bibliothèque tierce pour les sous-titres
@@ -16,6 +15,11 @@ from youtube_transcript_api import YouTubeTranscriptApi
 # CONFIGURATION
 # =========================
 API_KEY = os.getenv("YOUTUBE_API_KEY")
+TRANSCRIPT_LANGUAGES = [
+    language.strip()
+    for language in os.getenv("YOUTUBE_TRANSCRIPT_LANGUAGES", "en,vi").split(",")
+    if language.strip()
+]
 INPUT_FILE = "video_list.txt"
 OUTPUT_DIR = Path("yt_raw_json")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -57,7 +61,7 @@ def fetch_video_transcript(video_id):
     try:
         # CORRECTION : On enlève l'argument cookies_from_browser qui causait le TypeError
         api = YouTubeTranscriptApi()
-        transcript_obj = api.fetch(video_id, languages=['en', 'fr'])
+        transcript_obj = api.fetch(video_id, languages=TRANSCRIPT_LANGUAGES)
         
         if transcript_obj is None:
             return None
