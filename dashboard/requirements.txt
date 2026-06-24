@@ -4,3 +4,4 @@ plotly
 numpy
 duckdb
 requests
+pyarrow

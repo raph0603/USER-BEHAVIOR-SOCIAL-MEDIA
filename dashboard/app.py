@@ -1,5 +1,6 @@
 import json
 import os
+from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
@@ -197,6 +198,119 @@ def format_rate(value):
     return f"{float(value):.1f}%"
 
 
+def normalize_export_value(value):
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return json.dumps([str(item) for item in value], ensure_ascii=False)
+    if hasattr(value, "tolist"):
+        return normalize_export_value(value.tolist())
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
+def prepare_python_export(dataframe):
+    export_df = dataframe.copy()
+    for column in export_df.columns:
+        if pd.api.types.is_datetime64_any_dtype(export_df[column]):
+            export_df[column] = export_df[column].dt.strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+        elif export_df[column].dtype == "object":
+            export_df[column] = export_df[column].map(normalize_export_value)
+    return export_df
+
+
+def dataframe_to_parquet_bytes(dataframe):
+    buffer = BytesIO()
+    dataframe.to_parquet(buffer, index=False)
+    return buffer.getvalue()
+
+
+def render_python_export(raw_dataframe, analytics_dataframe):
+    with st.expander("Export data for Python", expanded=False):
+        dataset_label = st.radio(
+            "Dataset",
+            options=[
+                "Filtered events",
+                "Analytics rows",
+            ],
+            horizontal=True,
+        )
+        selected_df = (
+            analytics_dataframe
+            if dataset_label == "Analytics rows"
+            else raw_dataframe
+        )
+        export_df = prepare_python_export(selected_df)
+        file_slug = (
+            "analytics_rows"
+            if dataset_label == "Analytics rows"
+            else "filtered_events"
+        )
+
+        metric_columns = st.columns(3)
+        metric_columns[0].metric("Rows", f"{len(export_df):,}")
+        metric_columns[1].metric("Columns", f"{len(export_df.columns):,}")
+        metric_columns[2].metric(
+            "Sources",
+            f"{export_df['source'].dropna().nunique():,}"
+            if "source" in export_df.columns
+            else "N/A",
+        )
+
+        download_columns = st.columns(3)
+        download_columns[0].download_button(
+            "CSV",
+            data=export_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"{file_slug}.csv",
+            mime="text/csv",
+            width="stretch",
+        )
+        download_columns[1].download_button(
+            "JSONL",
+            data=export_df.to_json(
+                orient="records",
+                lines=True,
+                force_ascii=False,
+            ).encode("utf-8"),
+            file_name=f"{file_slug}.jsonl",
+            mime="application/x-ndjson",
+            width="stretch",
+        )
+        try:
+            parquet_data = dataframe_to_parquet_bytes(export_df)
+            parquet_disabled = False
+            parquet_help = None
+        except ImportError:
+            parquet_data = b""
+            parquet_disabled = True
+            parquet_help = "Install pyarrow to enable Parquet export."
+        download_columns[2].download_button(
+            "Parquet",
+            data=parquet_data,
+            file_name=f"{file_slug}.parquet",
+            mime="application/vnd.apache.parquet",
+            disabled=parquet_disabled,
+            help=parquet_help,
+            width="stretch",
+        )
+
+        st.code(
+            f"""import pandas as pd
+
+df = pd.read_parquet("{file_slug}.parquet")
+df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce", utc=True)
+print(df.shape)
+print(df.head())""",
+            language="python",
+        )
+
+
 st.set_page_config(
     page_title="Social Media Lakehouse Dashboard",
     layout="wide",
@@ -368,6 +482,8 @@ else:
     st.sidebar.warning("No valid date for the current selection.")
 
 analytics_df = build_analytics_rows(df_filtered)
+
+render_python_export(df_filtered, analytics_df)
 
 total_records = len(analytics_df)
 latest_activity = analytics_df["created_at"].max()
