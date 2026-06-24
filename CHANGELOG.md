@@ -1,6 +1,14 @@
 # Changelog
 
 <<<<<<< HEAD
+## [1.4.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.3.0...v1.4.0) (2026-06-24)
+
+
+### Features
+
+* **crawler:** raise default collection limits ([c4ce999](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/c4ce9995c493fa95bc19bcfe478151d565669c14))
+* **crawler:** refresh comment metadata collection ([e303824](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/e303824d2e9735f78a160217d5579c2ebf60598a))
+
 ## [1.3.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.2.0...v1.3.0) (2026-06-24)
 
 
