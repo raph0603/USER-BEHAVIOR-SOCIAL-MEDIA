@@ -91,7 +91,7 @@ class AirflowMonitoringTests(unittest.TestCase):
             "en attente depuis 1 min 30 s",
         )
 
-    def test_crawler_configuration_allows_thousand_events_per_run(self):
+    def test_crawler_configuration_allows_five_thousand_events_per_run(self):
         configuration_source = (
             ROOT / "dashboard" / "pages" / "1_Configuration.py"
         ).read_text(encoding="utf-8")
@@ -110,8 +110,10 @@ class AirflowMonitoringTests(unittest.TestCase):
 
         self.assertIn('"max_events_per_source": 1000', configuration_source)
         self.assertIn('"max_events_per_source": 1000', crawler_source)
-        self.assertIn("max_value=1000", configuration_source)
-        self.assertIn("maximum=1000", dag_source)
+        self.assertIn('"reddit_comment_scan_limit": 1000', configuration_source)
+        self.assertIn('"reddit_comment_scan_limit": 1000', crawler_source)
+        self.assertIn("max_value=5000", configuration_source)
+        self.assertIn("maximum=5000", dag_source)
 
 
 if __name__ == "__main__":
