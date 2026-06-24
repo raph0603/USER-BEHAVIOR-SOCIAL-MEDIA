@@ -8,7 +8,12 @@ from airflow.models.param import Param
 from airflow.operators.bash import BashOperator
 from airflow.operators.empty import EmptyOperator
 from airflow.utils.trigger_rule import TriggerRule
+from crawler_configuration import load_crawler_config
 from pendulum import datetime
+from pipeline_lock import (
+    acquire_pipeline_lock_command,
+    release_pipeline_lock_command,
+)
 
 PROJECT_DIR = "/workspace"
 
@@ -88,49 +93,26 @@ def wait_clean_command(
     """
 
 
-def acquire_pipeline_lock_command() -> str:
+def build_balancing_report_command() -> str:
     return r"""
     set -euo pipefail
-    LOCK_DIR=/tmp/user-behavior-lakehouse.pipeline.lock
-    OWNER="${AIRFLOW_CTX_DAG_ID}/${AIRFLOW_CTX_DAG_RUN_ID}"
-    for attempt in $(seq 1 720); do
-      if docker exec spark-master mkdir "$LOCK_DIR" 2>/dev/null; then
-        docker exec -e LOCK_OWNER="$OWNER" spark-master /bin/bash -lc \
-          'printf "%s\n" "$LOCK_OWNER" > /tmp/user-behavior-lakehouse.pipeline.lock/owner'
-        echo "Acquired shared pipeline lock for $OWNER"
-        exit 0
-      fi
-      if (( attempt % 6 == 1 )); then
-        CURRENT_OWNER=$(docker exec spark-master /bin/bash -lc \
-          'cat /tmp/user-behavior-lakehouse.pipeline.lock/owner 2>/dev/null || echo unknown')
-        echo "Pipeline busy with $CURRENT_OWNER; waiting..."
-      fi
-      sleep 10
-    done
-    echo "Timed out waiting for the shared pipeline lock"
-    exit 1
+    mkdir -p /workspace/data/balancing
+    docker exec \
+      -e BALANCE_SEED="${BALANCE_SEED:-42}" \
+      -e BALANCE_TARGET_PER_GROUP="${BALANCE_TARGET_PER_GROUP:-0}" \
+      -e BALANCE_DIMENSIONS="${BALANCE_DIMENSIONS:-source}" \
+      -e BALANCE_REPORT_PATH=/opt/spark/balancing/report.json \
+      spark-master /opt/spark/bin/spark-submit \
+      --master spark://spark-master:7077 \
+      --driver-memory 512m \
+      --executor-memory 512m \
+      --conf spark.cores.max=2 \
+      --conf spark.executor.cores=1 \
+      /opt/spark/jobs/maintenance/build_balanced_dataset.py
     """
 
 
-def release_pipeline_lock_command() -> str:
-    return r"""
-    set -euo pipefail
-    OWNER="${AIRFLOW_CTX_DAG_ID}/${AIRFLOW_CTX_DAG_RUN_ID}"
-    if ! docker exec spark-master true >/dev/null 2>&1; then
-      echo "spark-master is not running; pipeline lock is already unavailable"
-      exit 0
-    fi
-    docker exec -e LOCK_OWNER="$OWNER" spark-master /bin/bash -lc '
-      LOCK_DIR=/tmp/user-behavior-lakehouse.pipeline.lock
-      CURRENT_OWNER=$(cat "$LOCK_DIR/owner" 2>/dev/null || true)
-      if [[ "$CURRENT_OWNER" == "$LOCK_OWNER" ]]; then
-        rm -rf "$LOCK_DIR"
-        echo "Released shared pipeline lock for $LOCK_OWNER"
-      else
-        echo "Pipeline lock belongs to ${CURRENT_OWNER:-nobody}; nothing to release"
-      fi
-    '
-    """
+CRAWLER_CONFIG = load_crawler_config()
 
 
 with DAG(
@@ -143,35 +125,94 @@ with DAG(
     default_args={"owner": "data-platform", "retries": 0},
     params={
         "youtube_event_count": Param(
-            5,
+            CRAWLER_CONFIG["youtube_event_count"],
             type="integer",
             minimum=1,
-            maximum=50,
+            maximum=1000,
             title="Nombre d'evenements YouTube",
             description=(
                 "Nombre maximal de nouvelles videos YouTube a publier dans Kafka."
             ),
         ),
+        "youtube_search_queries": Param(
+            CRAWLER_CONFIG["youtube_search_queries"],
+            type="array",
+            minItems=1,
+            items={"type": "string", "minLength": 1},
+            title="Recherches YouTube",
+        ),
+        "youtube_search_language": Param(
+            CRAWLER_CONFIG["youtube_search_language"],
+            type="string",
+            title="Langue YouTube",
+        ),
+        "youtube_search_order": Param(
+            CRAWLER_CONFIG["youtube_search_order"],
+            type="string",
+            enum=["date", "relevance", "viewCount", "rating"],
+            title="Tri YouTube",
+        ),
         "x_event_count": Param(
-            5,
+            CRAWLER_CONFIG["x_event_count"],
             type="integer",
             minimum=1,
-            maximum=100,
+            maximum=1000,
             title="Nombre d'evenements X",
             description=(
                 "Nombre maximal de nouveaux posts X à publier dans Kafka."
             ),
         ),
-        "reddit_event_count": Param(
-            5,
+        "x_search_queries": Param(
+            CRAWLER_CONFIG["x_search_queries"],
+            type="array",
+            minItems=1,
+            items={"type": "string", "minLength": 1},
+            title="Recherches X",
+        ),
+        "x_scroll_rounds": Param(
+            CRAWLER_CONFIG["x_scroll_rounds"],
             type="integer",
             minimum=1,
-            maximum=100,
+            maximum=50,
+            title="Nombre de scrolls X par recherche",
+        ),
+        "reddit_event_count": Param(
+            CRAWLER_CONFIG["reddit_event_count"],
+            type="integer",
+            minimum=1,
+            maximum=1000,
             title="Nombre d'evenements Reddit",
             description=(
                 "Nombre maximal de nouveaux commentaires Reddit a publier "
                 "dans Kafka."
             ),
+        ),
+        "reddit_subreddits": Param(
+            CRAWLER_CONFIG["reddit_subreddits"],
+            type="array",
+            minItems=1,
+            items={"type": "string", "minLength": 1},
+            title="Subreddits",
+        ),
+        "reddit_keywords": Param(
+            CRAWLER_CONFIG["reddit_keywords"],
+            type="array",
+            minItems=1,
+            items={"type": "string", "minLength": 1},
+            title="Mots-cles Reddit",
+        ),
+        "reddit_keyword_match_mode": Param(
+            CRAWLER_CONFIG["reddit_keyword_match_mode"],
+            type="string",
+            enum=["OR", "AND"],
+            title="Correspondance Reddit",
+        ),
+        "reddit_comment_scan_limit": Param(
+            CRAWLER_CONFIG["reddit_comment_scan_limit"],
+            type="integer",
+            minimum=1,
+            maximum=100,
+            title="Commentaires inspectes par subreddit",
         ),
         "x_headless": Param(
             True,
@@ -322,6 +363,7 @@ with DAG(
 
     start_bronze_stream = BashOperator(
         task_id="merge_clean_events_to_bronze",
+        trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
         bash_command=r"""
         set -euo pipefail
         docker exec \
@@ -345,12 +387,28 @@ with DAG(
           spark-master /bin/bash -lc "set -o pipefail; mkdir -p /tmp/user-behavior-lakehouse; /opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=2 --conf spark.executor.cores=1 /opt/spark/jobs/batch/bronze_to_silver_from_kafka.py 2>&1 | tee /tmp/user-behavior-lakehouse/silver_stream.log"
         """,
     )
+
+    update_balancing_report = BashOperator(
+        task_id="update_balancing_report",
+        execution_timeout=timedelta(hours=1),
+        bash_command=build_balancing_report_command(),
+    )
+
     run_youtube_collection = BashOperator(
         task_id="collect_youtube_api_events",
+        env={
+            "YOUTUBE_SEARCH_QUERIES_JSON": (
+                "{{ params.youtube_search_queries | tojson }}"
+            ),
+        },
+        append_env=True,
         bash_command=docker_compose(
             "run --rm "
             "-e PRODUCER_MAX_EVENTS={{ params.youtube_event_count }} "
             "-e YOUTUBE_SEARCH_MAX_RESULTS={{ params.youtube_event_count }} "
+            "-e YOUTUBE_SEARCH_QUERIES_JSON "
+            "-e YOUTUBE_SEARCH_LANGUAGE={{ params.youtube_search_language }} "
+            "-e YOUTUBE_SEARCH_ORDER={{ params.youtube_search_order }} "
             "youtube-collector"
         ),
     )
@@ -359,22 +417,53 @@ with DAG(
         task_id="collect_x_playwright_events",
         retries=2,
         retry_delay=timedelta(seconds=20),
+        env={
+            "X_SEARCH_QUERIES_JSON": "{{ params.x_search_queries | tojson }}",
+        },
+        append_env=True,
         bash_command=r"""
         set -euo pipefail
         if [[ "${X_COLLECTION_ENABLED:-false}" != "true" ]]; then
           echo "X collection disabled; set X_COLLECTION_ENABLED=true to enable it"
           exit 0
         fi
+        if [[ -z "${X_CDP_URL:-}" ]]; then
+          CDP_PORT_FILE="/workspace/data/x-runtime/cdp-port.txt"
+          CDP_HOST="${X_CDP_HOST:-host.docker.internal}"
+          if [[ ! -s "$CDP_PORT_FILE" ]]; then
+            echo "X CDP port file missing; skipping X collection"
+            exit 99
+          fi
+          CDP_PORT="$(tr -dc '0-9' < "$CDP_PORT_FILE")"
+          if [[ -z "$CDP_PORT" ]]; then
+            echo "X CDP port file is invalid; skipping X collection"
+            exit 99
+          fi
+          if ! timeout 3 bash -lc ":</dev/tcp/${CDP_HOST}/${CDP_PORT}" 2>/dev/null; then
+            echo "X CDP endpoint ${CDP_HOST}:${CDP_PORT} is unavailable; skipping X collection"
+            exit 99
+          fi
+        fi
         """ + docker_compose(
             "run --rm "
             "-e PRODUCER_MAX_EVENTS={{ params.x_event_count }} "
+            "-e X_SEARCH_QUERIES_JSON "
+            "-e X_SCROLL_ROUNDS={{ params.x_scroll_rounds }} "
             "-e X_HEADLESS={{ params.x_headless | lower }} "
             "x-collector"
         ),
+        skip_on_exit_code=99,
     )
 
     run_reddit_collection = BashOperator(
         task_id="collect_reddit_online_events",
+        env={
+            "REDDIT_SUBREDDITS_JSON": (
+                "{{ params.reddit_subreddits | tojson }}"
+            ),
+            "REDDIT_KEYWORDS_JSON": "{{ params.reddit_keywords | tojson }}",
+        },
+        append_env=True,
         bash_command=r"""
         set -euo pipefail
         if [[ "${REDDIT_COLLECTION_ENABLED:-false}" != "true" ]]; then
@@ -384,6 +473,12 @@ with DAG(
         """ + docker_compose(
             "run --rm "
             "-e PRODUCER_MAX_EVENTS={{ params.reddit_event_count }} "
+            "-e REDDIT_SUBREDDITS_JSON "
+            "-e REDDIT_KEYWORDS_JSON "
+            "-e REDDIT_KEYWORD_MATCH_MODE="
+            "{{ params.reddit_keyword_match_mode }} "
+            "-e REDDIT_COMMENT_SCAN_LIMIT="
+            "{{ params.reddit_comment_scan_limit }} "
             "reddit-collector"
         ),
     )
@@ -465,7 +560,8 @@ with DAG(
         wait_clean_reddit,
     ] >> start_bronze_stream
     start_bronze_stream >> start_silver_stream
-    start_silver_stream >> stop_realtime_streams >> release_pipeline_lock
+    start_silver_stream >> update_balancing_report >> stop_realtime_streams
+    stop_realtime_streams >> release_pipeline_lock
     [
         run_youtube_collection,
         run_x_collection,
@@ -475,6 +571,7 @@ with DAG(
         wait_clean_reddit,
         start_bronze_stream,
         start_silver_stream,
+        update_balancing_report,
         stop_realtime_streams,
         acquire_pipeline_lock,
         release_pipeline_lock,

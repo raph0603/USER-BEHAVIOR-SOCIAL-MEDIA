@@ -4,7 +4,14 @@ import re
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import coalesce, col, from_json, to_date, to_timestamp
 from pyspark.storagelevel import StorageLevel
-from pyspark.sql.types import StructType, StructField, StringType, TimestampType
+from pyspark.sql.types import (
+    ArrayType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
 
 
 def _env(name: str, default: str) -> str:
@@ -46,6 +53,13 @@ def _build_spark(app_name: str, warehouse: str) -> SparkSession:
     return spark
 
 
+def _ensure_columns(spark: SparkSession, table: str, columns: dict[str, str]) -> None:
+    current_columns = set(spark.table(table).columns)
+    for name, data_type in columns.items():
+        if name not in current_columns:
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN {name} {data_type}")
+
+
 def main() -> None:
     kafka_bootstrap = _env("KAFKA_BOOTSTRAP", "kafka:9092")
     kafka_topics = _env(
@@ -70,6 +84,12 @@ def main() -> None:
         "event_ts",
         "source",
         "error",
+        "platform_event_id",
+        "metadata_refreshed_at",
+        "owner_channel_id",
+        "collaborator_channel_ids",
+        "like_count",
+        "view_count",
         "event_date",
     ]
 
@@ -83,14 +103,31 @@ def main() -> None:
           event_ts TIMESTAMP,
           source STRING,
           error STRING,
+          platform_event_id STRING,
+          metadata_refreshed_at TIMESTAMP,
+          owner_channel_id STRING,
+          collaborator_channel_ids ARRAY<STRING>,
+          like_count BIGINT,
+          view_count BIGINT,
           event_date DATE
         )
         USING iceberg
         PARTITIONED BY (event_date)
         """
     )
+    _ensure_columns(
+        spark,
+        silver_table,
+        {
+            "owner_channel_id": "STRING",
+            "platform_event_id": "STRING",
+            "metadata_refreshed_at": "TIMESTAMP",
+            "collaborator_channel_ids": "ARRAY<STRING>",
+            "like_count": "BIGINT",
+            "view_count": "BIGINT",
+        },
+    )
 
-    # define schema for the JSON payload produced by Bronze
     schema = StructType(
         [
             StructField("user_id", StringType()),
@@ -99,6 +136,15 @@ def main() -> None:
             StructField("timestamp", StringType()),
             StructField("source", StringType()),
             StructField("error", StringType()),
+            StructField("platform_event_id", StringType()),
+            StructField("metadata_refreshed_at", TimestampType()),
+            StructField("owner_channel_id", StringType()),
+            StructField(
+                "collaborator_channel_ids",
+                ArrayType(StringType()),
+            ),
+            StructField("like_count", LongType()),
+            StructField("view_count", LongType()),
             StructField("event_ts", TimestampType()),
         ]
     )
@@ -131,7 +177,9 @@ def main() -> None:
                 print(f"Silver epoch {epoch_id}: no input rows")
                 return
 
-            batch_df = cached.dropDuplicates(["user_id", "url", "event_ts"])
+            batch_df = cached.dropDuplicates(
+                ["source", "platform_event_id", "user_id", "url", "event_ts"]
+            )
             deduplicated_rows = batch_df.count()
             temp_view = f"microbatch_{epoch_id}"
             batch_df.createOrReplaceTempView(temp_view)
@@ -140,13 +188,41 @@ def main() -> None:
             merge_sql = f"""
             MERGE INTO {silver_table} AS t
             USING {temp_view} AS s
-            ON t.user_id = s.user_id
-               AND t.url = s.url
-               AND t.event_ts = s.event_ts
+            ON t.source = s.source
+               AND (
+                 (
+                   s.platform_event_id IS NOT NULL
+                   AND t.platform_event_id = s.platform_event_id
+                 )
+                 OR (
+                   s.platform_event_id IS NULL
+                   AND t.user_id = s.user_id
+                   AND t.url = s.url
+                   AND t.event_ts = s.event_ts
+                 )
+               )
             WHEN MATCHED THEN UPDATE SET
               t.title = s.title,
               t.source = s.source,
-              t.error = s.error
+              t.error = s.error,
+              t.platform_event_id = COALESCE(
+                s.platform_event_id,
+                t.platform_event_id
+              ),
+              t.metadata_refreshed_at = COALESCE(
+                s.metadata_refreshed_at,
+                t.metadata_refreshed_at
+              ),
+              t.owner_channel_id = COALESCE(
+                s.owner_channel_id,
+                t.owner_channel_id
+              ),
+              t.collaborator_channel_ids = COALESCE(
+                s.collaborator_channel_ids,
+                t.collaborator_channel_ids
+              ),
+              t.like_count = COALESCE(s.like_count, t.like_count),
+              t.view_count = COALESCE(s.view_count, t.view_count)
             WHEN NOT MATCHED THEN
               INSERT ({cols}) VALUES ({', '.join([f's.{c}' for c in silver_columns])})
             """

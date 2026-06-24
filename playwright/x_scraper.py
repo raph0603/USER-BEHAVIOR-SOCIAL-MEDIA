@@ -11,6 +11,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
+from engagement import extract_x_metric
+
 
 BASE_DIR = Path(__file__).resolve().parent
 INPUT_FILE = BASE_DIR / "x_urls.txt"
@@ -114,11 +116,6 @@ def clean_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def parse_count(raw: str) -> str:
-    raw = clean_text(raw).replace(",", "")
-    return raw
-
-
 def extract_hashtags(text: str) -> str:
     return " | ".join(sorted(set(re.findall(r"#\w+", text))))
 
@@ -140,14 +137,6 @@ def safe_get_attribute(locator, name: str) -> str:
         return value or ""
     except Exception:
         return ""
-
-
-def extract_metric(article, testid: str) -> str:
-    loc = article.locator(f'[data-testid="{testid}"]')
-    if loc.count() == 0:
-        return ""
-    text = safe_inner_text(loc.first)
-    return parse_count(text)
 
 
 def collect_external_links(article) -> str:
@@ -242,11 +231,11 @@ def scrape_article(article, page_url: str, article_index: int) -> dict:
         "lang": lang,
         "tweet_time": tweet_time,
         "tweet_time_iso": tweet_time_iso,
-        "reply_count": extract_metric(article, "reply"),
-        "retweet_count": extract_metric(article, "retweet"),
-        "like_count": extract_metric(article, "like"),
-        "bookmark_count": extract_metric(article, "bookmark"),
-        "view_count": extract_metric(article, "analytics"),
+        "reply_count": extract_x_metric(article, "reply"),
+        "retweet_count": extract_x_metric(article, "retweet"),
+        "like_count": extract_x_metric(article, "like"),
+        "bookmark_count": extract_x_metric(article, "bookmark"),
+        "view_count": extract_x_metric(article, "analytics"),
         "is_reply": "Replying to" in article_text,
         "is_pinned": "Pinned" in article_text,
         "has_media": media_count > 0,

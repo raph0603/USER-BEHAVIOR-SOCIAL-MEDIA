@@ -91,7 +91,21 @@ LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=30
 
 Both online DAGs use a shared pipeline lock. If their scheduled or manual runs
 overlap, the second run waits before cleanup and Spark processing instead of
-starting concurrent streams on the same checkpoints.
+starting concurrent streams on the same checkpoints. Lock operations use
+`flock`, and a waiting run checks the owner in the Airflow metadata database.
+Locks owned by terminal or missing DAG runs are reclaimed automatically after
+a short safety delay.
+
+The lock timing can be configured in `.env`:
+
+```env
+PIPELINE_LOCK_POLL_SECONDS=10
+PIPELINE_LOCK_MAX_WAIT_SECONDS=7200
+PIPELINE_LOCK_STALE_GRACE_SECONDS=30
+```
+
+If the Airflow metadata lookup fails, the lock is preserved and the waiting
+run retries later.
 
 The independent `iceberg_parquet_compaction` DAG compacts the Parquet files
 managed by the Bronze and Silver Iceberg tables. It runs every six hours by
@@ -113,12 +127,51 @@ The job verifies that the record count is unchanged and retries three times by
 default. The shared lock prevents compaction from overlapping Bronze or Silver
 writes without creating a dependency between DAGs.
 
+The separate `refresh_recent_engagement_insights` DAG refreshes engagement
+metrics for events already stored in Silver. It runs once per day by default,
+selects events from the previous 15 days, recollects the metrics available for
+YouTube, X and Reddit, then updates the matching Bronze and Silver rows.
+Rows are matched by `platform_event_id` when available, with the older
+`source`, `user_id`, `url` and `event_ts` key kept as a fallback for legacy
+records. Successful refreshes persist `metadata_refreshed_at`.
+
+```env
+INSIGHT_REFRESH_SCHEDULE_MINUTES=1440
+```
+
+The trigger form exposes `lookback_days` and `max_events_per_source`. X and
+Reddit follow the existing `X_COLLECTION_ENABLED` and
+`REDDIT_COLLECTION_ENABLED` switches. X also requires the authenticated CDP
+browser session.
+
+The `docker_storage_maintenance` DAG limits development-machine disk growth. It
+runs daily, removes stopped containers and dangling images older than 24 hours,
+keeps at most 1 GB of old build cache, and removes Airflow logs older than 14
+days. Docker volumes are never pruned by this DAG.
+
+```env
+DOCKER_MAINTENANCE_SCHEDULE_MINUTES=1440
+DOCKER_MAINTENANCE_BUILD_CACHE_KEEP=1GB
+AIRFLOW_LOG_RETENTION_DAYS=14
+```
+
+Compose also uses Docker's compressed `local` logging driver with three 10 MB
+files per container.
+
+Docker Desktop's WSL disk does not always shrink after cleanup. To return its
+free blocks to Windows, close Docker Desktop and run the following command from
+an elevated PowerShell:
+
+```powershell
+.\scripts\compact_docker_disk.ps1
+```
+
 When manually triggering `user_behavior_lakehouse` from the Airflow interface,
 the trigger form exposes three limits:
 
-- `youtube_event_count`: maximum number of new YouTube videos, from 1 to 50;
-- `x_event_count`: maximum number of new X posts, from 1 to 100;
-- `reddit_event_count`: maximum number of new Reddit comments, from 1 to 100.
+- `youtube_event_count`: maximum number of new YouTube videos, from 1 to 1000;
+- `x_event_count`: maximum number of new X posts, from 1 to 1000;
+- `reddit_event_count`: maximum number of new Reddit comments, from 1 to 1000.
 
 These are upper limits. A collector can return fewer events when the online
 search does not contain enough unprocessed results. Scheduled runs use the
@@ -140,10 +193,15 @@ YouTube is API-based, and Reddit remains headless inside its Docker container.
 docker compose up -d --build
 ```
 
+This starts MinIO, Kafka, Spark, Airflow and the Streamlit dashboard. The
+dashboard is exposed at http://localhost:8501 and uses the internal Docker
+endpoints `http://minio:9000` and `http://airflow-webserver:8080`.
+
 ### Run the local dashboard
 
-The Streamlit dashboard reads the cleaned events directly from
-`lakehouse.silver.events` in MinIO. Start MinIO before launching it:
+The Streamlit dashboard is containerized by default. For local dashboard
+development without Docker, it can still be launched from the host. Start
+MinIO before launching it:
 
 ```powershell
 docker compose up -d minio minio-init
@@ -156,7 +214,16 @@ The dashboard is available at http://localhost:8501. Its Iceberg table,
 MinIO endpoint, and credentials can be overridden with the
 `DASHBOARD_ICEBERG_TABLE_PATH`, `DASHBOARD_MINIO_ENDPOINT`,
 `DASHBOARD_MINIO_ACCESS_KEY`, and `DASHBOARD_MINIO_SECRET_KEY` environment
-variables.
+variables. The Airflow monitoring panel uses `DASHBOARD_AIRFLOW_URL`,
+`DASHBOARD_AIRFLOW_USERNAME`, and `DASHBOARD_AIRFLOW_PASSWORD`. It displays
+active DAG runs, task completion progress, and upcoming scheduled runs.
+
+The separate `Configuration` dashboard page manages crawler limits and search
+filters. Keywords are added and removed individually, then translated into
+YouTube and X query syntax based on the selected language and filters. Reddit
+uses its configured keyword list to filter recent comments from the selected
+subreddits. Saved values are stored in Airflow Variables and become defaults
+for later scheduled runs.
 
 ### Run the Bronze streaming job
 
@@ -183,6 +250,74 @@ docker compose run --rm youtube-collector
 The collector writes raw JSON under `API/yt_raw_json/` and emits YouTube
 events to Kafka using the same event schema as the other producers.
 
+### Engagement metadata
+
+Collector events carry a nullable engagement contract through the privacy
+cleaning topics, Iceberg Bronze and Iceberg Silver:
+
+- stable matching field: `platform_event_id`;
+- shared nullable fields: `like_count` and `view_count`;
+- YouTube and X populate likes and views when available;
+- Reddit keeps both fields null because public comment data does not expose
+  reliable equivalents. Reddit score is not mapped to likes.
+
+Platform-specific metrics are intentionally excluded from the Kafka and
+lakehouse contract instead of being mapped to misleading common fields.
+Timestamps remain ISO-8601 strings in the existing Avro contract and are
+converted to native timestamps by the lakehouse jobs. Existing Bronze and
+Silver tables are evolved automatically when new columns are first used.
+`metadata_refreshed_at` is null for initial collection rows and is set by the
+refresh job when mutable metadata is recollected.
+
+### Balanced dataset
+
+The `build_balanced_comment_dataset` DAG builds a reproducible balanced sample
+from `lakehouse.silver.events`. It writes the Iceberg table
+`lakehouse.silver.balanced_events` and a JSON report to
+`data/balancing/report.json`.
+The crawl DAGs also refresh this balanced table and report automatically after
+Silver has been updated, so the dashboard reflects the latest crawl results.
+
+By default, balancing is done by `source` only, so YouTube, X and Reddit keep
+the same number of rows in the balanced output. `engagement_band` and
+`comment_type` are still derived and kept in the output for analysis, but they
+are not part of the default balancing key. Sampling order is deterministic from
+`BALANCE_SEED` and stable platform/event fields, so the same input and seed
+produce the same output.
+
+```env
+BALANCE_DATASET_SCHEDULE_MINUTES=0
+BALANCE_SEED=42
+BALANCE_TARGET_PER_GROUP=0
+BALANCE_DIMENSIONS=source
+```
+
+`BALANCE_TARGET_PER_GROUP=0` uses the smallest available source size. If a
+requested target is larger than the smallest source, the job lowers the
+effective target and records that constraint in the report instead of
+duplicating rows.
+
+### YouTube owners and collaborators
+
+YouTube events store the publishing channel in `owner_channel_id` and accepted
+creator collaborators in `collaborator_channel_ids`. The owner comes from the
+stable `snippet.channelId` returned by the YouTube Data API. Collaborators are
+read from the canonical public watch page because the Data API does not expose
+the accepted collaborator list.
+
+A confirmed video without collaborators stores an empty list. If the watch
+page is unavailable, private, deleted, blocked by a consent or anti-bot page,
+or its undocumented structure changes, the collaborator value remains null.
+Bronze, Silver and the insight refresh job use `COALESCE`, so such failures do
+not replace previously collected owner or collaborator metadata. The refresh
+DAG retries this enrichment for recent YouTube events.
+
+`YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS` controls the public page request timeout
+and defaults to 20 seconds. `YOUTUBE_AUTHOR_FETCH_WORKERS` limits concurrent
+watch-page requests and defaults to 8. Because collaborator extraction depends
+on undocumented page data, it should be monitored when YouTube changes its
+watch page.
+
 ### Run X collection
 
 X is collected directly from the live website with Playwright. The collector
@@ -207,8 +342,8 @@ required in `.env` or Airflow. `X_CDP_URL` remains available only as a fallback
 for an externally managed CDP endpoint.
 
 Log in to X in that browser window. When triggering the DAG from the Airflow
-UI, set `x_post_count` to the maximum number of new X posts to collect
-(between 1 and 100). For a direct `docker compose run`, `X_MAX_EVENTS` in
+UI, set `x_event_count` to the maximum number of new X posts to collect
+(between 1 and 1000). For a direct `docker compose run`, `X_MAX_EVENTS` in
 `.env` provides the limit. If fewer new posts are available, the collector
 publishes fewer events. When X collection is enabled, a crawler or CDP
 failure fails the Airflow task and the DAG.
@@ -229,8 +364,10 @@ docker compose run --rm reddit-collector
 ```
 
 Set `REDDIT_COLLECTION_ENABLED=true` to include this step in Airflow.
-`REDDIT_SUBREDDITS`, `REDDIT_POST_LIMIT` and `REDDIT_MAX_EVENTS` control the
-online collection.
+`REDDIT_SUBREDDITS`, `REDDIT_COMMENT_SCAN_LIMIT` and `REDDIT_MAX_EVENTS`
+control the online collection. The collector scans up to 100 recent comments
+per subreddit, sorts them globally by publication time and publishes the newest
+unprocessed comments first.
 
 Each collector stores processed source IDs in its own persistent SQLite file
 under `data/collector-state/`. Existing topic contents are imported into this
