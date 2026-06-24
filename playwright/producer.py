@@ -815,7 +815,7 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
             if value.strip()
         ],
     )
-    configured_scan_limit = _env_int("REDDIT_COMMENT_SCAN_LIMIT", 100)
+    configured_scan_limit = _env_int("REDDIT_COMMENT_SCAN_LIMIT", 1000)
     keywords = _env_json_list("REDDIT_KEYWORDS_JSON", [])
     keyword_match_mode = _env_str(
         "REDDIT_KEYWORD_MATCH_MODE",
@@ -945,7 +945,7 @@ def main() -> None:
     )
     schema_path = _env_str("SCHEMA_PATH", "/app/schemas/playwright_event.avsc")
     schema = _load_schema(schema_path)
-    max_events = _env_int("PRODUCER_MAX_EVENTS", 5)
+    max_events = _env_int("PRODUCER_MAX_EVENTS", 1000)
     state = ProcessedState(
         _env_str("COLLECTOR_STATE_DB", "/app/state/processed.sqlite")
     )

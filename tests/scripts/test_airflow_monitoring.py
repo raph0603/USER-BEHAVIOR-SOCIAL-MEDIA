@@ -110,6 +110,8 @@ class AirflowMonitoringTests(unittest.TestCase):
 
         self.assertIn('"max_events_per_source": 1000', configuration_source)
         self.assertIn('"max_events_per_source": 1000', crawler_source)
+        self.assertIn('"reddit_comment_scan_limit": 1000', configuration_source)
+        self.assertIn('"reddit_comment_scan_limit": 1000', crawler_source)
         self.assertIn("max_value=5000", configuration_source)
         self.assertIn("maximum=5000", dag_source)
 

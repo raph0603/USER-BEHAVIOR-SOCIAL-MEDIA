@@ -175,7 +175,7 @@ the trigger form exposes three limits:
 
 These are upper limits. A collector can return fewer events when the online
 search does not contain enough unprocessed results. Scheduled runs use the
-default value of 5 for each source.
+default value of 1000 for each source.
 
 The trigger form also exposes `x_headless`:
 

@@ -42,7 +42,7 @@ DEFAULT_CRAWLER_CONFIG = {
     "reddit_keyword_match_mode": "OR",
     "reddit_event_count": 1000,
     "reddit_subreddits": ["electricvehicles", "teslamotors"],
-    "reddit_comment_scan_limit": 100,
+    "reddit_comment_scan_limit": 1000,
 }
 DEFAULT_INSIGHT_CONFIG = {
     "lookback_days": 15,
