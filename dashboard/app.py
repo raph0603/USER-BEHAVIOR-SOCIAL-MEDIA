@@ -8,7 +8,7 @@ import plotly.express as px
 import streamlit as st
 
 from airflow_monitoring import AirflowClient
-from loaders import ENGAGEMENT_COLUMNS, get_iceberg_config, load_iceberg_data
+from loaders import get_iceberg_config, load_iceberg_data
 from navigation import render_navigation
 
 
@@ -21,6 +21,13 @@ ENGAGEMENT_LABELS = {
     "bookmark_count": "Bookmarks",
     "score": "Score Reddit",
 }
+ENGAGEMENT_COLUMNS = tuple(ENGAGEMENT_LABELS)
+OPTIONAL_DASHBOARD_COLUMNS = (
+    "platform_event_id",
+    "metadata_refreshed_at",
+    "owner_channel_id",
+    "collaborator_channel_ids",
+)
 
 TRACKING_ROLE_ORDER = [
     "Author",
@@ -115,6 +122,23 @@ def build_analytics_rows(dataframe):
     youtube_rows = deduplicate_youtube_videos(dataframe)
     other_rows = dataframe[dataframe["source"] != "youtube"].copy()
     return pd.concat([other_rows, youtube_rows], ignore_index=True)
+
+
+def prepare_dashboard_dataframe(dataframe):
+    prepared = dataframe.copy()
+    for column in ENGAGEMENT_COLUMNS:
+        if column not in prepared.columns:
+            prepared[column] = pd.NA
+        prepared[column] = pd.to_numeric(prepared[column], errors="coerce")
+    for column in OPTIONAL_DASHBOARD_COLUMNS:
+        if column not in prepared.columns:
+            prepared[column] = pd.NA
+    prepared["metadata_refreshed_at"] = pd.to_datetime(
+        prepared["metadata_refreshed_at"],
+        errors="coerce",
+        utc=True,
+    )
+    return prepared
 
 
 def build_user_tracking_rows(dataframe):
@@ -446,6 +470,8 @@ except RuntimeError as exc:
 if df.empty:
     st.warning("The Iceberg Silver table is accessible but contains no events.")
     st.stop()
+
+df = prepare_dashboard_dataframe(df)
 
 st.sidebar.header("Filters")
 
