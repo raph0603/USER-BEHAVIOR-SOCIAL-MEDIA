@@ -34,14 +34,16 @@ _JARGON_VI = re.compile(
 
 _CONJ_EN = re.compile(
     r"\b(and|but|or|because|although|which|that|while|however|therefore|whereas)\b", re.I)
-_CONJ_VI = re.compile(
-    r"(và|nhưng|hoặc|vì|bởi|mà|nên|tuy nhiên|do đó|mặc dù|cho nên|vì vậy|trong khi)", re.I)
+_CONJ_VI = re.compile(  # only unambiguous subordinators — drop polysemous "mà/nên/và/vì"
+    r"(tuy nhiên|do đó|mặc dù|cho nên|vì vậy|trong khi|bởi vì|mà còn)", re.I)
 
 _SENT_SPLIT = re.compile(r"[.!?]+(?=\s|$)")   # split on sentence punctuation, keep "77.4" intact
 _SHOUT_PUNCT = re.compile(r"[!?]{2,}")        # any run of !/? >= 2, incl. mixed "?!", "!?!?"
 # number + technical unit (kWh, Nm, %, km, mã lực...) — drift-proof tech-spec marker, language-agnostic.
 # Counts specs, NOT casual numbers ("3 tiếng", "2024"), so simple sentences don't spike f_info.
-_UNITS = re.compile(r"\d[\d.,]*\s*-?\s*(kwh|kw|wh|nm|hp|rpm|km/h|km|mph|kv|mã lực|kilowatt[- ]?giờ|%)", re.I)
+_UNITS = re.compile(
+    r"\d[\d.,]*\s*-?\s*((kwh|kw|wh|nm|kn|hp|rpm|km/h|km|mph|kv|v|a|w|mã lực|kilowatt[- ]?giờ)\b|%)",
+    re.I)
 
 
 def _scale(x: float, lo: float, hi: float) -> float:
@@ -87,7 +89,7 @@ def cognitive_friction(text: str) -> dict:
     sentences = [s for s in _SENT_SPLIT.split(text) if s.strip()]
     n_sent = max(len(sentences), 1)
 
-    jargon = len((_JARGON_VI if lang == "vi" else _JARGON_EN).findall(text))
+    jargon = len(_JARGON_EN.findall(text)) + len(_JARGON_VI.findall(text))  # bilingual: handles code-mix
     conj = len((_CONJ_VI if lang == "vi" else _CONJ_EN).findall(text))
     specs = len(_UNITS.findall(text))                        # number+unit tech specs (drift-proof)
     shout = sum(len(w) >= 3 and w.isupper() for w in words)  # ALL-CAPS words, not acronyms
@@ -106,7 +108,7 @@ def cognitive_friction(text: str) -> dict:
             + _scale(len(_EMOJI.findall(text)) + text.count("#"), 0, 10)
         ) / 3,
     }
-    measured = [v for v in parts.values() if v == v]         # drop NaN (VI f_word)
+    measured = [parts[k] for k in keys if parts[k] == parts[k]]   # sub-signals only, drop NaN (VI f_word)
     parts["cognitive_friction_score"] = round(sum(measured) / len(measured), 4)
     parts["lang"] = lang
     return parts
@@ -120,6 +122,7 @@ if __name__ == "__main__":
                     "autonomy by 23.6% — A TRULY ALARMING RESULT!!! #EV #battery"),
         "VI low ": "Xe điện này vui. Nó chạy tốt. Mình thích nó.",
         "VI emo ": "Pin xe hết sạch. Chết máy giữa đường. Mất 3 tiếng chờ.",  # low friction = correct
+        "VI mix ": "Pin 77.4 kWh, torque 450 Nm, điện áp 400 V, đỉnh của chóp!!!",  # code-mixed
         "VI high": ("Mặc dù kiến trúc pin lithium-ion 77.4 kWh của hệ truyền động tái tạo, hệ số biến tần "
                     "nhiệt — vốn dao động đáng kể — làm giảm quãng đường tới 23.6%, MỘT KẾT QUẢ ĐÁNG BÁO "
                     "ĐỘNG!!! #xeđiện #pin"),
