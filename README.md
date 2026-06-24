@@ -169,13 +169,13 @@ an elevated PowerShell:
 When manually triggering `user_behavior_lakehouse` from the Airflow interface,
 the trigger form exposes three limits:
 
-- `youtube_event_count`: maximum number of new YouTube videos, from 1 to 1000;
-- `x_event_count`: maximum number of new X posts, from 1 to 1000;
-- `reddit_event_count`: maximum number of new Reddit comments, from 1 to 1000.
+- `youtube_event_count`: maximum number of new YouTube videos, from 1 to 5000;
+- `x_event_count`: maximum number of new X posts, from 1 to 5000;
+- `reddit_event_count`: maximum number of new Reddit comments, from 1 to 5000.
 
 These are upper limits. A collector can return fewer events when the online
 search does not contain enough unprocessed results. Scheduled runs use the
-default value of 5 for each source.
+default value of 1000 for each source.
 
 The trigger form also exposes `x_headless`:
 
@@ -343,7 +343,7 @@ for an externally managed CDP endpoint.
 
 Log in to X in that browser window. When triggering the DAG from the Airflow
 UI, set `x_event_count` to the maximum number of new X posts to collect
-(between 1 and 1000). For a direct `docker compose run`, `X_MAX_EVENTS` in
+(between 1 and 5000). For a direct `docker compose run`, `X_MAX_EVENTS` in
 `.env` provides the limit. If fewer new posts are available, the collector
 publishes fewer events. When X collection is enabled, a crawler or CDP
 failure fails the Airflow task and the DAG.
@@ -366,8 +366,9 @@ docker compose run --rm reddit-collector
 Set `REDDIT_COLLECTION_ENABLED=true` to include this step in Airflow.
 `REDDIT_SUBREDDITS`, `REDDIT_COMMENT_SCAN_LIMIT` and `REDDIT_MAX_EVENTS`
 control the online collection. The collector scans up to 100 recent comments
-per subreddit, sorts them globally by publication time and publishes the newest
-unprocessed comments first.
+per Reddit page and follows pagination until it reaches the configured scan
+limit for each subreddit. It then sorts comments globally by publication time
+and publishes the newest unprocessed comments first.
 
 Each collector stores processed source IDs in its own persistent SQLite file
 under `data/collector-state/`. Existing topic contents are imported into this

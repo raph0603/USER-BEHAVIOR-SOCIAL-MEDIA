@@ -42,7 +42,7 @@ DEFAULT_CRAWLER_CONFIG = {
     "reddit_keyword_match_mode": "OR",
     "reddit_event_count": 1000,
     "reddit_subreddits": ["electricvehicles", "teslamotors"],
-    "reddit_comment_scan_limit": 100,
+    "reddit_comment_scan_limit": 1000,
 }
 DEFAULT_INSIGHT_CONFIG = {
     "lookback_days": 15,
@@ -179,7 +179,7 @@ with youtube_tab:
         youtube_event_count = st.number_input(
             "Maximum videos",
             min_value=1,
-            max_value=1000,
+            max_value=5000,
             value=int(crawler_config["youtube_event_count"]),
         )
         youtube_language_label = st.selectbox(
@@ -256,13 +256,13 @@ with x_tab:
         x_event_count = st.number_input(
             "Maximum posts",
             min_value=1,
-            max_value=1000,
+            max_value=5000,
             value=int(crawler_config["x_event_count"]),
         )
         x_scroll_rounds = st.number_input(
             "Scrolls per search",
             min_value=1,
-            max_value=50,
+            max_value=250,
             value=int(crawler_config["x_scroll_rounds"]),
         )
         x_language_label = st.selectbox(
@@ -347,13 +347,13 @@ with reddit_tab:
         reddit_event_count = st.number_input(
             "Maximum comments",
             min_value=1,
-            max_value=1000,
+            max_value=5000,
             value=int(crawler_config["reddit_event_count"]),
         )
         reddit_scan_limit = st.number_input(
             "Comments inspected per subreddit",
             min_value=1,
-            max_value=100,
+            max_value=5000,
             value=int(crawler_config["reddit_comment_scan_limit"]),
         )
         reddit_match_mode = st.selectbox(
@@ -419,7 +419,7 @@ with refresh_tab:
         max_events_per_source = st.number_input(
             "Event limit per source",
             min_value=1,
-            max_value=2000,
+            max_value=5000,
             value=int(insight_config["max_events_per_source"]),
         )
         refresh_x_headless = st.checkbox(
