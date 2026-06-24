@@ -35,6 +35,13 @@ def _build_spark(app_name: str, warehouse: str) -> SparkSession:
     return spark
 
 
+def _ensure_columns(spark: SparkSession, table: str, columns: dict[str, str]) -> None:
+    current_columns = set(spark.table(table).columns)
+    for name, data_type in columns.items():
+        if name not in current_columns:
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN {name} {data_type}")
+
+
 def main() -> None:
     bucket = _env("MINIO_BUCKET", "lakehouse")
 
@@ -42,7 +49,6 @@ def main() -> None:
 
     spark = _build_spark("bronze-to-silver", warehouse)
 
-    # Parallelism tuning: allow environment to influence shuffle partitions
     workers_env = os.getenv("SPARK_WORKER_COUNT")
     cores_env = os.getenv("SPARK_WORKER_CORES")
     try:
@@ -78,10 +84,24 @@ def main() -> None:
         "event_ts",
         "source",
         "error",
+        "platform_event_id",
+        "metadata_refreshed_at",
+        "owner_channel_id",
+        "collaborator_channel_ids",
+        "like_count",
+        "view_count",
         "event_date",
     ]
 
     spark.sql("CREATE NAMESPACE IF NOT EXISTS lakehouse.silver")
+    _ensure_columns(
+        spark,
+        bronze_table,
+        {
+            "platform_event_id": "STRING",
+            "metadata_refreshed_at": "TIMESTAMP",
+        },
+    )
     spark.sql(
         """
         CREATE TABLE IF NOT EXISTS lakehouse.silver.events (
@@ -91,11 +111,29 @@ def main() -> None:
           event_ts TIMESTAMP,
           source STRING,
           error STRING,
+          platform_event_id STRING,
+          metadata_refreshed_at TIMESTAMP,
+          owner_channel_id STRING,
+          collaborator_channel_ids ARRAY<STRING>,
+          like_count BIGINT,
+          view_count BIGINT,
           event_date DATE
         )
         USING iceberg
         PARTITIONED BY (event_date)
         """
+    )
+    _ensure_columns(
+        spark,
+        silver_table,
+        {
+            "owner_channel_id": "STRING",
+            "platform_event_id": "STRING",
+            "metadata_refreshed_at": "TIMESTAMP",
+            "collaborator_channel_ids": "ARRAY<STRING>",
+            "like_count": "BIGINT",
+            "view_count": "BIGINT",
+        },
     )
 
     current_columns = set(spark.table(silver_table).columns)
@@ -112,7 +150,6 @@ def main() -> None:
 
     checkpoint = f"s3a://{bucket}/checkpoints/silver/events/incremental"
 
-    # Processing mode: 'continuous' or 'availableNow'
     processing_mode = _env("PROCESSING_MODE", "continuous")
     trigger_interval = _env("PROCESSING_TRIGGER", "30 seconds")
 
@@ -124,25 +161,56 @@ def main() -> None:
         .select(*silver_columns)
     )
 
-    # Dedup and idempotent upsert per micro-batch using MERGE INTO
     def _foreach_batch(df, epoch_id: int):
         if df.rdd.isEmpty():
             return
 
-        batch_df = df.dropDuplicates(["user_id", "url", "event_ts"])  # dedupe within batch
+        batch_df = df.dropDuplicates(
+            ["source", "platform_event_id", "user_id", "url", "event_ts"]
+        )
         temp_view = f"microbatch_{epoch_id}"
         batch_df.createOrReplaceTempView(temp_view)
         batch_spark = batch_df.sparkSession
 
         cols = ", ".join(silver_columns)
-        # Perform an idempotent MERGE INTO using the micro-batch
         merge_sql = f"""
         MERGE INTO {silver_table} AS t
         USING {temp_view} AS s
         ON t.event_date = s.event_date
-           AND t.user_id = s.user_id
-           AND t.url = s.url
-           AND t.event_ts = s.event_ts
+           AND (
+             (
+               s.platform_event_id IS NOT NULL
+               AND t.platform_event_id = s.platform_event_id
+             )
+             OR (
+               s.platform_event_id IS NULL
+               AND t.user_id = s.user_id
+               AND t.url = s.url
+               AND t.event_ts = s.event_ts
+             )
+           )
+        WHEN MATCHED THEN UPDATE SET
+          t.title = s.title,
+          t.source = s.source,
+          t.error = s.error,
+          t.platform_event_id = COALESCE(
+            s.platform_event_id,
+            t.platform_event_id
+          ),
+          t.metadata_refreshed_at = COALESCE(
+            s.metadata_refreshed_at,
+            t.metadata_refreshed_at
+          ),
+          t.owner_channel_id = COALESCE(
+            s.owner_channel_id,
+            t.owner_channel_id
+          ),
+          t.collaborator_channel_ids = COALESCE(
+            s.collaborator_channel_ids,
+            t.collaborator_channel_ids
+          ),
+          t.like_count = COALESCE(s.like_count, t.like_count),
+          t.view_count = COALESCE(s.view_count, t.view_count)
         WHEN NOT MATCHED THEN
           INSERT ({cols}) VALUES ({', '.join([f's.{c}' for c in silver_columns])})
         """
@@ -152,7 +220,9 @@ def main() -> None:
     if processing_mode == "availableNow":
         checkpoint = f"s3a://{bucket}/checkpoints/silver/events/incremental"
         updates = (
-            source_stream.dropDuplicates(["user_id", "url", "event_ts"]) 
+            source_stream.dropDuplicates(
+                ["source", "platform_event_id", "user_id", "url", "event_ts"]
+            )
         )
 
         query = (
@@ -164,7 +234,6 @@ def main() -> None:
 
         query.awaitTermination()
     else:
-        # continuous streaming mode: micro-batches are processed and merged into silver concurrently
         checkpoint_rt = f"s3a://{bucket}/checkpoints/silver/events/realtime"
 
         query = (

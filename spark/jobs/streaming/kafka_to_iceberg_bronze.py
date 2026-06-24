@@ -4,7 +4,13 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, lit, to_timestamp
 from pyspark.sql.functions import struct, to_json
 from pyspark.storagelevel import StorageLevel
-from pyspark.sql.types import StringType, StructField, StructType
+from pyspark.sql.types import (
+    ArrayType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+)
 
 
 def _env(name: str, default: str) -> str:
@@ -46,6 +52,13 @@ def _build_spark(app_name: str, warehouse: str) -> SparkSession:
     return spark
 
 
+def _ensure_columns(spark: SparkSession, table: str, columns: dict[str, str]) -> None:
+    current_columns = set(spark.table(table).columns)
+    for name, data_type in columns.items():
+        if name not in current_columns:
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN {name} {data_type}")
+
+
 def main() -> None:
     kafka_bootstrap = _env("KAFKA_BOOTSTRAP", "kafka:9092")
     kafka_topics = _env(
@@ -76,11 +89,29 @@ def main() -> None:
           timestamp STRING,
           source STRING,
           error STRING,
+          platform_event_id STRING,
+          metadata_refreshed_at TIMESTAMP,
+          owner_channel_id STRING,
+          collaborator_channel_ids ARRAY<STRING>,
+          like_count BIGINT,
+          view_count BIGINT,
           event_ts TIMESTAMP
         )
         USING iceberg
         PARTITIONED BY (days(event_ts))
         """
+    )
+    _ensure_columns(
+        spark,
+        "lakehouse.bronze.events",
+        {
+            "owner_channel_id": "STRING",
+            "platform_event_id": "STRING",
+            "metadata_refreshed_at": "TIMESTAMP",
+            "collaborator_channel_ids": "ARRAY<STRING>",
+            "like_count": "BIGINT",
+            "view_count": "BIGINT",
+        },
     )
 
     starting_offsets = _env("KAFKA_STARTING_OFFSETS", "earliest")
@@ -104,6 +135,14 @@ def main() -> None:
                 StructField("timestamp", StringType()),
                 StructField("source", StringType()),
                 StructField("error", StringType()),
+                StructField("platform_event_id", StringType()),
+                StructField("owner_channel_id", StringType()),
+                StructField(
+                    "collaborator_channel_ids",
+                    ArrayType(StringType()),
+                ),
+                StructField("like_count", LongType()),
+                StructField("view_count", LongType()),
                 StructField("stage", StringType()),
             ]
         )
@@ -114,15 +153,23 @@ def main() -> None:
         raise ValueError(
             f"Unsupported KAFKA_VALUE_FORMAT={value_format!r}; expected json"
         )
-    enriched = decoded.select(
+    enriched = decoded.withColumn(
+        "metadata_refreshed_at",
+        lit(None).cast("timestamp"),
+    ).select(
         "user_id",
         "url",
         "title",
         "timestamp",
         "source",
         "error",
+        "platform_event_id",
+        "metadata_refreshed_at",
+        "owner_channel_id",
+        "collaborator_channel_ids",
+        "like_count",
+        "view_count",
     ).withColumn("event_ts", to_timestamp(col("timestamp")))
-    # Trigger configuration for Bronze micro-batches.
     bronze_trigger = _env("BRONZE_TRIGGER", "10 seconds")
     trigger_mode = _env("BRONZE_TRIGGER_MODE", "processing_time").lower()
 
@@ -133,6 +180,12 @@ def main() -> None:
         "timestamp",
         "source",
         "error",
+        "platform_event_id",
+        "metadata_refreshed_at",
+        "owner_channel_id",
+        "collaborator_channel_ids",
+        "like_count",
+        "view_count",
         "event_ts",
     ]
 
@@ -144,7 +197,9 @@ def main() -> None:
                 print(f"Bronze epoch {epoch_id}: no clean input rows")
                 return
 
-            batch_df = cached.dropDuplicates(["user_id", "url", "event_ts"])
+            batch_df = cached.dropDuplicates(
+                ["source", "platform_event_id", "user_id", "url", "event_ts"]
+            )
             deduplicated_rows = batch_df.count()
             temp_view = f"bronze_microbatch_{epoch_id}"
             batch_df.createOrReplaceTempView(temp_view)
@@ -153,14 +208,42 @@ def main() -> None:
                 f"""
                 MERGE INTO lakehouse.bronze.events AS t
                 USING {temp_view} AS s
-                ON t.user_id = s.user_id
-                   AND t.url = s.url
-                   AND t.event_ts = s.event_ts
+                ON t.source = s.source
+                   AND (
+                     (
+                       s.platform_event_id IS NOT NULL
+                       AND t.platform_event_id = s.platform_event_id
+                     )
+                     OR (
+                       s.platform_event_id IS NULL
+                       AND t.user_id = s.user_id
+                       AND t.url = s.url
+                       AND t.event_ts = s.event_ts
+                     )
+                   )
                 WHEN MATCHED THEN UPDATE SET
                   t.title = s.title,
                   t.timestamp = s.timestamp,
                   t.source = s.source,
-                  t.error = s.error
+                  t.error = s.error,
+                  t.platform_event_id = COALESCE(
+                    s.platform_event_id,
+                    t.platform_event_id
+                  ),
+                  t.metadata_refreshed_at = COALESCE(
+                    s.metadata_refreshed_at,
+                    t.metadata_refreshed_at
+                  ),
+                  t.owner_channel_id = COALESCE(
+                    s.owner_channel_id,
+                    t.owner_channel_id
+                  ),
+                  t.collaborator_channel_ids = COALESCE(
+                    s.collaborator_channel_ids,
+                    t.collaborator_channel_ids
+                  ),
+                  t.like_count = COALESCE(s.like_count, t.like_count),
+                  t.view_count = COALESCE(s.view_count, t.view_count)
                 WHEN NOT MATCHED THEN
                   INSERT ({cols})
                   VALUES ({', '.join([f's.{name}' for name in bronze_columns])})
@@ -173,7 +256,6 @@ def main() -> None:
         finally:
             cached.unpersist()
 
-    # Only validated, anonymized events can reach the Bronze table.
     iceberg_writer = (
         enriched.writeStream
         .outputMode("append")
@@ -186,14 +268,15 @@ def main() -> None:
         bronze_trigger,
     ).start()
 
-    # Optionally publish a sanitized JSON representation to a Kafka topic for downstream jobs
     kafka_out_topic = _env("BRONZE_KAFKA_OUT_TOPIC", "lakehouse.bronze.for_silver")
     kafka_out_checkpoint = (
         f"s3a://{bucket}/checkpoints/bronze/to_kafka/"
         f"{checkpoint_version}/{checkpoint_key}"
     )
 
-    kafka_payload = enriched.select(to_json(struct("user_id", "url", "title", "timestamp", "source", "error", "event_ts")).alias("value"))
+    kafka_payload = enriched.select(
+        to_json(struct(*bronze_columns)).alias("value")
+    )
 
     kafka_writer = (
         kafka_payload.writeStream.format("kafka")

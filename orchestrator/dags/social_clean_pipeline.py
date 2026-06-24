@@ -23,7 +23,7 @@ PLATFORMS = {
     "reddit": ("data/samples/reddit_data.csv", "raw.reddit"),
     "x": ("data/samples/x_dataset.csv", "raw.x"),
 }
-INGEST_LIMIT = 500  # bounded rows per platform per run
+INGEST_LIMIT = 1000  # bounded rows per platform per run
 
 
 def compose(cmd: str) -> str:

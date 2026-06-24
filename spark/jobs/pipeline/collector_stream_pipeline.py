@@ -17,7 +17,13 @@ from pyspark.sql.functions import (
     to_json,
     when,
 )
-from pyspark.sql.types import StringType, StructField, StructType
+from pyspark.sql.types import (
+    ArrayType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+)
 
 from cleaning import clean_text, invalid_reason
 
@@ -105,7 +111,11 @@ def main() -> None:
                 "_kafka_topic",
                 "_kafka_partition",
                 "_kafka_offset",
-                from_avro(col("avro_value"), schema).alias("data"),
+                from_avro(
+                    col("avro_value"),
+                    schema,
+                    {"mode": "PERMISSIVE"},
+                ).alias("data"),
             )
             .select("_kafka_topic", "_kafka_partition", "_kafka_offset", "data.*")
         )
@@ -118,6 +128,14 @@ def main() -> None:
                 StructField("timestamp", StringType()),
                 StructField("source", StringType()),
                 StructField("error", StringType()),
+                StructField("platform_event_id", StringType()),
+                StructField("owner_channel_id", StringType()),
+                StructField(
+                    "collaborator_channel_ids",
+                    ArrayType(StringType()),
+                ),
+                StructField("like_count", LongType()),
+                StructField("view_count", LongType()),
             ]
         )
         decoded = metadata.select(
@@ -167,6 +185,11 @@ def main() -> None:
                 "timestamp",
                 "source",
                 "error",
+                "platform_event_id",
+                "owner_channel_id",
+                "collaborator_channel_ids",
+                "like_count",
+                "view_count",
                 lit("clean").alias("stage"),
             )
         ).alias("value"),
@@ -182,6 +205,11 @@ def main() -> None:
                 "timestamp",
                 "source",
                 "error",
+                "platform_event_id",
+                "owner_channel_id",
+                "collaborator_channel_ids",
+                "like_count",
+                "view_count",
                 "_kafka_topic",
                 "_kafka_partition",
                 "_kafka_offset",
