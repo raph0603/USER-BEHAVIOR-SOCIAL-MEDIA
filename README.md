@@ -51,6 +51,10 @@ Local login:
 - user: `admin`
 - password: value of `AIRFLOW_ADMIN_PASSWORD` in `.env`
 
+Airflow metadata is stored in the Docker volume `airflow-postgres-data`.
+This keeps Postgres out of the OneDrive-backed project tree, which avoids
+filesystem I/O errors that can make the dashboard lose the Airflow API.
+
 The DAG `user_behavior_lakehouse` runs the complete online pipeline:
 
 1. collect YouTube, X and Reddit data into their raw Kafka topics;
@@ -207,6 +211,29 @@ machine and the Airflow, dashboard and MinIO credentials have been replaced.
 The startup script also replaces weak local Airflow defaults in `.env` and
 keeps dashboard credentials aligned with the generated Airflow password.
 
+### Production release and Docker Hub
+
+Production promotion runs through the GitHub Actions workflow that merges
+`main` into `production`, then runs Release Please. When Release Please creates
+a production release, the workflow publishes the project images to Docker Hub:
+
+- `user-behavior-social-media-dashboard`
+- `user-behavior-social-media-airflow`
+- `user-behavior-social-media-playwright`
+- `user-behavior-social-media-spark-master`
+- `user-behavior-social-media-spark-worker`
+
+Configure these GitHub secrets before promoting to production:
+
+- `DOCKERHUB_USERNAME`: Docker Hub account or organization login.
+- `DOCKERHUB_TOKEN`: Docker Hub access token with permission to create and
+  push repositories in the target namespace.
+
+Optionally set the GitHub Actions variable `DOCKERHUB_NAMESPACE` when the image
+namespace differs from `DOCKERHUB_USERNAME`. Each release is pushed with the
+Release Please tag, `production`, and `latest`. The workflow creates the Docker
+Hub repositories automatically when they do not already exist.
+
 ### Run the local dashboard
 
 The Streamlit dashboard is containerized by default. For local dashboard
@@ -234,6 +261,12 @@ YouTube and X query syntax based on the selected language and filters. Reddit
 uses its configured keyword list to filter recent comments from the selected
 subreddits. Saved values are stored in Airflow Variables and become defaults
 for later scheduled runs.
+
+The main dashboard also includes an `Add data` panel for files that already
+contain crawled data. It accepts CSV, JSON, JSONL, and NDJSON files, normalizes
+YouTube, X, and Reddit rows into the common raw event contract, publishes them
+to `manual.*.raw.events` Kafka topics, then can trigger the
+`manual_file_import_lakehouse` DAG to clean, merge, and refresh Silver.
 
 ### Run the Bronze streaming job
 
@@ -406,5 +439,6 @@ files:
 .\scripts\reset_pipeline_data.ps1
 ```
 
-The command preserves the X/Google browser profile, Airflow metadata, and
-Airflow logs. For non-interactive use, pass `-Force`.
+The command preserves the X/Google browser profile, the
+`airflow-postgres-data` Docker volume, and Airflow logs. For non-interactive
+use, pass `-Force`.
