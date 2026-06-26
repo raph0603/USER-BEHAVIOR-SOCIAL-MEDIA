@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.6.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.5.0...v1.6.0) (2026-06-26)
+
+
+### Features
+
+* add youtube video transcription collection (english) ([0eeffa3](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/0eeffa3e3c26b4d60e3c7a78d1faa8f549afc3a5))
+* **collector:** add english and vietnamese collection ([140f1ff](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/140f1fffdfeccbf5c28412a673ceb9ab09f43bc2))
+* **dashboard:** add manual import workflow ([2bd30e0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/2bd30e01f8b2d16db0c2e2cc4073fdef0bdd9686))
+* **dashboard:** add manual import workflow ([ef25c23](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/ef25c23ae53f83a958da1ee115d2d2f850c2df3d))
+* **dashboard:** add python data export ([e0ed7c9](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/e0ed7c95bbab82257b96c2dfad3b972a534586be))
+* **ops:** add resilient docker startup ([3e36ebe](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/3e36ebe5bd279fcb5ea8ecd1609cccbda73d1471))
+
+
+### Bug Fixes
+
+* **dashboard:** handle missing engagement columns ([d3cd213](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/d3cd213cf6c383c8104c6c59b8d470eed72481e1))
+* **security:** harden local service exposure ([178dea6](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/178dea61f7a434bb3425c12425c2d3baf873cfb2))
+
 ## [1.5.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.4.0...v1.5.0) (2026-06-26)
 
 ### Features
