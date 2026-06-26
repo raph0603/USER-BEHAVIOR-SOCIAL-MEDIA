@@ -638,7 +638,7 @@ def _load_x_full_tweet_text(context, tweet_url: str, fallback_text: str) -> str:
 def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
     cdp_url = _x_cdp_url()
     cdp_wait_seconds = _env_int("X_CDP_WAIT_SECONDS", 60)
-    headless = _env_bool("X_HEADLESS", True)
+    headless = _env_bool("X_HEADLESS", False)
     queries = _env_json_list(
         "X_SEARCH_QUERIES_JSON",
         [
@@ -653,6 +653,10 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
     scroll_rounds = _env_int("X_SCROLL_ROUNDS", 5)
     wait_ms = _env_int("X_SCROLL_WAIT_MS", 1500)
     search_wait_ms = _env_int("X_SEARCH_WAIT_MS", 20000)
+    search_navigation_timeout_ms = _env_int(
+        "X_SEARCH_NAVIGATION_TIMEOUT_MS",
+        30000,
+    )
     search_retries = _env_int("X_SEARCH_RETRIES", 3)
     search_retry_seconds = _env_int("X_SEARCH_RETRY_SECONDS", 10)
     events = []
@@ -703,22 +707,23 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                 )
                 query_ready = False
                 for attempt in range(1, search_retries + 1):
-                    page.goto(
-                        search_url,
-                        wait_until="domcontentloaded",
-                        timeout=60000,
-                    )
                     try:
+                        page.goto(
+                            search_url,
+                            wait_until="domcontentloaded",
+                            timeout=search_navigation_timeout_ms,
+                        )
                         page.locator('article[data-testid="tweet"]').first.wait_for(
                             state="visible",
                             timeout=search_wait_ms,
                         )
                         query_ready = True
                         break
-                    except PlaywrightTimeoutError:
+                    except (PlaywrightTimeoutError, PlaywrightError) as exc:
                         print(
-                            "No visible X posts for query "
-                            f"(attempt {attempt}/{search_retries})"
+                            "X query did not become ready "
+                            f"(attempt {attempt}/{search_retries}): {exc}",
+                            flush=True,
                         )
                         if attempt < search_retries:
                             page.wait_for_timeout(search_retry_seconds * 1000)
@@ -838,14 +843,19 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
             except PlaywrightError:
                 pass
             if discovered_statuses == 0:
-                raise RuntimeError(
+                print(
                     "No X posts were visible after all search retries. The X "
-                    "session may be rate-limited or temporarily unavailable."
+                    "session may be rate-limited or temporarily unavailable.",
+                    flush=True,
                 )
+                return []
     except Exception as exc:
-        raise RuntimeError(
-            f"X online collection failed via {cdp_url}: {exc}"
-        ) from exc
+        if _env_bool("X_FAIL_ON_ERROR", False):
+            raise RuntimeError(
+                f"X online collection failed via {cdp_url}: {exc}"
+            ) from exc
+        print(f"X online collection skipped via {cdp_url}: {exc}", flush=True)
+        return events
 
     return events
 
@@ -897,11 +907,18 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                 if listing_url in visited_pages:
                     break
                 visited_pages.add(listing_url)
-                page.goto(
+                response = page.goto(
                     listing_url,
                     wait_until="domcontentloaded",
                     timeout=60000,
                 )
+                if response is None:
+                    raise RuntimeError(f"Reddit did not return a response for {listing_url}")
+                if response.status >= 400:
+                    raise RuntimeError(
+                        "Reddit listing did not load "
+                        f"for {subreddit}: HTTP {response.status}"
+                    )
                 comments = page.locator("div.thing.comment")
                 page_comment_count = min(
                     comments.count(),
@@ -939,7 +956,10 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
 
         if discovered_comments == 0:
             browser.close()
-            raise RuntimeError("Reddit online collection found no public comments")
+            raise RuntimeError(
+                "Reddit listing loaded but no comments were found. "
+                "Treating this as a load/parsing failure, not an empty collection."
+            )
 
         ordered_candidates = sorted(
             candidates.values(),

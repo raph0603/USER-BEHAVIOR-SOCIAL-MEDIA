@@ -189,13 +189,16 @@ YouTube is API-based, and Reddit remains headless inside its Docker container.
 
 ### Start services
 
-```bash
-docker compose up -d --build
+```powershell
+.\scripts\ensure_resilient_stack.ps1
 ```
 
-This starts MinIO, Kafka, Spark, Airflow and the Streamlit dashboard. The
-dashboard is exposed at http://localhost:8501 and uses the internal Docker
-endpoints `http://minio:9000` and `http://airflow-webserver:8080`.
+This starts Docker Desktop if needed, keeps already published ports when
+containers are running, selects free host ports when defaults are busy, writes
+the resolved values to `.env`, starts MinIO, Kafka, Spark, Airflow and the
+Streamlit dashboard, then verifies the main HTTP endpoints. Add
+`-IncludeCollectors` to also start the online collectors after the core stack is
+healthy.
 
 ### Run the local dashboard
 
@@ -349,8 +352,9 @@ Log in to X in that browser window. When triggering the DAG from the Airflow
 UI, set `x_event_count` to the maximum number of new X posts to collect
 (between 1 and 5000). For a direct `docker compose run`, `X_MAX_EVENTS` in
 `.env` provides the limit. If fewer new posts are available, the collector
-publishes fewer events. When X collection is enabled, a crawler or CDP
-failure fails the Airflow task and the DAG.
+publishes fewer events. By default, transient X crawler, CDP or rate-limit
+failures are logged and the collector keeps any events already collected. Set
+`X_FAIL_ON_ERROR=true` to make those failures fail the task.
 
 Authenticate to X with Google in the Edge window. The crawler reuses that
 authenticated browser session. If the X login page reappears, it clicks the
@@ -373,6 +377,11 @@ control the online collection. The collector scans up to 100 recent comments
 per Reddit page and follows pagination until it reaches the configured scan
 limit for each subreddit. It then sorts comments globally by publication time
 and publishes the newest unprocessed comments first.
+
+If Reddit pages do not load or the expected comment markup is missing, the
+collector fails instead of reporting a successful zero-event run. A zero-event
+run is only valid after comments were actually scanned and every candidate was
+already processed or filtered out by the configured keywords.
 
 Each collector stores processed source IDs in its own persistent SQLite file
 under `data/collector-state/`. Existing topic contents are imported into this
