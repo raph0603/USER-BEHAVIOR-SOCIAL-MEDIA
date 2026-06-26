@@ -48,6 +48,24 @@ class DashboardUserProgressionTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIn(value, source)
 
+    def test_dashboard_uses_tabs_for_navigation(self):
+        source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
+
+        expected = [
+            "st.tabs",
+            "Overview",
+            "Engagement",
+            "YouTube authors",
+            "Identifier tracking",
+            "Quality",
+            "Events",
+            "render_overview_summary()",
+            "render_recent_events()",
+        ]
+        for value in expected:
+            with self.subTest(value=value):
+                self.assertIn(value, source)
+
 
 if __name__ == "__main__":
     unittest.main()

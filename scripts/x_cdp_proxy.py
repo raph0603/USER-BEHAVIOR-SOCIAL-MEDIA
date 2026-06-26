@@ -1,11 +1,12 @@
 import argparse
 import asyncio
+import hmac
 import json
 import os
 import re
 import subprocess
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qsl, parse_qs, urlencode, urlsplit, urlunsplit
 
 
 class EdgeController:
@@ -153,6 +154,105 @@ def _control_headless(headers: bytes) -> bool | None:
     return value in {"1", "true", "yes", "on"}
 
 
+def _request_target(headers: bytes) -> str:
+    try:
+        return headers.split(b"\r\n", 1)[0].split(b" ", 2)[1].decode()
+    except (IndexError, UnicodeDecodeError):
+        return ""
+
+
+def _header_value(headers: bytes, name: str) -> str:
+    match = re.search(
+        rf"(?im)^{re.escape(name)}:\s*([^\r\n]+)".encode(),
+        headers,
+    )
+    return match.group(1).decode().strip() if match else ""
+
+
+def _access_token(headers: bytes) -> str:
+    request_target = _request_target(headers)
+    query_token = parse_qs(urlsplit(request_target).query).get("token", [""])[0]
+    return query_token or _header_value(headers, "X-CDP-Token")
+
+
+def _is_authorized(headers: bytes, expected_token: str | None) -> bool:
+    if not expected_token:
+        return True
+    return hmac.compare_digest(_access_token(headers), expected_token)
+
+
+def _without_query_param(url: str, param_name: str) -> str:
+    parsed = urlsplit(url)
+    query = [
+        (name, value)
+        for name, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if name != param_name
+    ]
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(query),
+            parsed.fragment,
+        )
+    )
+
+
+def _strip_proxy_auth(headers: bytes) -> bytes:
+    lines = headers.split(b"\r\n")
+    try:
+        method, request_target, protocol = lines[0].split(b" ", 2)
+        clean_target = _without_query_param(request_target.decode(), "token")
+        lines[0] = b" ".join([method, clean_target.encode(), protocol])
+    except (ValueError, UnicodeDecodeError):
+        pass
+
+    return b"\r\n".join(
+        line
+        for line in lines
+        if not re.match(rb"(?im)^X-CDP-Token:", line)
+    )
+
+
+def _with_access_token(url: str, access_token: str | None) -> str:
+    if not access_token or not url.startswith(("http://", "https://", "ws://", "wss://")):
+        return url
+    parsed = urlsplit(url)
+    query = [
+        (name, value)
+        for name, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if name != "token"
+    ]
+    query.append(("token", access_token))
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(query),
+            parsed.fragment,
+        )
+    )
+
+
+def _inject_access_token(body: bytes, access_token: str | None) -> bytes:
+    if not access_token:
+        return body
+    try:
+        payload = json.loads(body.decode())
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return body
+    targets = payload if isinstance(payload, list) else [payload]
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        for key in ("webSocketDebuggerUrl", "devtoolsFrontendUrl"):
+            if isinstance(target.get(key), str):
+                target[key] = _with_access_token(target[key], access_token)
+    return json.dumps(payload).encode()
+
+
 async def _send_control_response(
     writer: asyncio.StreamWriter,
     status: int,
@@ -162,6 +262,21 @@ async def _send_control_response(
     reason = "OK" if status == 200 else "Service Unavailable"
     writer.write(
         f"HTTP/1.1 {status} {reason}\r\n".encode()
+        + b"Content-Type: application/json\r\n"
+        + f"Content-Length: {len(body)}\r\n".encode()
+        + b"Connection: close\r\n\r\n"
+        + body
+    )
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+
+async def _send_forbidden(writer: asyncio.StreamWriter) -> None:
+    payload = {"ready": False, "error": "Forbidden"}
+    body = json.dumps(payload).encode()
+    writer.write(
+        b"HTTP/1.1 403 Forbidden\r\n"
         + b"Content-Type: application/json\r\n"
         + f"Content-Length: {len(body)}\r\n".encode()
         + b"Connection: close\r\n\r\n"
@@ -202,9 +317,13 @@ async def _handle_client(
     advertised_host: str,
     advertised_port: int,
     edge_controller: EdgeController,
+    access_token: str | None,
 ) -> None:
     try:
         request_headers = await _read_headers(client_reader)
+        if not _is_authorized(request_headers, access_token):
+            await _send_forbidden(client_writer)
+            return
         headless = _control_headless(request_headers)
         if headless is not None:
             try:
@@ -223,6 +342,7 @@ async def _handle_client(
             return
 
         target_reader, target_writer = await edge_controller.open_connection()
+        request_headers = _strip_proxy_auth(request_headers)
         target_writer.write(
             _rewrite_request_headers(request_headers, target_host, target_port)
         )
@@ -260,6 +380,7 @@ async def _handle_client(
         f"localhost:{target_port}".encode(),
         advertised_endpoint,
     )
+    body = _inject_access_token(body, access_token)
     response_headers = _rewrite_content_length(response_headers, len(body))
     client_writer.write(response_headers + body)
     await client_writer.drain()
@@ -278,6 +399,7 @@ async def main() -> None:
     parser.add_argument("--edge-path")
     parser.add_argument("--profile-path")
     parser.add_argument("--target-startup-timeout", type=int, default=45)
+    parser.add_argument("--access-token")
     args = parser.parse_args()
     advertised_port = args.advertised_port or args.listen_port
     project_root = Path(__file__).resolve().parent.parent
@@ -316,6 +438,7 @@ async def main() -> None:
             args.advertised_host,
             advertised_port,
             edge_controller,
+            args.access_token,
         ),
         args.listen_host,
         args.listen_port,

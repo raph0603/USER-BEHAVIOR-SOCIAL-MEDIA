@@ -1,8 +1,6 @@
 # Changelog
 
-<<<<<<< HEAD
 ## [1.5.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.4.0...v1.5.0) (2026-06-26)
-
 
 ### Features
 
@@ -12,14 +10,12 @@
 
 ## [1.4.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.3.0...v1.4.0) (2026-06-24)
 
-
 ### Features
 
 * **crawler:** raise default collection limits ([c4ce999](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/c4ce9995c493fa95bc19bcfe478151d565669c14))
 * **crawler:** refresh comment metadata collection ([e303824](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/e303824d2e9735f78a160217d5579c2ebf60598a))
 
 ## [1.3.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.2.0...v1.3.0) (2026-06-24)
-
 
 ### Features
 
@@ -33,18 +29,9 @@
 * **pipeline:** allow thousand events per run ([9c251b3](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/9c251b3ac3a09ce0dfb038b0d1af62019905ee51)), closes [#34](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/34)
 * **pipeline:** propagate engagement metadata ([4ddd06c](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/4ddd06c073010cd7bc85734ca87012515f0eea67))
 * **pipeline:** reduce engagement metric contract ([4327458](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/43274582810b283fed8951396ec22355cb81b695))
-* **pipeline:** reduce engagement metric contract ([1e6b9ae](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/1e6b9ae4ca9c431fef2566b8c8ebb4865ce1de84))
-* **pipeline:** reduce engagement metric contract ([6b5b4d0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/6b5b4d00fd8ee22016b378f11cbfa665f8275d7b))
-* **pipeline:** reduce engagement metric contract ([3eae47d](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/3eae47d00fc77b9e55447a7318f72f6cbfbefe44))
-* **pipeline:** reduce engagement metric contract ([9310ee5](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/9310ee5dad6adfc1e2b206c5cff15dc4d655a379))
-* **pipeline:** reduce engagement metric contract ([2ddcc09](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/2ddcc09cdc8538fb08fb04e92d4a5ac32259726b))
-* **pipeline:** reduce engagement metric contract ([b0b8cd2](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/b0b8cd22ce89a992732144adbd7f679e3dcd5b6f))
-* **pipeline:** reduce engagement metric contract ([5c2fafb](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/5c2fafbe17020dd5b25c7156ea1b49adba9ac9a9))
-* **pipeline:** reduce engagement metric contract ([2881a58](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/2881a58ee5cfe639708d146f42b10c6c99501d32))
 * **pipeline:** refresh and manage crawler metadata ([98cd941](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/98cd941bb32672630f3d0e63a1e5058f5261f04d))
 * **pipeline:** refresh balancing report after crawl ([a256334](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/a2563341225c759c917f755192658fb814c0a764)), closes [#34](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/34)
 * **youtube:** collect video owner collaborators ([f6cbc15](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/f6cbc15f3423037a52b599b62e2abcdc26ed9d19)), closes [#33](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/33)
-
 
 ### Bug Fixes
 
@@ -60,7 +47,6 @@
 
 ## [1.2.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.1.0...v1.2.0) (2026-06-12)
 
-
 ### Features
 
 * **dashboard:** add dashboard application ([726ddb2](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/726ddb245b65ab8b1e8543e13edba18f65c7fb8d))
@@ -68,13 +54,11 @@
 * **dashboard:** add sample social media data ([a6d1b7d](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/a6d1b7d1ef6907ab8a588c216b76fb2b56bbb6af))
 * **dashboard:** read events from Iceberg Silver ([1adc6bc](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/1adc6bc9c1a4b66214d3957fe70033f0e4f76f76))
 
-
 ### Bug Fixes
 
 * **dashboard:** resolve data paths with pathlib ([ff7e28c](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/ff7e28c6171d48d497ae70da37942466619dcc7e))
 
 ## [1.1.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.0.1...v1.1.0) (2026-06-11)
-
 
 ### Features
 
@@ -98,7 +82,6 @@
 * test commitlint check ([b83d261](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/b83d26192904fceccb8139ab730f679b01e3f1dd))
 * test commitlint check ([6bca401](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/6bca401fecff5f8072da6d7a1ec12e52a6cef7cd))
 
-
 ### Bug Fixes
 
 * .gitignore ([ace28b0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/ace28b04983b407feaca8087c4feda770f0090f7))
@@ -108,19 +91,14 @@
 
 ## [1.0.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.0.0...v1.0.1) (2026-06-10)
 
-
 ### Bug Fixes
 
 * .gitignore ([ace28b0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/ace28b04983b407feaca8087c4feda770f0090f7))
 
-=======
->>>>>>> origin/production
 ## 1.0.0 (2026-06-10)
-
 
 ### Features
 
-<<<<<<< HEAD
 * add X crawler reply collection ([3bcf2a3](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/3bcf2a3cf3180c5b9ce6dd201e3c18da489518b5))
 * add X crawler reply collection ([5fa45eb](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/5fa45ebe2c2fc623bb44f8e938e0d3a5e8fe2330))
 * **orchestrator:** add social_clean_pipeline DAG (clean jobs + ingestion in parallel) ([28a07e5](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/28a07e58004f6674c104effa3ba97f2d24da7745))
@@ -133,10 +111,6 @@
 * **pipeline:** youtube clean+DLQ pipeline verified end-to-end ([74fd59e](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/74fd59e00f11a74f22da6ae56fdcd4623ad1b671))
 * test commitlint check ([b83d261](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/b83d26192904fceccb8139ab730f679b01e3f1dd))
 * test commitlint check ([6bca401](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/6bca401fecff5f8072da6d7a1ec12e52a6cef7cd))
-=======
-* **pipeline:** add privacy lakehouse orchestration ([35f2aca](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/35f2acae8473b8d376da7262bedf1eba061c7be6))
->>>>>>> origin/production
-
 
 ### Bug Fixes
 

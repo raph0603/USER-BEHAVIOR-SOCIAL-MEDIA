@@ -10,12 +10,24 @@ DEFAULT_MINIO_ENDPOINT = "http://localhost:9000"
 ENGAGEMENT_COLUMNS = (
     "like_count",
     "view_count",
+    "comment_count",
+    "reply_count",
+    "retweet_count",
+    "bookmark_count",
+    "score",
 )
 AUTHOR_METADATA_COLUMNS = (
     "platform_event_id",
     "metadata_refreshed_at",
     "owner_channel_id",
     "collaborator_channel_ids",
+)
+OPTIONAL_ENGAGEMENT_COLUMNS = (
+    "comment_count",
+    "reply_count",
+    "retweet_count",
+    "bookmark_count",
+    "score",
 )
 
 
@@ -129,7 +141,10 @@ def load_iceberg_data(config=None):
 
     try:
         connection = _connect_iceberg(config)
-        optional_columns = list(AUTHOR_METADATA_COLUMNS)
+        optional_columns = [
+            *AUTHOR_METADATA_COLUMNS,
+            *OPTIONAL_ENGAGEMENT_COLUMNS,
+        ]
         while True:
             try:
                 df = _select_silver_events(

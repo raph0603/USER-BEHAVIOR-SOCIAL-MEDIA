@@ -10,7 +10,15 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urljoin, urlparse
+from urllib.parse import (
+    parse_qs,
+    parse_qsl,
+    quote,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlunparse,
+)
 
 import requests
 from confluent_kafka import DeserializingConsumer, SerializingProducer, TopicPartition
@@ -22,6 +30,7 @@ from googleapiclient.errors import HttpError
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
+from youtube_transcript_api import YouTubeTranscriptApi
 
 from engagement import extract_x_metric, parse_count
 from youtube_authors import fetch_youtube_collaborators
@@ -33,6 +42,15 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_X_QUERIES = [
     '(electric vehicle OR EV OR "electric car") lang:en -filter:replies',
     '(Tesla OR "EV charging" OR "battery range") lang:en -filter:replies',
+    '("xe điện" OR "ô tô điện" OR "pin xe điện") lang:vi -filter:replies',
+    '(Tesla OR VinFast OR "trạm sạc") lang:vi -filter:replies',
+]
+
+DEFAULT_YOUTUBE_QUERIES = [
+    "electric vehicle review",
+    "EV charging battery range",
+    "đánh giá xe điện",
+    "xe điện VinFast trạm sạc",
 ]
 
 
@@ -53,6 +71,22 @@ def _env_float(name: str, default: float) -> float:
 def _env_str(name: str, default: str) -> str:
     value = os.getenv(name, default)
     return value.strip() if value else default
+
+
+def _env_list(name: str, default: list[str]) -> list[str]:
+    value = os.getenv(name)
+    if not value:
+        return default
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    return items or default
+
+
+def _env_pipe_list(name: str, default: list[str]) -> list[str]:
+    value = os.getenv(name)
+    if not value:
+        return default
+    items = [item.strip() for item in value.split("||") if item.strip()]
+    return items or default
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -391,6 +425,27 @@ def _fetch_youtube_comments(youtube, video_id: str, sleep_seconds: float):
             return pages
 
 
+def _fetch_youtube_transcript(video_id: str, languages: list[str]) -> list[dict] | None:
+    try:
+        transcript = YouTubeTranscriptApi().fetch(video_id, languages=languages)
+        clean_transcript = []
+        for item in transcript:
+            if isinstance(item, dict):
+                clean_transcript.append(item)
+            else:
+                clean_transcript.append(
+                    {
+                        "text": getattr(item, "text", str(item)),
+                        "start": getattr(item, "start", 0.0),
+                        "duration": getattr(item, "duration", 0.0),
+                    }
+                )
+        return clean_transcript or None
+    except Exception as exc:
+        print(f"[YouTube] Transcript unavailable for {video_id}: {type(exc).__name__}")
+        return None
+
+
 def _x_is_authenticated(page) -> bool:
     try:
         if _x_has_auth_cookies(page.context):
@@ -502,6 +557,60 @@ def _login_to_x_with_google(page) -> None:
     )
 
 
+def _x_cdp_access_token() -> str:
+    token = os.getenv("X_CDP_TOKEN", "").strip()
+    if token:
+        return token
+
+    token_file_value = os.getenv("X_CDP_TOKEN_FILE", "").strip()
+    if not token_file_value:
+        return ""
+    token_file = Path(token_file_value)
+    if not token_file.is_file():
+        return ""
+    return token_file.read_text(encoding="utf-8").strip()
+
+
+def _with_x_cdp_token(url: str) -> str:
+    token = _x_cdp_access_token()
+    if not token:
+        return url
+
+    parsed = urlparse(url)
+    query = [
+        (name, value)
+        for name, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if name != "token"
+    ]
+    query.append(("token", token))
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            urlencode(query),
+            parsed.fragment,
+        )
+    )
+
+
+def _x_cdp_url_with_path(cdp_url: str, path: str) -> str:
+    parsed = urlparse(cdp_url)
+    return _with_x_cdp_token(
+        urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                path,
+                "",
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+    )
+
+
 def _resolve_x_cdp_url(cdp_url: str) -> str:
     if not cdp_url.startswith(("http://", "https://")):
         return cdp_url
@@ -509,13 +618,14 @@ def _resolve_x_cdp_url(cdp_url: str) -> str:
     parsed_cdp_url = urlparse(cdp_url)
     cdp_host = parsed_cdp_url.hostname
     resolved_host = socket.gethostbyname(cdp_host) if cdp_host else ""
+    discovery_url = _x_cdp_url_with_path(cdp_url, "/json/version")
     discovery_url = (
-        cdp_url.replace(cdp_host, resolved_host, 1)
+        discovery_url.replace(cdp_host, resolved_host, 1)
         if cdp_host and resolved_host
-        else cdp_url
+        else discovery_url
     )
     response = requests.get(
-        f"{discovery_url.rstrip('/')}/json/version",
+        discovery_url,
         timeout=5,
     )
     response.raise_for_status()
@@ -524,7 +634,7 @@ def _resolve_x_cdp_url(cdp_url: str) -> str:
     target_host = resolved_host or cdp_host
     if source_host and target_host and source_host != target_host:
         connect_url = connect_url.replace(source_host, target_host, 1)
-    return connect_url
+    return _with_x_cdp_token(connect_url)
 
 
 def _x_cdp_url() -> str:
@@ -591,7 +701,7 @@ def _load_x_full_tweet_text(context, tweet_url: str, fallback_text: str) -> str:
 def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
     cdp_url = _x_cdp_url()
     cdp_wait_seconds = _env_int("X_CDP_WAIT_SECONDS", 60)
-    headless = _env_bool("X_HEADLESS", True)
+    headless = _env_bool("X_HEADLESS", False)
     queries = _env_json_list(
         "X_SEARCH_QUERIES_JSON",
         [
@@ -606,6 +716,10 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
     scroll_rounds = _env_int("X_SCROLL_ROUNDS", 5)
     wait_ms = _env_int("X_SCROLL_WAIT_MS", 1500)
     search_wait_ms = _env_int("X_SEARCH_WAIT_MS", 20000)
+    search_navigation_timeout_ms = _env_int(
+        "X_SEARCH_NAVIGATION_TIMEOUT_MS",
+        30000,
+    )
     search_retries = _env_int("X_SEARCH_RETRIES", 3)
     search_retry_seconds = _env_int("X_SEARCH_RETRY_SECONDS", 10)
     events = []
@@ -615,7 +729,7 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
     try:
         if cdp_url.startswith(("http://", "https://")):
             control_response = requests.get(
-                f"{cdp_url.rstrip('/')}/__x_cdp__/ensure",
+                _x_cdp_url_with_path(cdp_url, "/__x_cdp__/ensure"),
                 params={"headless": str(headless).lower()},
                 timeout=cdp_wait_seconds,
             )
@@ -656,22 +770,23 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                 )
                 query_ready = False
                 for attempt in range(1, search_retries + 1):
-                    page.goto(
-                        search_url,
-                        wait_until="domcontentloaded",
-                        timeout=60000,
-                    )
                     try:
+                        page.goto(
+                            search_url,
+                            wait_until="domcontentloaded",
+                            timeout=search_navigation_timeout_ms,
+                        )
                         page.locator('article[data-testid="tweet"]').first.wait_for(
                             state="visible",
                             timeout=search_wait_ms,
                         )
                         query_ready = True
                         break
-                    except PlaywrightTimeoutError:
+                    except (PlaywrightTimeoutError, PlaywrightError) as exc:
                         print(
-                            "No visible X posts for query "
-                            f"(attempt {attempt}/{search_retries})"
+                            "X query did not become ready "
+                            f"(attempt {attempt}/{search_retries}): {exc}",
+                            flush=True,
                         )
                         if attempt < search_retries:
                             page.wait_for_timeout(search_retry_seconds * 1000)
@@ -791,14 +906,19 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
             except PlaywrightError:
                 pass
             if discovered_statuses == 0:
-                raise RuntimeError(
+                print(
                     "No X posts were visible after all search retries. The X "
-                    "session may be rate-limited or temporarily unavailable."
+                    "session may be rate-limited or temporarily unavailable.",
+                    flush=True,
                 )
+                return []
     except Exception as exc:
-        raise RuntimeError(
-            f"X online collection failed via {cdp_url}: {exc}"
-        ) from exc
+        if _env_bool("X_FAIL_ON_ERROR", False):
+            raise RuntimeError(
+                f"X online collection failed via {cdp_url}: {exc}"
+            ) from exc
+        print(f"X online collection skipped via {cdp_url}: {exc}", flush=True)
+        return events
 
     return events
 
@@ -850,11 +970,18 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                 if listing_url in visited_pages:
                     break
                 visited_pages.add(listing_url)
-                page.goto(
+                response = page.goto(
                     listing_url,
                     wait_until="domcontentloaded",
                     timeout=60000,
                 )
+                if response is None:
+                    raise RuntimeError(f"Reddit did not return a response for {listing_url}")
+                if response.status >= 400:
+                    raise RuntimeError(
+                        "Reddit listing did not load "
+                        f"for {subreddit}: HTTP {response.status}"
+                    )
                 comments = page.locator("div.thing.comment")
                 page_comment_count = min(
                     comments.count(),
@@ -892,7 +1019,10 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
 
         if discovered_comments == 0:
             browser.close()
-            raise RuntimeError("Reddit online collection found no public comments")
+            raise RuntimeError(
+                "Reddit listing loaded but no comments were found. "
+                "Treating this as a load/parsing failure, not an empty collection."
+            )
 
         ordered_candidates = sorted(
             candidates.values(),
@@ -1034,29 +1164,34 @@ def main() -> None:
                 raise RuntimeError("YOUTUBE_API_KEY is required")
             youtube = _get_youtube_service(api_key)
             search_limit = _env_int("YOUTUBE_SEARCH_MAX_RESULTS", 10)
-            search_language = _env_str("YOUTUBE_SEARCH_LANGUAGE", "en")
+            search_languages = _env_list(
+                "YOUTUBE_SEARCH_LANGUAGES",
+                [_env_str("YOUTUBE_SEARCH_LANGUAGE", "en")],
+            )
+            transcript_languages = _env_list(
+                "YOUTUBE_TRANSCRIPT_LANGUAGES",
+                ["en", "vi"],
+            )
             search_order = _env_str("YOUTUBE_SEARCH_ORDER", "date")
             youtube_queries = _env_json_list(
                 "YOUTUBE_SEARCH_QUERIES_JSON",
-                [
-                    _env_str(
-                        "YOUTUBE_SEARCH_QUERY",
-                        "electric vehicle review",
-                    )
-                ],
+                _env_pipe_list("YOUTUBE_SEARCH_QUERIES", DEFAULT_YOUTUBE_QUERIES),
             )
             video_ids = []
             for search_query in youtube_queries:
-                discovered_ids = _search_youtube_video_ids(
-                    youtube,
-                    search_query,
-                    search_limit,
-                    search_language,
-                    search_order,
-                )
-                for video_id in discovered_ids:
-                    if video_id not in video_ids:
-                        video_ids.append(video_id)
+                for search_language in search_languages:
+                    discovered_ids = _search_youtube_video_ids(
+                        youtube,
+                        search_query,
+                        search_limit,
+                        search_language,
+                        search_order,
+                    )
+                    for video_id in discovered_ids:
+                        if video_id not in video_ids:
+                            video_ids.append(video_id)
+                        if len(video_ids) >= search_limit:
+                            break
                     if len(video_ids) >= search_limit:
                         break
                 if len(video_ids) >= search_limit:
@@ -1107,12 +1242,17 @@ def main() -> None:
                     video_id,
                     _env_float("YOUTUBE_SLEEP_SECONDS", 0.5),
                 )
+                transcript = _fetch_youtube_transcript(
+                    video_id,
+                    transcript_languages,
+                )
                 output_dir.mkdir(parents=True, exist_ok=True)
                 (output_dir / f"{video_id}.json").write_text(
                     json.dumps(
                         {
                             "video_id": video_id,
                             "video_metadata": metadata,
+                            "video_transcript": transcript,
                             "owner_channel_id": owner_channel_id,
                             "collaborator_channel_ids": (
                                 collaborator_channel_ids

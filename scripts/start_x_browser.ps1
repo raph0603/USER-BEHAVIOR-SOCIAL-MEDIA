@@ -9,6 +9,7 @@ $edgePidPath = Join-Path $projectRoot "data\x-edge.pid"
 $edgeModePath = Join-Path $projectRoot "data\x-edge-mode.txt"
 $proxyPortPath = Join-Path $runtimePath "cdp-port.txt"
 $edgePortPath = Join-Path $runtimePath "edge-port.txt"
+$proxyTokenPath = Join-Path $runtimePath "cdp-token.txt"
 $edgeCandidates = @(
     (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"),
     (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe")
@@ -58,6 +59,25 @@ function Get-FreeTcpPort {
     }
 }
 
+function New-CdpToken {
+    return "$([guid]::NewGuid().ToString("N"))$([guid]::NewGuid().ToString("N"))"
+}
+
+function Read-OrCreate-CdpToken {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (Test-Path -LiteralPath $Path) {
+        $value = (Get-Content -LiteralPath $Path -Raw).Trim()
+        if ($value) {
+            return $value
+        }
+    }
+
+    $value = New-CdpToken
+    Set-Content -LiteralPath $Path -Value $value -Encoding utf8
+    return $value
+}
+
 function Read-RuntimePort {
     param([Parameter(Mandatory)][string]$Path)
 
@@ -105,10 +125,11 @@ function Stop-ManagedProcess {
 }
 
 New-Item -ItemType Directory -Force -Path $profilePath, $runtimePath | Out-Null
+$proxyToken = Read-OrCreate-CdpToken -Path $proxyTokenPath
 
 $proxyPort = Read-RuntimePort -Path $proxyPortPath
 if ($proxyPort) {
-    $proxyUri = "http://127.0.0.1:$proxyPort/__x_cdp__/ensure?headless=false"
+    $proxyUri = "http://127.0.0.1:$proxyPort/__x_cdp__/ensure?headless=false&token=$proxyToken"
     if (Wait-HttpEndpoint `
         -Uri $proxyUri `
         -TimeoutSeconds 3 `
@@ -167,11 +188,13 @@ $proxyProcess = Start-Process -FilePath $pythonPath -ArgumentList @(
     "--edge-path",
     "`"$edgePath`"",
     "--profile-path",
-    "`"$profilePath`""
+    "`"$profilePath`"",
+    "--access-token",
+    "$proxyToken"
 ) -WindowStyle Hidden -PassThru
 Set-Content -LiteralPath $proxyPidPath -Value $proxyProcess.Id
 
-$proxyUri = "http://127.0.0.1:$proxyPort/__x_cdp__/ensure?headless=false"
+$proxyUri = "http://127.0.0.1:$proxyPort/__x_cdp__/ensure?headless=false&token=$proxyToken"
 if (-not (Wait-HttpEndpoint `
     -Uri $proxyUri `
     -Headers @{ Host = "host.docker.internal:$proxyPort" })) {

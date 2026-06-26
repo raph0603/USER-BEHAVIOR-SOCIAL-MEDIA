@@ -46,10 +46,14 @@ docker compose up -d airflow-init airflow-webserver airflow-scheduler
 
 Airflow UI: http://localhost:8088
 
-Default local login:
+Local login:
 
 - user: `admin`
-- password: `admin`
+- password: value of `AIRFLOW_ADMIN_PASSWORD` in `.env`
+
+Airflow metadata is stored in the Docker volume `airflow-postgres-data`.
+This keeps Postgres out of the OneDrive-backed project tree, which avoids
+filesystem I/O errors that can make the dashboard lose the Airflow API.
 
 The DAG `user_behavior_lakehouse` runs the complete online pipeline:
 
@@ -189,13 +193,46 @@ YouTube is API-based, and Reddit remains headless inside its Docker container.
 
 ### Start services
 
-```bash
-docker compose up -d --build
+```powershell
+.\scripts\ensure_resilient_stack.ps1
 ```
 
-This starts MinIO, Kafka, Spark, Airflow and the Streamlit dashboard. The
-dashboard is exposed at http://localhost:8501 and uses the internal Docker
-endpoints `http://minio:9000` and `http://airflow-webserver:8080`.
+This starts Docker Desktop if needed, keeps already published ports when
+containers are running, selects free host ports when defaults are busy, writes
+the resolved values to `.env`, starts MinIO, Kafka, Spark, Airflow and the
+Streamlit dashboard, then verifies the main HTTP endpoints. Add
+`-IncludeCollectors` to also start the online collectors after the core stack is
+healthy.
+
+Published service ports bind to `127.0.0.1` by default through
+`HOST_BIND_ADDRESS`. Keep that default for local development; set
+`HOST_BIND_ADDRESS=0.0.0.0` only when the stack must be reachable from another
+machine and the Airflow, dashboard and MinIO credentials have been replaced.
+The startup script also replaces weak local Airflow defaults in `.env` and
+keeps dashboard credentials aligned with the generated Airflow password.
+
+### Production release and Docker Hub
+
+Production promotion runs through the GitHub Actions workflow that merges
+`main` into `production`, then runs Release Please. When Release Please creates
+a production release, the workflow publishes the project images to Docker Hub:
+
+- `user-behavior-social-media-dashboard`
+- `user-behavior-social-media-airflow`
+- `user-behavior-social-media-playwright`
+- `user-behavior-social-media-spark-master`
+- `user-behavior-social-media-spark-worker`
+
+Configure these GitHub secrets before promoting to production:
+
+- `DOCKERHUB_USERNAME`: Docker Hub account or organization login.
+- `DOCKERHUB_TOKEN`: Docker Hub access token with permission to create and
+  push repositories in the target namespace.
+
+Optionally set the GitHub Actions variable `DOCKERHUB_NAMESPACE` when the image
+namespace differs from `DOCKERHUB_USERNAME`. Each release is pushed with the
+Release Please tag, `production`, and `latest`. The workflow creates the Docker
+Hub repositories automatically when they do not already exist.
 
 ### Run the local dashboard
 
@@ -225,6 +262,12 @@ uses its configured keyword list to filter recent comments from the selected
 subreddits. Saved values are stored in Airflow Variables and become defaults
 for later scheduled runs.
 
+The main dashboard also includes an `Add data` panel for files that already
+contain crawled data. It accepts CSV, JSON, JSONL, and NDJSON files, normalizes
+YouTube, X, and Reddit rows into the common raw event contract, publishes them
+to `manual.*.raw.events` Kafka topics, then can trigger the
+`manual_file_import_lakehouse` DAG to clean, merge, and refresh Silver.
+
 ### Run the Bronze streaming job
 
 ```bash
@@ -249,6 +292,10 @@ docker compose run --rm youtube-collector
 
 The collector writes raw JSON under `API/yt_raw_json/` and emits YouTube
 events to Kafka using the same event schema as the other producers.
+By default, YouTube search and transcript fetching target English and
+Vietnamese (`YOUTUBE_SEARCH_LANGUAGES=en,vi`,
+`YOUTUBE_TRANSCRIPT_LANGUAGES=en,vi`). Use `YOUTUBE_SEARCH_QUERIES` with
+`||` separators to override the English and Vietnamese search terms.
 
 ### Engagement metadata
 
@@ -336,17 +383,19 @@ Start the browser with remote debugging enabled before running the DAG:
 ```
 
 The script selects free ports for Edge and its Docker-accessible CDP proxy,
-then writes the selected proxy port to `data/x-runtime/cdp-port.txt`. The
-`x-collector` container reads that file automatically, so no fixed X port is
-required in `.env` or Airflow. `X_CDP_URL` remains available only as a fallback
-for an externally managed CDP endpoint.
+then writes the selected proxy port to `data/x-runtime/cdp-port.txt` and a
+local access token to `data/x-runtime/cdp-token.txt`. The `x-collector`
+container reads both files automatically, so no fixed X port is required in
+`.env` or Airflow. Keep the token file private. `X_CDP_URL` remains available
+only as a fallback for an externally managed CDP endpoint.
 
 Log in to X in that browser window. When triggering the DAG from the Airflow
 UI, set `x_event_count` to the maximum number of new X posts to collect
 (between 1 and 5000). For a direct `docker compose run`, `X_MAX_EVENTS` in
 `.env` provides the limit. If fewer new posts are available, the collector
-publishes fewer events. When X collection is enabled, a crawler or CDP
-failure fails the Airflow task and the DAG.
+publishes fewer events. By default, transient X crawler, CDP or rate-limit
+failures are logged and the collector keeps any events already collected. Set
+`X_FAIL_ON_ERROR=true` to make those failures fail the task.
 
 Authenticate to X with Google in the Edge window. The crawler reuses that
 authenticated browser session. If the X login page reappears, it clicks the
@@ -370,6 +419,11 @@ per Reddit page and follows pagination until it reaches the configured scan
 limit for each subreddit. It then sorts comments globally by publication time
 and publishes the newest unprocessed comments first.
 
+If Reddit pages do not load or the expected comment markup is missing, the
+collector fails instead of reporting a successful zero-event run. A zero-event
+run is only valid after comments were actually scanned and every candidate was
+already processed or filtered out by the configured keywords.
+
 Each collector stores processed source IDs in its own persistent SQLite file
 under `data/collector-state/`. Existing topic contents are imported into this
 state before collection, so previously processed posts, comments and videos
@@ -385,5 +439,6 @@ files:
 .\scripts\reset_pipeline_data.ps1
 ```
 
-The command preserves the X/Google browser profile, Airflow metadata, and
-Airflow logs. For non-interactive use, pass `-Force`.
+The command preserves the X/Google browser profile, the
+`airflow-postgres-data` Docker volume, and Airflow logs. For non-interactive
+use, pass `-Force`.
