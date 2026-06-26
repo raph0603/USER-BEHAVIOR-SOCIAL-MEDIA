@@ -4,3 +4,5 @@ plotly
 numpy
 duckdb
 requests
+pyarrow
+confluent-kafka==2.5.0

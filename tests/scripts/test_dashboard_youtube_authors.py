@@ -31,6 +31,24 @@ class DashboardYouTubeAuthorTests(unittest.TestCase):
         self.assertIn("Owner channel ID", app_source)
         self.assertIn("Collaborator channel IDs", app_source)
 
+    def test_dashboard_loader_reads_optional_engagement_metadata(self):
+        loader_source = (ROOT / "dashboard" / "loaders.py").read_text(
+            encoding="utf-8"
+        )
+
+        for field in (
+            "comment_count",
+            "reply_count",
+            "retweet_count",
+            "bookmark_count",
+            "score",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, loader_source)
+
+        self.assertIn("OPTIONAL_ENGAGEMENT_COLUMNS", loader_source)
+        self.assertIn("*OPTIONAL_ENGAGEMENT_COLUMNS", loader_source)
+
 
 if __name__ == "__main__":
     unittest.main()

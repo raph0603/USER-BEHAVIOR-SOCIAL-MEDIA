@@ -4,7 +4,7 @@ import re
 import socket
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 from googleapiclient.discovery import build
@@ -124,14 +124,72 @@ def _refresh_youtube(targets: list[dict]) -> list[dict]:
     return updates
 
 
+def _x_cdp_access_token() -> str:
+    token = _env("X_CDP_TOKEN")
+    if token:
+        return token
+
+    token_file = _env("X_CDP_TOKEN_FILE")
+    if not token_file:
+        return ""
+    path = Path(token_file)
+    if not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8").strip()
+
+
+def _with_x_cdp_token(url: str) -> str:
+    token = _x_cdp_access_token()
+    if not token:
+        return url
+
+    parsed = urlparse(url)
+    query = [
+        (name, value)
+        for name, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if name != "token"
+    ]
+    query.append(("token", token))
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            urlencode(query),
+            parsed.fragment,
+        )
+    )
+
+
+def _x_cdp_url_with_path(cdp_url: str, path: str) -> str:
+    parsed = urlparse(cdp_url)
+    return _with_x_cdp_token(
+        urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                path,
+                "",
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+    )
+
+
 def _resolve_cdp_url(cdp_url: str) -> str:
     if not cdp_url.startswith(("http://", "https://")):
         return cdp_url
     parsed = urlparse(cdp_url)
     resolved_host = socket.gethostbyname(parsed.hostname or "")
-    discovery_url = cdp_url.replace(parsed.hostname, resolved_host, 1)
+    discovery_url = _x_cdp_url_with_path(cdp_url, "/json/version").replace(
+        parsed.hostname,
+        resolved_host,
+        1,
+    )
     response = requests.get(
-        f"{discovery_url.rstrip('/')}/json/version",
+        discovery_url,
         timeout=5,
     )
     response.raise_for_status()
@@ -143,7 +201,7 @@ def _resolve_cdp_url(cdp_url: str) -> str:
             resolved_host,
             1,
         )
-    return websocket_url
+    return _with_x_cdp_token(websocket_url)
 
 
 def _x_cdp_url() -> str:
@@ -168,7 +226,7 @@ def _refresh_x(targets: list[dict]) -> list[dict]:
     if cdp_url.startswith(("http://", "https://")):
         try:
             response = requests.get(
-                f"{cdp_url.rstrip('/')}/__x_cdp__/ensure",
+                _x_cdp_url_with_path(cdp_url, "/__x_cdp__/ensure"),
                 params={"headless": _env("X_HEADLESS", "true")},
                 timeout=int(_env("X_CDP_WAIT_SECONDS", "90")),
             )

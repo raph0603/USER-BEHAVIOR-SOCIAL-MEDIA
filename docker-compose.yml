@@ -18,7 +18,9 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
     AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
-    AIRFLOW__WEBSERVER__SECRET_KEY: local-dev-secret
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET_KEY:-local-dev-secret}
+    AIRFLOW__WEBSERVER__WORKERS: ${AIRFLOW_WEBSERVER_WORKERS:-1}
+    AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT: ${AIRFLOW_WEBSERVER_MASTER_TIMEOUT:-3600}
     AIRFLOW_UID: "0"
     DOCKER_HOST_PROJECT_DIR: ${DOCKER_HOST_PROJECT_DIR:-.}
     LAKEHOUSE_SCHEDULE_MINUTES: ${LAKEHOUSE_SCHEDULE_MINUTES:-60}
@@ -62,6 +64,7 @@ services:
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     logging: *default-logging
+    restart: unless-stopped
 
     container_name: minio
 
@@ -72,8 +75,8 @@ services:
     command: server /data --console-address ":9001"
 
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
 
     volumes:
       - minio-data:/data
@@ -95,6 +98,7 @@ services:
   kafka:
     image: apache/kafka:3.7.0
     logging: *default-logging
+    restart: unless-stopped
 
     container_name: kafka
 
@@ -118,7 +122,7 @@ services:
       - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
 
     ports:
-      - "9092:9092"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${KAFKA_HOST_PORT:-9092}:9092"
 
   schema-registry:
     image: confluentinc/cp-schema-registry:7.6.1
@@ -139,11 +143,12 @@ services:
       - SCHEMA_REGISTRY_KAFKASTORE_TIMEOUT_MS=10000
 
     ports:
-      - "8081:8081"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${SCHEMA_REGISTRY_PORT:-8081}:8081"
 
   kafdrop:
     image: obsidiandynamics/kafdrop:4.0.1
     logging: *default-logging
+    restart: unless-stopped
 
     container_name: kafdrop
 
@@ -155,7 +160,7 @@ services:
       - JVM_OPTS=-Xms128M -Xmx256M
 
     ports:
-      - "9002:9000"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${KAFDROP_PORT:-9002}:9000"
 
   dashboard:
     build:
@@ -170,6 +175,8 @@ services:
         condition: service_completed_successfully
       airflow-webserver:
         condition: service_started
+      kafka:
+        condition: service_started
 
     environment:
       - DASHBOARD_ICEBERG_TABLE_PATH=${DASHBOARD_ICEBERG_TABLE_PATH:-s3://lakehouse/warehouse/silver/events}
@@ -182,9 +189,13 @@ services:
       - DASHBOARD_AIRFLOW_PASSWORD=${DASHBOARD_AIRFLOW_PASSWORD:-admin}
       - DASHBOARD_AIRFLOW_TIMEOUT_SECONDS=${DASHBOARD_AIRFLOW_TIMEOUT_SECONDS:-10}
       - DASHBOARD_BALANCING_REPORT_PATH=/app/balancing/report.json
+      - DASHBOARD_KAFKA_BOOTSTRAP=kafka:9092
+      - DASHBOARD_MANUAL_YOUTUBE_TOPIC=${MANUAL_YOUTUBE_KAFKA_TOPIC:-manual.youtube.raw.events}
+      - DASHBOARD_MANUAL_X_TOPIC=${MANUAL_X_KAFKA_TOPIC:-manual.x.raw.events}
+      - DASHBOARD_MANUAL_REDDIT_TOPIC=${MANUAL_REDDIT_KAFKA_TOPIC:-manual.reddit.raw.events}
 
     ports:
-      - "8501:8501"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_PORT:-8501}:8501"
 
     volumes:
       - ${HOST_PROJECT_DIR:-.}/data/balancing:/app/balancing:ro
@@ -208,7 +219,9 @@ services:
       - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
       - YOUTUBE_OUTPUT_DIR=/app/api/yt_raw_json
       - YOUTUBE_SLEEP_SECONDS=0.5
-      - YOUTUBE_SEARCH_QUERY=electric vehicle review
+      - YOUTUBE_SEARCH_QUERIES=${YOUTUBE_SEARCH_QUERIES:-electric vehicle review||EV charging battery range||đánh giá xe điện||xe điện VinFast trạm sạc}
+      - YOUTUBE_SEARCH_LANGUAGES=${YOUTUBE_SEARCH_LANGUAGES:-en,vi}
+      - YOUTUBE_TRANSCRIPT_LANGUAGES=${YOUTUBE_TRANSCRIPT_LANGUAGES:-en,vi}
       - YOUTUBE_SEARCH_MAX_RESULTS=${YOUTUBE_SEARCH_MAX_RESULTS:-10}
       - YOUTUBE_SEARCH_LANGUAGE=${YOUTUBE_SEARCH_LANGUAGE:-en}
       - YOUTUBE_SEARCH_ORDER=${YOUTUBE_SEARCH_ORDER:-date}
@@ -243,14 +256,18 @@ services:
       - X_CDP_URL=${X_CDP_URL:-}
       - X_CDP_HOST=${X_CDP_HOST:-host.docker.internal}
       - X_CDP_PORT_FILE=/app/x-runtime/cdp-port.txt
+      - X_CDP_TOKEN_FILE=/app/x-runtime/cdp-token.txt
+      - X_CDP_TOKEN=${X_CDP_TOKEN:-}
       - X_CDP_WAIT_SECONDS=${X_CDP_WAIT_SECONDS:-90}
-      - X_HEADLESS=${X_HEADLESS:-true}
+      - X_HEADLESS=${X_HEADLESS:-false}
       - X_GOOGLE_EMAIL=${X_GOOGLE_EMAIL:-}
       - X_GOOGLE_LOGIN_WAIT_SECONDS=${X_GOOGLE_LOGIN_WAIT_SECONDS:-90}
-      - X_SEARCH_QUERIES=${X_SEARCH_QUERIES:-(electric vehicle OR EV OR "electric car") lang:en -filter:replies||(Tesla OR "EV charging" OR "battery range") lang:en -filter:replies}
+      - X_SEARCH_QUERIES=${X_SEARCH_QUERIES:-(electric vehicle OR EV OR "electric car") lang:en -filter:replies||(Tesla OR "EV charging" OR "battery range") lang:en -filter:replies||("xe điện" OR "ô tô điện" OR "pin xe điện") lang:vi -filter:replies||(Tesla OR VinFast OR "trạm sạc") lang:vi -filter:replies}
+      - X_SEARCH_NAVIGATION_TIMEOUT_MS=${X_SEARCH_NAVIGATION_TIMEOUT_MS:-30000}
       - X_SEARCH_WAIT_MS=${X_SEARCH_WAIT_MS:-20000}
       - X_SEARCH_RETRIES=${X_SEARCH_RETRIES:-3}
       - X_SEARCH_RETRY_SECONDS=${X_SEARCH_RETRY_SECONDS:-10}
+      - X_FAIL_ON_ERROR=${X_FAIL_ON_ERROR:-false}
       - X_SCROLL_ROUNDS=${X_SCROLL_ROUNDS:-5}
       - X_SCROLL_WAIT_MS=${X_SCROLL_WAIT_MS:-1500}
       - PRODUCER_MAX_EVENTS=${X_MAX_EVENTS:-1000}
@@ -307,8 +324,8 @@ services:
       org.apache.spark.deploy.master.Master
 
     ports:
-      - "8080:8080"
-      - "7077:7077"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${SPARK_MASTER_UI_PORT:-8080}:8080"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${SPARK_MASTER_PORT:-7077}:7077"
 
     environment:
       - MINIO_ENDPOINT=http://minio:9000
@@ -381,7 +398,7 @@ services:
       start_period: 60s
 
     volumes:
-      - ${HOST_PROJECT_DIR:-.}/data/airflow-postgres:/var/lib/postgresql/data
+      - airflow-postgres-data:/var/lib/postgresql/data
 
   airflow-init:
     <<: *airflow-common
@@ -396,16 +413,20 @@ services:
       -c "
       airflow db migrate &&
       airflow users create
-      --username admin
-      --password admin
+      --username ${AIRFLOW_ADMIN_USERNAME:-admin}
+      --password ${AIRFLOW_ADMIN_PASSWORD:-admin}
       --firstname Local
       --lastname Admin
       --role Admin
-      --email admin@example.com || true
+      --email ${AIRFLOW_ADMIN_EMAIL:-admin@example.com} || true;
+      airflow users reset-password
+      --username ${AIRFLOW_ADMIN_USERNAME:-admin}
+      --password ${AIRFLOW_ADMIN_PASSWORD:-admin} || true
       "
 
   airflow-webserver:
     <<: *airflow-common
+    restart: unless-stopped
 
     depends_on:
       airflow-init:
@@ -414,10 +435,11 @@ services:
     command: webserver
 
     ports:
-      - "8088:8080"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${AIRFLOW_WEBSERVER_PORT:-8088}:8080"
 
   airflow-scheduler:
     <<: *airflow-common
+    restart: unless-stopped
 
     depends_on:
       airflow-init:
@@ -426,4 +448,5 @@ services:
     command: scheduler
 
 volumes:
+  airflow-postgres-data:
   minio-data:

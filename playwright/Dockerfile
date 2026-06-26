@@ -10,4 +10,4 @@ COPY engagement.py /app/engagement.py
 COPY insight_refresh.py /app/insight_refresh.py
 COPY youtube_authors.py /app/youtube_authors.py
 
-CMD ["python", "/app/producer.py"]
+CMD ["python", "-u", "/app/producer.py"]

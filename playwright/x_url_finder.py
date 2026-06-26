@@ -33,6 +33,8 @@ SEARCH_QUERIES = [
     '("battery degradation" OR "EV battery" OR "battery range") lang:en -filter:replies min_faves:10 since:2025-01-01',
     '(Ioniq 5 OR "Hyundai Ioniq 5" OR Kia EV6) lang:en -filter:replies min_faves:10 since:2025-01-01',
     '(from:Tesla OR from:teslaeurope OR from:InsideEVs) lang:en since:2025-01-01',
+    '("xe điện" OR "ô tô điện" OR "pin xe điện") lang:vi -filter:replies min_faves:5 since:2025-01-01',
+    '(VinFast OR Tesla OR "trạm sạc") lang:vi -filter:replies min_faves:5 since:2025-01-01',
 ]
 
 STATUS_URL_RE = re.compile(r"^https://x\.com/[^/]+/status/\d+$")

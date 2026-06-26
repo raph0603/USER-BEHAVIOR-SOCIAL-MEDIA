@@ -6,6 +6,11 @@ import time
 # CONFIGURATION
 # =========================
 API_KEY = os.getenv("YOUTUBE_API_KEY")
+SEARCH_LANGUAGES = [
+    language.strip()
+    for language in os.getenv("YOUTUBE_SEARCH_LANGUAGES", "en,vi").split(",")
+    if language.strip()
+]
 OUTPUT_FILE = "video_list.txt"
 
 # Liste de mots-clés pour trouver des vidéos pertinentes
@@ -23,7 +28,11 @@ SEARCH_QUERIES = [
     "Tesla",
     "EV review",
     "electric vehicle good idea ?",
-    "electric vehicle problem"
+    "electric vehicle problem",
+    "đánh giá xe điện",
+    "xe điện VinFast",
+    "pin xe điện",
+    "trạm sạc xe điện",
 ]
 
 def get_youtube_service():
@@ -31,15 +40,15 @@ def get_youtube_service():
         raise RuntimeError("YOUTUBE_API_KEY is required")
     return build("youtube", "v3", developerKey=API_KEY)
 
-def search_videos(youtube, query, max_results=50):
+def search_videos(youtube, query, language, max_results=50):
     """Recherche des vidéos par mot-clé et retourne une liste d'IDs."""
-    print(f"Recherche pour : '{query}'...")
+    print(f"Recherche pour : '{query}' ({language})...")
     try:
         request = youtube.search().list(
             part="id",
             q=query,
             type="video",
-            relevanceLanguage="en", # On cible l'anglais pour le NLP
+            relevanceLanguage=language,
             maxResults=max_results
         )
         response = request.execute()
@@ -56,9 +65,10 @@ def main():
     all_video_ids = set() # Le "set" permet d'éviter automatiquement les doublons
 
     for query in SEARCH_QUERIES:
-        ids = search_videos(youtube, query, max_results=50)
-        all_video_ids.update(ids)
-        time.sleep(1) # Petite pause pour l'API
+        for language in SEARCH_LANGUAGES:
+            ids = search_videos(youtube, query, language, max_results=50)
+            all_video_ids.update(ids)
+            time.sleep(1) # Petite pause pour l'API
 
     # Sauvegarde dans le fichier texte
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:

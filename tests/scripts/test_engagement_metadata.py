@@ -199,7 +199,19 @@ class EngagementMetadataTests(unittest.TestCase):
         self.assertIn("REDDIT_COMMENT_SCAN_LIMIT", producer)
         self.assertIn('page.locator("span.next-button a")', producer)
         self.assertIn("while listing_url and scanned_comments < scan_limit:", producer)
+        self.assertIn("Reddit listing did not load", producer)
+        self.assertIn("Treating this as a load/parsing failure", producer)
         self.assertNotIn("?sort=top&t=month", producer)
+        self.assertNotIn("Reddit online collection found no public comments", producer)
+
+    def test_x_collector_is_bounded_and_optionally_strict(self):
+        producer = (ROOT / "playwright" / "producer.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("X_SEARCH_NAVIGATION_TIMEOUT_MS", producer)
+        self.assertIn("X_FAIL_ON_ERROR", producer)
+        self.assertIn("X online collection skipped", producer)
 
     def test_producer_emits_only_contract_engagement_metrics(self):
         producer = (ROOT / "playwright" / "producer.py").read_text(

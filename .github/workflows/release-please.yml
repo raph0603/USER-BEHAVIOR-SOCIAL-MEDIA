@@ -16,6 +16,9 @@ jobs:
   release:
     name: Release Please
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
 
     steps:
       - name: Run Release Please
@@ -100,3 +103,91 @@ jobs:
           gh workflow run release-please.yml \
             --repo "$REPO" \
             --ref production
+
+  publish-docker-hub:
+    name: Publish Docker Hub images
+    runs-on: ubuntu-latest
+    needs: release
+    if: ${{ needs.release.outputs.release_created == 'true' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: user-behavior-social-media-dashboard
+            context: ./dashboard
+            dockerfile: ./dashboard/Dockerfile
+          - image: user-behavior-social-media-airflow
+            context: ./orchestrator/airflow
+            dockerfile: ./orchestrator/airflow/Dockerfile
+          - image: user-behavior-social-media-playwright
+            context: ./playwright
+            dockerfile: ./playwright/Dockerfile
+          - image: user-behavior-social-media-spark-master
+            context: ./spark
+            dockerfile: ./spark/master/Dockerfile
+          - image: user-behavior-social-media-spark-worker
+            context: ./spark
+            dockerfile: ./spark/worker/Dockerfile
+
+    env:
+      DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create Docker Hub repository
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          IMAGE_NAME: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+
+          TOKEN_RESPONSE=$(curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Content-Type: application/json" \
+            --data "{\"username\":\"$DOCKERHUB_USERNAME\",\"password\":\"$DOCKERHUB_TOKEN\"}" \
+            https://hub.docker.com/v2/users/login/)
+
+          JWT=$(python -c 'import json,sys; print(json.load(sys.stdin)["token"])' \
+            <<< "$TOKEN_RESPONSE")
+
+          STATUS=$(curl --silent --show-error \
+            --output /tmp/dockerhub-create-repository.json \
+            --write-out "%{http_code}" \
+            --request POST \
+            --header "Authorization: JWT $JWT" \
+            --header "Content-Type: application/json" \
+            --data "{\"namespace\":\"$DOCKERHUB_NAMESPACE\",\"name\":\"$IMAGE_NAME\",\"is_private\":false}" \
+            "https://hub.docker.com/v2/repositories/$DOCKERHUB_NAMESPACE/")
+
+          if [ "$STATUS" = "201" ] || [ "$STATUS" = "409" ]; then
+            echo "Docker Hub repository $DOCKERHUB_NAMESPACE/$IMAGE_NAME is ready."
+            exit 0
+          fi
+
+          cat /tmp/dockerhub-create-repository.json
+          echo "Docker Hub repository creation failed with HTTP $STATUS."
+          exit 1
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:${{ needs.release.outputs.tag_name }}
+            ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:production
+            ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:latest
