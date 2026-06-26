@@ -77,6 +77,11 @@ function Set-EnvValue {
     }
 
     Set-Content -LiteralPath $EnvPath -Value $lines -Encoding utf8
+    $displayValue = $Value
+    if ($Name -match "SECRET|PASSWORD|TOKEN|KEY") {
+        $displayValue = "<redacted>"
+    }
+    Write-Host "Resolved $Name=$displayValue in $EnvPath."
 }
 
 function Test-TcpPort {
@@ -116,6 +121,35 @@ function Get-FreeTcpPort {
     }
 }
 
+function New-RandomHex {
+    param([int]$Bytes = 32)
+
+    $randomBytes = New-Object byte[] $Bytes
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($randomBytes)
+    return (($randomBytes | ForEach-Object { $_.ToString("x2") }) -join "")
+}
+
+function Ensure-SecretVariable {
+    param(
+        [hashtable]$EnvValues,
+        [Parameter(Mandatory)][string]$Name,
+        [string[]]$WeakValues = @(),
+        [int]$Bytes = 32
+    )
+
+    $current = ""
+    if ($EnvValues.ContainsKey($Name)) {
+        $current = $EnvValues[$Name]
+    }
+    if ($current -and $WeakValues -notcontains $current) {
+        return $current
+    }
+
+    $value = New-RandomHex -Bytes $Bytes
+    Set-EnvValue -Name $Name -Value $value
+    return $value
+}
+
 function Get-ComposePublishedPort {
     param(
         [Parameter(Mandatory)][string]$Service,
@@ -139,7 +173,8 @@ function Ensure-PortVariable {
         [Parameter(Mandatory)][string]$Service,
         [Parameter(Mandatory)][int]$ContainerPort,
         [Parameter(Mandatory)][string]$Variable,
-        [Parameter(Mandatory)][int]$DefaultPort
+        [Parameter(Mandatory)][int]$DefaultPort,
+        [string]$HostName = "127.0.0.1"
     )
 
     $publishedPort = Get-ComposePublishedPort -Service $Service -ContainerPort $ContainerPort
@@ -153,7 +188,7 @@ function Ensure-PortVariable {
         $desiredPort = [int]$EnvValues[$Variable]
     }
 
-    if (Test-TcpPort -Port $desiredPort) {
+    if (Test-TcpPort -HostName $HostName -Port $desiredPort) {
         $desiredPort = Get-FreeTcpPort
         Write-Host "$Variable port was busy; using $desiredPort."
     }
@@ -225,6 +260,28 @@ $hostProjectDir = ($ProjectRoot -replace "\\", "/")
 Set-EnvValue -Name "HOST_PROJECT_DIR" -Value $hostProjectDir
 Set-EnvValue -Name "DOCKER_HOST_PROJECT_DIR" -Value $hostProjectDir
 
+$hostBindAddress = "127.0.0.1"
+if ($envValues.ContainsKey("HOST_BIND_ADDRESS") -and $envValues["HOST_BIND_ADDRESS"]) {
+    $hostBindAddress = $envValues["HOST_BIND_ADDRESS"]
+}
+Set-EnvValue -Name "HOST_BIND_ADDRESS" -Value $hostBindAddress
+$portProbeHost = $hostBindAddress
+if ($portProbeHost -in @("0.0.0.0", "::", "")) {
+    $portProbeHost = "127.0.0.1"
+}
+
+$airflowPassword = Ensure-SecretVariable `
+    -EnvValues $envValues `
+    -Name "AIRFLOW_ADMIN_PASSWORD" `
+    -WeakValues @("admin", "airflow")
+Ensure-SecretVariable `
+    -EnvValues $envValues `
+    -Name "AIRFLOW_WEBSERVER_SECRET_KEY" `
+    -WeakValues @("local-dev-secret", "replace-me-with-a-local-secret") | Out-Null
+Set-EnvValue -Name "AIRFLOW_ADMIN_USERNAME" -Value "admin"
+Set-EnvValue -Name "DASHBOARD_AIRFLOW_USERNAME" -Value "admin"
+Set-EnvValue -Name "DASHBOARD_AIRFLOW_PASSWORD" -Value $airflowPassword
+
 $ports = @(
     @{ Service = "minio"; ContainerPort = 9000; Variable = "MINIO_API_PORT"; DefaultPort = 9000 },
     @{ Service = "minio"; ContainerPort = 9001; Variable = "MINIO_CONSOLE_PORT"; DefaultPort = 9001 },
@@ -244,7 +301,8 @@ foreach ($portSpec in $ports) {
         -Service $portSpec.Service `
         -ContainerPort $portSpec.ContainerPort `
         -Variable $portSpec.Variable `
-        -DefaultPort $portSpec.DefaultPort
+        -DefaultPort $portSpec.DefaultPort `
+        -HostName $portProbeHost
 }
 
 Set-EnvValue -Name "DASHBOARD_MINIO_ENDPOINT" -Value "http://localhost:$($resolvedPorts["MINIO_API_PORT"])"

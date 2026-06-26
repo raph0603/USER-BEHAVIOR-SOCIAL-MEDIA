@@ -46,10 +46,10 @@ docker compose up -d airflow-init airflow-webserver airflow-scheduler
 
 Airflow UI: http://localhost:8088
 
-Default local login:
+Local login:
 
 - user: `admin`
-- password: `admin`
+- password: value of `AIRFLOW_ADMIN_PASSWORD` in `.env`
 
 The DAG `user_behavior_lakehouse` runs the complete online pipeline:
 
@@ -200,6 +200,13 @@ Streamlit dashboard, then verifies the main HTTP endpoints. Add
 `-IncludeCollectors` to also start the online collectors after the core stack is
 healthy.
 
+Published service ports bind to `127.0.0.1` by default through
+`HOST_BIND_ADDRESS`. Keep that default for local development; set
+`HOST_BIND_ADDRESS=0.0.0.0` only when the stack must be reachable from another
+machine and the Airflow, dashboard and MinIO credentials have been replaced.
+The startup script also replaces weak local Airflow defaults in `.env` and
+keeps dashboard credentials aligned with the generated Airflow password.
+
 ### Run the local dashboard
 
 The Streamlit dashboard is containerized by default. For local dashboard
@@ -343,10 +350,11 @@ Start the browser with remote debugging enabled before running the DAG:
 ```
 
 The script selects free ports for Edge and its Docker-accessible CDP proxy,
-then writes the selected proxy port to `data/x-runtime/cdp-port.txt`. The
-`x-collector` container reads that file automatically, so no fixed X port is
-required in `.env` or Airflow. `X_CDP_URL` remains available only as a fallback
-for an externally managed CDP endpoint.
+then writes the selected proxy port to `data/x-runtime/cdp-port.txt` and a
+local access token to `data/x-runtime/cdp-token.txt`. The `x-collector`
+container reads both files automatically, so no fixed X port is required in
+`.env` or Airflow. Keep the token file private. `X_CDP_URL` remains available
+only as a fallback for an externally managed CDP endpoint.
 
 Log in to X in that browser window. When triggering the DAG from the Airflow
 UI, set `x_event_count` to the maximum number of new X posts to collect

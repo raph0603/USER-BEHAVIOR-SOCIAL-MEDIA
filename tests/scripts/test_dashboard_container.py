@@ -22,7 +22,10 @@ class DashboardContainerTests(unittest.TestCase):
 
         self.assertIn("dashboard:", compose)
         self.assertIn("context: ./dashboard", compose)
-        self.assertIn("8501:8501", compose)
+        self.assertIn(
+            "${HOST_BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_PORT:-8501}:8501",
+            compose,
+        )
         self.assertIn("DASHBOARD_MINIO_ENDPOINT=http://minio:9000", compose)
         self.assertIn(
             "DASHBOARD_AIRFLOW_URL=http://airflow-webserver:8080",

@@ -18,7 +18,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
     AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
-    AIRFLOW__WEBSERVER__SECRET_KEY: local-dev-secret
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET_KEY:-local-dev-secret}
     AIRFLOW__WEBSERVER__WORKERS: ${AIRFLOW_WEBSERVER_WORKERS:-1}
     AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT: ${AIRFLOW_WEBSERVER_MASTER_TIMEOUT:-3600}
     AIRFLOW_UID: "0"
@@ -75,8 +75,8 @@ services:
     command: server /data --console-address ":9001"
 
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
 
     volumes:
       - minio-data:/data
@@ -122,7 +122,7 @@ services:
       - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
 
     ports:
-      - "${KAFKA_HOST_PORT:-9092}:9092"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${KAFKA_HOST_PORT:-9092}:9092"
 
   schema-registry:
     image: confluentinc/cp-schema-registry:7.6.1
@@ -143,7 +143,7 @@ services:
       - SCHEMA_REGISTRY_KAFKASTORE_TIMEOUT_MS=10000
 
     ports:
-      - "${SCHEMA_REGISTRY_PORT:-8081}:8081"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${SCHEMA_REGISTRY_PORT:-8081}:8081"
 
   kafdrop:
     image: obsidiandynamics/kafdrop:4.0.1
@@ -160,7 +160,7 @@ services:
       - JVM_OPTS=-Xms128M -Xmx256M
 
     ports:
-      - "${KAFDROP_PORT:-9002}:9000"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${KAFDROP_PORT:-9002}:9000"
 
   dashboard:
     build:
@@ -189,7 +189,7 @@ services:
       - DASHBOARD_BALANCING_REPORT_PATH=/app/balancing/report.json
 
     ports:
-      - "${DASHBOARD_PORT:-8501}:8501"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_PORT:-8501}:8501"
 
     volumes:
       - ${HOST_PROJECT_DIR:-.}/data/balancing:/app/balancing:ro
@@ -250,6 +250,8 @@ services:
       - X_CDP_URL=${X_CDP_URL:-}
       - X_CDP_HOST=${X_CDP_HOST:-host.docker.internal}
       - X_CDP_PORT_FILE=/app/x-runtime/cdp-port.txt
+      - X_CDP_TOKEN_FILE=/app/x-runtime/cdp-token.txt
+      - X_CDP_TOKEN=${X_CDP_TOKEN:-}
       - X_CDP_WAIT_SECONDS=${X_CDP_WAIT_SECONDS:-90}
       - X_HEADLESS=${X_HEADLESS:-false}
       - X_GOOGLE_EMAIL=${X_GOOGLE_EMAIL:-}
@@ -316,8 +318,8 @@ services:
       org.apache.spark.deploy.master.Master
 
     ports:
-      - "${SPARK_MASTER_UI_PORT:-8080}:8080"
-      - "${SPARK_MASTER_PORT:-7077}:7077"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${SPARK_MASTER_UI_PORT:-8080}:8080"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${SPARK_MASTER_PORT:-7077}:7077"
 
     environment:
       - MINIO_ENDPOINT=http://minio:9000
@@ -405,12 +407,15 @@ services:
       -c "
       airflow db migrate &&
       airflow users create
-      --username admin
-      --password admin
+      --username ${AIRFLOW_ADMIN_USERNAME:-admin}
+      --password ${AIRFLOW_ADMIN_PASSWORD:-admin}
       --firstname Local
       --lastname Admin
       --role Admin
-      --email admin@example.com || true
+      --email ${AIRFLOW_ADMIN_EMAIL:-admin@example.com} || true;
+      airflow users reset-password
+      --username ${AIRFLOW_ADMIN_USERNAME:-admin}
+      --password ${AIRFLOW_ADMIN_PASSWORD:-admin} || true
       "
 
   airflow-webserver:
@@ -424,7 +429,7 @@ services:
     command: webserver
 
     ports:
-      - "${AIRFLOW_WEBSERVER_PORT:-8088}:8080"
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${AIRFLOW_WEBSERVER_PORT:-8088}:8080"
 
   airflow-scheduler:
     <<: *airflow-common

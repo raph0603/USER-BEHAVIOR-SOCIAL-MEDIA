@@ -10,7 +10,15 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urljoin, urlparse
+from urllib.parse import (
+    parse_qs,
+    parse_qsl,
+    quote,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlunparse,
+)
 
 import requests
 from confluent_kafka import DeserializingConsumer, SerializingProducer, TopicPartition
@@ -549,6 +557,60 @@ def _login_to_x_with_google(page) -> None:
     )
 
 
+def _x_cdp_access_token() -> str:
+    token = os.getenv("X_CDP_TOKEN", "").strip()
+    if token:
+        return token
+
+    token_file_value = os.getenv("X_CDP_TOKEN_FILE", "").strip()
+    if not token_file_value:
+        return ""
+    token_file = Path(token_file_value)
+    if not token_file.is_file():
+        return ""
+    return token_file.read_text(encoding="utf-8").strip()
+
+
+def _with_x_cdp_token(url: str) -> str:
+    token = _x_cdp_access_token()
+    if not token:
+        return url
+
+    parsed = urlparse(url)
+    query = [
+        (name, value)
+        for name, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if name != "token"
+    ]
+    query.append(("token", token))
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            urlencode(query),
+            parsed.fragment,
+        )
+    )
+
+
+def _x_cdp_url_with_path(cdp_url: str, path: str) -> str:
+    parsed = urlparse(cdp_url)
+    return _with_x_cdp_token(
+        urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                path,
+                "",
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+    )
+
+
 def _resolve_x_cdp_url(cdp_url: str) -> str:
     if not cdp_url.startswith(("http://", "https://")):
         return cdp_url
@@ -556,13 +618,14 @@ def _resolve_x_cdp_url(cdp_url: str) -> str:
     parsed_cdp_url = urlparse(cdp_url)
     cdp_host = parsed_cdp_url.hostname
     resolved_host = socket.gethostbyname(cdp_host) if cdp_host else ""
+    discovery_url = _x_cdp_url_with_path(cdp_url, "/json/version")
     discovery_url = (
-        cdp_url.replace(cdp_host, resolved_host, 1)
+        discovery_url.replace(cdp_host, resolved_host, 1)
         if cdp_host and resolved_host
-        else cdp_url
+        else discovery_url
     )
     response = requests.get(
-        f"{discovery_url.rstrip('/')}/json/version",
+        discovery_url,
         timeout=5,
     )
     response.raise_for_status()
@@ -571,7 +634,7 @@ def _resolve_x_cdp_url(cdp_url: str) -> str:
     target_host = resolved_host or cdp_host
     if source_host and target_host and source_host != target_host:
         connect_url = connect_url.replace(source_host, target_host, 1)
-    return connect_url
+    return _with_x_cdp_token(connect_url)
 
 
 def _x_cdp_url() -> str:
@@ -666,7 +729,7 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
     try:
         if cdp_url.startswith(("http://", "https://")):
             control_response = requests.get(
-                f"{cdp_url.rstrip('/')}/__x_cdp__/ensure",
+                _x_cdp_url_with_path(cdp_url, "/__x_cdp__/ensure"),
                 params={"headless": str(headless).lower()},
                 timeout=cdp_wait_seconds,
             )
