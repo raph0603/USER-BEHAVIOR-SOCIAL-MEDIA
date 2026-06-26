@@ -175,6 +175,8 @@ services:
         condition: service_completed_successfully
       airflow-webserver:
         condition: service_started
+      kafka:
+        condition: service_started
 
     environment:
       - DASHBOARD_ICEBERG_TABLE_PATH=${DASHBOARD_ICEBERG_TABLE_PATH:-s3://lakehouse/warehouse/silver/events}
@@ -187,6 +189,10 @@ services:
       - DASHBOARD_AIRFLOW_PASSWORD=${DASHBOARD_AIRFLOW_PASSWORD:-admin}
       - DASHBOARD_AIRFLOW_TIMEOUT_SECONDS=${DASHBOARD_AIRFLOW_TIMEOUT_SECONDS:-10}
       - DASHBOARD_BALANCING_REPORT_PATH=/app/balancing/report.json
+      - DASHBOARD_KAFKA_BOOTSTRAP=kafka:9092
+      - DASHBOARD_MANUAL_YOUTUBE_TOPIC=${MANUAL_YOUTUBE_KAFKA_TOPIC:-manual.youtube.raw.events}
+      - DASHBOARD_MANUAL_X_TOPIC=${MANUAL_X_KAFKA_TOPIC:-manual.x.raw.events}
+      - DASHBOARD_MANUAL_REDDIT_TOPIC=${MANUAL_REDDIT_KAFKA_TOPIC:-manual.reddit.raw.events}
 
     ports:
       - "${HOST_BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_PORT:-8501}:8501"
@@ -392,7 +398,7 @@ services:
       start_period: 60s
 
     volumes:
-      - ${HOST_PROJECT_DIR:-.}/data/airflow-postgres:/var/lib/postgresql/data
+      - airflow-postgres-data:/var/lib/postgresql/data
 
   airflow-init:
     <<: *airflow-common
@@ -442,4 +448,5 @@ services:
     command: scheduler
 
 volumes:
+  airflow-postgres-data:
   minio-data:

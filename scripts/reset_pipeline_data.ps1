@@ -137,7 +137,7 @@ try {
 
     Write-Host ""
     Write-Host "Pipeline data reset completed."
-    Write-Host "Preserved: data\x-edge-profile, data\x-cdp-proxy.pid, data\airflow-postgres, orchestrator\logs"
+    Write-Host "Preserved: data\x-edge-profile, data\x-cdp-proxy.pid, Docker volume airflow-postgres-data, orchestrator\logs"
 }
 finally {
     Pop-Location
