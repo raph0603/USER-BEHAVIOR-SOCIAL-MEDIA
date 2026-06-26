@@ -1,6 +1,15 @@
 # Changelog
 
 <<<<<<< HEAD
+## [1.5.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.4.0...v1.5.0) (2026-06-26)
+
+
+### Features
+
+* **ml:** add bilingual cognitive_friction content feature ([a4dbd00](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/a4dbd00f6f27dacd3d0ebf62eeb5d575254ae0af))
+* **ml:** add bilingual cognitive_friction content feature ([a446718](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/a4467180263a833b3524bcc3bc94ba08bd1daaaf))
+* **ml:** add cognitive_friction static feature(English VN) ([7990289](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/79902898cd1a965bd6fea7cf47042473758dffd6))
+
 ## [1.4.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.3.0...v1.4.0) (2026-06-24)
 
 
