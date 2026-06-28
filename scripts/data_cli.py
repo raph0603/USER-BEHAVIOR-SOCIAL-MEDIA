@@ -25,6 +25,14 @@ except ImportError:
     # Fallback to direct import if dashboard is already in path
     from loaders import get_iceberg_config, load_iceberg_data
 
+try:
+    from dashboard.manual_import import load_import_events, publish_events, get_manual_import_config
+    from dashboard.airflow_monitoring import AirflowClient
+except ImportError:
+    from manual_import import load_import_events, publish_events, get_manual_import_config
+    from airflow_monitoring import AirflowClient
+
+
 
 def normalize_list_value(val):
     """
@@ -161,10 +169,58 @@ def run_export(args):
 
 def run_import(args):
     """
-    Dummy execution function for the import subcommand stub.
+    Executes the import subcommand.
     """
-    print(f"Import subcommand is a stub and is not implemented yet.")
-    print(f"Arguments received: file={args.file}, source={args.source}")
+    file_path = Path(args.file)
+    if not file_path.is_file():
+        print(f"Error: File not found: {args.file}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        with open(file_path, "rb") as f:
+            payload = f.read()
+    except Exception as e:
+        print(f"Error reading file: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        events = load_import_events(file_path.name, payload, source=args.source)
+    except Exception as e:
+        print(f"Error parsing/normalizing events: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not events:
+        print("No events found to import.")
+        return
+
+    try:
+        config = get_manual_import_config()
+        published_counts = publish_events(events, config)
+    except Exception as e:
+        print(f"Error publishing events to Kafka: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Imported {len(events)} event(s) successfully.")
+    for src, count in published_counts.items():
+        print(f"  {src}: {count} event(s)")
+
+    if args.trigger_pipeline:
+        print("Triggering Airflow pipeline...")
+        try:
+            client = AirflowClient()
+            dag_id = "manual_file_import_lakehouse"
+            run = client.trigger_dag(
+                dag_id,
+                {
+                    "sources": list(published_counts.keys()),
+                    "record_count": len(events),
+                }
+            )
+            run_id = run.get("dag_run_id", dag_id)
+            print(f"Pipeline started successfully: {run_id}")
+        except Exception as e:
+            print(f"Error triggering Airflow pipeline: {e}", file=sys.stderr)
+            sys.exit(1)
 
 
 def main():
@@ -182,9 +238,10 @@ def main():
     export_parser.add_argument("--limit", type=int, help="Limit number of exported records")
 
     # Import parser
-    import_parser = subparsers.add_parser("import", help="Import events from file (stub)")
+    import_parser = subparsers.add_parser("import", help="Import events from file")
     import_parser.add_argument("--file", required=True, help="Input file path to import")
     import_parser.add_argument("--source", choices=["youtube", "x", "reddit", "auto"], default="auto", help="Source platform to assign")
+    import_parser.add_argument("--trigger-pipeline", action="store_true", help="Trigger Airflow pipeline after import")
 
     args = parser.parse_args()
 

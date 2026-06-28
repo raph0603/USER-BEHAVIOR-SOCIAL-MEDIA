@@ -193,6 +193,130 @@ class DataCliTests(unittest.TestCase):
             if output_dir.exists():
                 output_dir.rmdir()
 
+    def test_import_file_not_found(self):
+        test_args = argparse.Namespace(
+            command="import",
+            file="nonexistent_file_xyz.csv",
+            source="auto",
+            trigger_pipeline=False
+        )
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr"):
+                data_cli.run_import(test_args)
+        self.assertEqual(cm.exception.code, 1)
+
+    @patch("scripts.data_cli.load_import_events")
+    @patch("scripts.data_cli.publish_events")
+    @patch("scripts.data_cli.get_manual_import_config")
+    @patch("scripts.data_cli.Path.is_file")
+    @patch("builtins.open")
+    def test_import_success(self, mock_open, mock_is_file, mock_get_config, mock_publish, mock_load):
+        mock_is_file.return_value = True
+        mock_get_config.return_value = {}
+        mock_load.return_value = [{"source": "youtube", "url": "url1", "title": "t1", "user_id": "u1", "timestamp": "ts"}]
+        mock_publish.return_value = {"youtube": 1}
+
+        test_args = argparse.Namespace(
+            command="import",
+            file="test_import.csv",
+            source="youtube",
+            trigger_pipeline=False
+        )
+        with patch("sys.stdout"):
+            data_cli.run_import(test_args)
+
+        mock_load.assert_called_once_with("test_import.csv", mock_open.return_value.__enter__.return_value.read.return_value, source="youtube")
+        mock_publish.assert_called_once_with(mock_load.return_value, {})
+
+    @patch("scripts.data_cli.load_import_events")
+    @patch("scripts.data_cli.publish_events")
+    @patch("scripts.data_cli.get_manual_import_config")
+    @patch("scripts.data_cli.Path.is_file")
+    @patch("builtins.open")
+    @patch("scripts.data_cli.AirflowClient")
+    def test_import_trigger_pipeline(self, mock_airflow_client_class, mock_open, mock_is_file, mock_get_config, mock_publish, mock_load):
+        mock_is_file.return_value = True
+        mock_get_config.return_value = {}
+        mock_load.return_value = [{"source": "youtube", "url": "url1", "title": "t1", "user_id": "u1", "timestamp": "ts"}]
+        mock_publish.return_value = {"youtube": 1}
+        
+        mock_airflow_client = MagicMock()
+        mock_airflow_client.trigger_dag.return_value = {"dag_run_id": "test_run_id_123"}
+        mock_airflow_client_class.return_value = mock_airflow_client
+
+        test_args = argparse.Namespace(
+            command="import",
+            file="test_import.csv",
+            source="youtube",
+            trigger_pipeline=True
+        )
+        with patch("sys.stdout"):
+            data_cli.run_import(test_args)
+
+        mock_airflow_client.trigger_dag.assert_called_once_with(
+            "manual_file_import_lakehouse",
+            {
+                "sources": ["youtube"],
+                "record_count": 1
+            }
+        )
+
+    @patch("scripts.data_cli.load_import_events")
+    @patch("scripts.data_cli.Path.is_file")
+    @patch("builtins.open")
+    def test_import_parse_error(self, mock_open, mock_is_file, mock_load):
+        mock_is_file.return_value = True
+        mock_load.side_effect = ValueError("invalid csv format")
+
+        test_args = argparse.Namespace(
+            command="import",
+            file="test_import.csv",
+            source="auto",
+            trigger_pipeline=False
+        )
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr"):
+                data_cli.run_import(test_args)
+        self.assertEqual(cm.exception.code, 1)
+
+    @patch("scripts.data_cli.load_import_events")
+    @patch("scripts.data_cli.publish_events")
+    @patch("scripts.data_cli.Path.is_file")
+    @patch("builtins.open")
+    def test_import_publish_error(self, mock_open, mock_is_file, mock_publish, mock_load):
+        mock_is_file.return_value = True
+        mock_load.return_value = [{"source": "youtube", "url": "url1", "title": "t1", "user_id": "u1", "timestamp": "ts"}]
+        mock_publish.side_effect = RuntimeError("Kafka connection failed")
+
+        test_args = argparse.Namespace(
+            command="import",
+            file="test_import.csv",
+            source="auto",
+            trigger_pipeline=False
+        )
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr"):
+                data_cli.run_import(test_args)
+        self.assertEqual(cm.exception.code, 1)
+
+    @patch("scripts.data_cli.load_import_events")
+    @patch("scripts.data_cli.Path.is_file")
+    @patch("builtins.open")
+    def test_import_empty_events(self, mock_open, mock_is_file, mock_load):
+        mock_is_file.return_value = True
+        mock_load.return_value = []
+
+        test_args = argparse.Namespace(
+            command="import",
+            file="test_import.csv",
+            source="auto",
+            trigger_pipeline=False
+        )
+        with patch("sys.stdout") as mock_stdout:
+            data_cli.run_import(test_args)
+        
+        mock_stdout.write.assert_any_call("No events found to import.")
+
 
 if __name__ == "__main__":
     unittest.main()
