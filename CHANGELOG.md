@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.7.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.6.0...v1.7.0) (2026-06-28)
+
+
+### Features
+
+* **cli:** add data import/export CLI ([58c75d0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/58c75d0b87f2a6388b95118badb6a954ff7271ef))
+* **cli:** add export subcommand ([#51](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/51)) ([ff9570d](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/ff9570d5dba402ebf331292e56e60b3d4e8f0333))
+* **cli:** add import subcommand ([#52](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/52)) ([95a6b7c](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/95a6b7c3be7dd7bccb433accde9174469f505dce))
+
 ## [1.6.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.5.0...v1.6.0) (2026-06-26)
 
 
