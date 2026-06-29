@@ -42,6 +42,34 @@ def docker_compose(command: str) -> str:
     )
 
 
+def timed_docker_compose(
+    command: str,
+    timeout_variable: str,
+    default_seconds: int,
+    service: str,
+) -> str:
+    return f"""
+    set -euo pipefail
+    cd {PROJECT_DIR}
+    HOST_PROJECT_DIR="${{DOCKER_HOST_PROJECT_DIR:-.}}"
+    export HOST_PROJECT_DIR
+    timeout_seconds="${{{timeout_variable}:-{default_seconds}}}"
+    set +e
+    timeout --kill-after=30s "${{timeout_seconds}}s" docker compose {command}
+    status=$?
+    set -e
+    if [[ "$status" != "0" ]]; then
+      compose_project="${{COMPOSE_PROJECT_NAME:-user-behavior-social-media}}"
+      leftovers="$(docker ps -q --filter "label=com.docker.compose.project=${{compose_project}}" --filter "label=com.docker.compose.service={service}")"
+      if [[ -n "$leftovers" ]]; then
+        echo "{service} exited with status $status; stopping leftover containers"
+        printf '%s\n' "$leftovers" | xargs -r docker stop
+      fi
+    fi
+    exit "$status"
+    """
+
+
 def clean_stream_command(
     platform: str,
     source_variable: str,
@@ -396,20 +424,26 @@ with DAG(
 
     run_youtube_collection = BashOperator(
         task_id="collect_youtube_api_events",
+        execution_timeout=timedelta(
+            seconds=int(os.getenv("YOUTUBE_COLLECTION_TIMEOUT_SECONDS", "900")) + 60,
+        ),
         env={
             "YOUTUBE_SEARCH_QUERIES_JSON": (
                 "{{ params.youtube_search_queries | tojson }}"
             ),
         },
         append_env=True,
-        bash_command=docker_compose(
+        bash_command=timed_docker_compose(
             "run --rm "
             "-e PRODUCER_MAX_EVENTS={{ params.youtube_event_count }} "
             "-e YOUTUBE_SEARCH_MAX_RESULTS={{ params.youtube_event_count }} "
             "-e YOUTUBE_SEARCH_QUERIES_JSON "
             "-e YOUTUBE_SEARCH_LANGUAGE={{ params.youtube_search_language }} "
             "-e YOUTUBE_SEARCH_ORDER={{ params.youtube_search_order }} "
-            "youtube-collector"
+            "youtube-collector",
+            "YOUTUBE_COLLECTION_TIMEOUT_SECONDS",
+            900,
+            "youtube-collector",
         ),
     )
 
@@ -427,32 +461,15 @@ with DAG(
           echo "X collection disabled; set X_COLLECTION_ENABLED=true to enable it"
           exit 0
         fi
-        if [[ -z "${X_CDP_URL:-}" ]]; then
-          CDP_PORT_FILE="/workspace/data/x-runtime/cdp-port.txt"
-          CDP_HOST="${X_CDP_HOST:-host.docker.internal}"
-          if [[ ! -s "$CDP_PORT_FILE" ]]; then
-            echo "X CDP port file missing; skipping X collection"
-            exit 99
-          fi
-          CDP_PORT="$(tr -dc '0-9' < "$CDP_PORT_FILE")"
-          if [[ -z "$CDP_PORT" ]]; then
-            echo "X CDP port file is invalid; skipping X collection"
-            exit 99
-          fi
-          if ! timeout 3 bash -lc ":</dev/tcp/${CDP_HOST}/${CDP_PORT}" 2>/dev/null; then
-            echo "X CDP endpoint ${CDP_HOST}:${CDP_PORT} is unavailable; skipping X collection"
-            exit 99
-          fi
-        fi
         """ + docker_compose(
             "run --rm "
             "-e PRODUCER_MAX_EVENTS={{ params.x_event_count }} "
             "-e X_SEARCH_QUERIES_JSON "
             "-e X_SCROLL_ROUNDS={{ params.x_scroll_rounds }} "
             "-e X_HEADLESS={{ params.x_headless | lower }} "
+            "-e X_FAIL_ON_ERROR=true "
             "x-collector"
         ),
-        skip_on_exit_code=99,
     )
 
     run_reddit_collection = BashOperator(
@@ -560,7 +577,18 @@ with DAG(
         wait_clean_reddit,
     ] >> start_bronze_stream
     start_bronze_stream >> start_silver_stream
-    start_silver_stream >> update_balancing_report >> stop_realtime_streams
+    start_silver_stream >> update_balancing_report
+    [
+        start_clean_youtube,
+        start_clean_x,
+        start_clean_reddit,
+        wait_clean_youtube,
+        wait_clean_x,
+        wait_clean_reddit,
+        start_bronze_stream,
+        start_silver_stream,
+        update_balancing_report,
+    ] >> stop_realtime_streams
     stop_realtime_streams >> release_pipeline_lock
     [
         run_youtube_collection,

@@ -14,6 +14,8 @@ class DashboardContainerTests(unittest.TestCase):
         self.assertIn("FROM python:3.12-slim", dockerfile)
         self.assertIn("pip install --no-cache-dir -r requirements.txt", dockerfile)
         self.assertIn("streamlit", dockerfile)
+        self.assertIn("/usr/local/bin/airflow-jobs", dockerfile)
+        self.assertIn("airflow_jobs_cli.py", dockerfile)
         self.assertIn("--server.address=0.0.0.0", dockerfile)
         self.assertIn("--server.headless=true", dockerfile)
 
@@ -21,7 +23,7 @@ class DashboardContainerTests(unittest.TestCase):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
         self.assertIn("dashboard:", compose)
-        self.assertIn("context: ./dashboard", compose)
+        self.assertIn("dockerfile: dashboard/Dockerfile", compose)
         self.assertIn(
             "${HOST_BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_PORT:-8501}:8501",
             compose,
@@ -42,7 +44,7 @@ class DashboardContainerTests(unittest.TestCase):
             compose,
         )
         self.assertIn(
-            "${HOST_PROJECT_DIR:-.}/data/balancing:/app/balancing:ro",
+            "balancing:/app/balancing:ro",
             compose,
         )
 
@@ -52,6 +54,36 @@ class DashboardContainerTests(unittest.TestCase):
         self.assertIn("airflow-postgres-data:/var/lib/postgresql/data", compose)
         self.assertIn("airflow-postgres-data:", compose)
         self.assertNotIn("data/airflow-postgres:/var/lib/postgresql/data", compose)
+
+    def test_service_images_package_runtime_code(self):
+        dashboard = (ROOT / "dashboard" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        playwright = (ROOT / "playwright" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        spark_master = (ROOT / "spark" / "master" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        airflow = (ROOT / "orchestrator" / "airflow" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        release_workflow = (
+            ROOT / ".github" / "workflows" / "release-please.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("COPY dashboard/ .", dashboard)
+        self.assertIn("COPY scripts/ /app/scripts/", dashboard)
+        self.assertIn("COPY schemas/ /app/schemas/", dashboard)
+        self.assertIn("COPY playwright/producer.py /app/producer.py", playwright)
+        self.assertIn("COPY schemas/ /app/schemas/", playwright)
+        self.assertIn("COPY API/ /app/api/", playwright)
+        self.assertIn("COPY spark/jobs/ /opt/spark/jobs/", spark_master)
+        self.assertIn("COPY schemas/ /opt/spark/schemas/", spark_master)
+        self.assertIn("COPY tests/spark/ /opt/spark/tests/", spark_master)
+        self.assertIn("COPY orchestrator/dags/ /opt/airflow/dags/", airflow)
+        self.assertIn("COPY docker-compose.yml /workspace/docker-compose.yml", airflow)
+        self.assertIn("context: .", release_workflow)
 
 
 if __name__ == "__main__":

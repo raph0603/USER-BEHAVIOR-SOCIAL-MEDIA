@@ -215,13 +215,36 @@ keeps dashboard credentials aligned with the generated Airflow password.
 
 Production promotion runs through the GitHub Actions workflow that merges
 `main` into `production`, then runs Release Please. When Release Please creates
-a production release, the workflow publishes the project images to Docker Hub:
+a production release, the workflow publishes Docker images for the services
+that are built from this repository. Docker Hub does not publish the whole
+project workspace, the Compose file or local configuration as one standalone
+artifact. Clone this repository to run the full stack.
 
-- `user-behavior-social-media-dashboard`
-- `user-behavior-social-media-airflow`
-- `user-behavior-social-media-playwright`
-- `user-behavior-social-media-spark-master`
-- `user-behavior-social-media-spark-worker`
+Runtime code is packaged in the service images: the dashboard image includes
+the Streamlit application and CLI helper scripts, the Playwright image includes
+the collectors and Avro schema, the Spark images include the Spark jobs,
+schemas and lakehouse checks, and the Airflow image includes the DAGs plus the
+Compose project files needed for orchestration. Runtime state and generated
+files are stored in Docker volumes.
+
+See [CLI Data Import / Export - Docker Usage](docs/cli-docker.md) for the
+commands that run data import and export inside the Compose stack.
+
+| Image | Docker Hub |
+|---|---|
+| `user-behavior-social-media-dashboard` | <https://hub.docker.com/r/raph0603/user-behavior-social-media-dashboard> |
+| `user-behavior-social-media-airflow` | published as `<namespace>/user-behavior-social-media-airflow` |
+| `user-behavior-social-media-playwright` | published as `<namespace>/user-behavior-social-media-playwright` |
+| `user-behavior-social-media-spark-master` | published as `<namespace>/user-behavior-social-media-spark-master` |
+| `user-behavior-social-media-spark-worker` | published as `<namespace>/user-behavior-social-media-spark-worker` |
+
+The currently published dashboard image under `raph0603` exposes these tags:
+
+```bash
+docker pull raph0603/user-behavior-social-media-dashboard:latest
+docker pull raph0603/user-behavior-social-media-dashboard:production
+docker pull raph0603/user-behavior-social-media-dashboard:v1.7.0
+```
 
 Configure these GitHub secrets before promoting to production:
 
@@ -254,6 +277,7 @@ MinIO endpoint, and credentials can be overridden with the
 variables. The Airflow monitoring panel uses `DASHBOARD_AIRFLOW_URL`,
 `DASHBOARD_AIRFLOW_USERNAME`, and `DASHBOARD_AIRFLOW_PASSWORD`. It displays
 active DAG runs, task completion progress, and upcoming scheduled runs.
+For terminal monitoring, see [Airflow Jobs CLI](docs/airflow-jobs-cli.md).
 
 The separate `Configuration` dashboard page manages crawler limits and search
 filters. Keywords are added and removed individually, then translated into
@@ -333,7 +357,7 @@ are not part of the default balancing key. Sampling order is deterministic from
 produce the same output.
 
 ```env
-BALANCE_DATASET_SCHEDULE_MINUTES=0
+BALANCE_DATASET_SCHEDULE_MINUTES=1440
 BALANCE_SEED=42
 BALANCE_TARGET_PER_GROUP=0
 BALANCE_DIMENSIONS=source
@@ -364,6 +388,13 @@ and defaults to 20 seconds. `YOUTUBE_AUTHOR_FETCH_WORKERS` limits concurrent
 watch-page requests and defaults to 8. Because collaborator extraction depends
 on undocumented page data, it should be monitored when YouTube changes its
 watch page.
+
+YouTube collection is bounded for scheduled DAG runs. `YOUTUBE_COLLECTION_TIMEOUT_SECONDS`
+defaults to 900 seconds and stops leftover `youtube-collector` containers when
+the limit is exceeded. `YOUTUBE_COMMENT_MAX_PAGES` defaults to 3 comment pages
+per video. `YOUTUBE_TRANSCRIPT_MAX_FAILURES` defaults to 5; after that many
+transcript failures, or immediately on `IpBlocked`, the collector skips
+transcripts for the remaining videos but still publishes the video event.
 
 ### Run X collection
 

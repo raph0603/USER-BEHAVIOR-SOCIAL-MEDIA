@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import traceback
 from pathlib import Path
 from urllib.parse import parse_qsl, parse_qs, urlencode, urlsplit, urlunsplit
 
@@ -172,13 +173,16 @@ def _header_value(headers: bytes, name: str) -> str:
 def _access_token(headers: bytes) -> str:
     request_target = _request_target(headers)
     query_token = parse_qs(urlsplit(request_target).query).get("token", [""])[0]
-    return query_token or _header_value(headers, "X-CDP-Token")
+    return (query_token or _header_value(headers, "X-CDP-Token")).strip("\ufeff")
 
 
 def _is_authorized(headers: bytes, expected_token: str | None) -> bool:
     if not expected_token:
         return True
-    return hmac.compare_digest(_access_token(headers), expected_token)
+    return hmac.compare_digest(
+        _access_token(headers).encode("ascii", "ignore"),
+        expected_token.strip("\ufeff").encode("ascii", "ignore"),
+    )
 
 
 def _without_query_param(url: str, param_name: str) -> str:
@@ -287,6 +291,24 @@ async def _send_forbidden(writer: asyncio.StreamWriter) -> None:
     await writer.wait_closed()
 
 
+async def _send_error(
+    writer: asyncio.StreamWriter,
+    status: int,
+    message: str,
+) -> None:
+    body = json.dumps({"ready": False, "error": message}).encode()
+    writer.write(
+        f"HTTP/1.1 {status} Error\r\n".encode()
+        + b"Content-Type: application/json\r\n"
+        + f"Content-Length: {len(body)}\r\n".encode()
+        + b"Connection: close\r\n\r\n"
+        + body
+    )
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+
 def _rewrite_request_headers(headers: bytes, target_host: str, target_port: int) -> bytes:
     host_value = f"{target_host}:{target_port}".encode()
     return re.sub(
@@ -349,8 +371,20 @@ async def _handle_client(
         await target_writer.drain()
 
         response_headers = await _read_headers(target_reader)
-    except (OSError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
-        client_writer.close()
+    except (OSError, asyncio.IncompleteReadError, asyncio.LimitOverrunError) as exc:
+        print(f"CDP proxy connection error: {exc}", flush=True)
+        try:
+            await _send_error(client_writer, 502, str(exc))
+        except Exception:
+            client_writer.close()
+        return
+    except Exception as exc:
+        print("CDP proxy unexpected error:", flush=True)
+        traceback.print_exc()
+        try:
+            await _send_error(client_writer, 500, str(exc))
+        except Exception:
+            client_writer.close()
         return
 
     if response_headers.startswith(b"HTTP/1.1 101"):
