@@ -8,7 +8,9 @@ x-default-logging: &default-logging
 
 x-airflow-common: &airflow-common
   build:
-    context: ./orchestrator/airflow
+    context: .
+    dockerfile: orchestrator/airflow/Dockerfile
+  image: ${DOCKERHUB_NAMESPACE:-raph0603}/user-behavior-social-media-airflow:${PROJECT_IMAGE_TAG:-latest}
 
   logging: *default-logging
 
@@ -26,6 +28,10 @@ x-airflow-common: &airflow-common
     LAKEHOUSE_SCHEDULE_MINUTES: ${LAKEHOUSE_SCHEDULE_MINUTES:-60}
     LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES: ${LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES:-60}
     INSIGHT_REFRESH_SCHEDULE_MINUTES: ${INSIGHT_REFRESH_SCHEDULE_MINUTES:-1440}
+    BALANCE_DATASET_SCHEDULE_MINUTES: ${BALANCE_DATASET_SCHEDULE_MINUTES:-1440}
+    BALANCE_SEED: ${BALANCE_SEED:-42}
+    BALANCE_TARGET_PER_GROUP: ${BALANCE_TARGET_PER_GROUP:-0}
+    BALANCE_DIMENSIONS: ${BALANCE_DIMENSIONS:-source}
     DOCKER_MAINTENANCE_SCHEDULE_MINUTES: ${DOCKER_MAINTENANCE_SCHEDULE_MINUTES:-1440}
     DOCKER_MAINTENANCE_CONTAINER_AGE: ${DOCKER_MAINTENANCE_CONTAINER_AGE:-24h}
     DOCKER_MAINTENANCE_IMAGE_AGE: ${DOCKER_MAINTENANCE_IMAGE_AGE:-24h}
@@ -50,13 +56,49 @@ x-airflow-common: &airflow-common
     X_DLQ_KAFKA_TOPIC: ${X_DLQ_KAFKA_TOPIC:-x.dlq.events}
     REDDIT_DLQ_KAFKA_TOPIC: ${REDDIT_DLQ_KAFKA_TOPIC:-reddit.dlq.events}
     BRONZE_KAFKA_OUT_TOPIC: ${BRONZE_KAFKA_OUT_TOPIC:-lakehouse.bronze.for_silver}
+    YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+    YOUTUBE_SEARCH_QUERIES: ${YOUTUBE_SEARCH_QUERIES:-electric vehicle review||EV charging battery range||đánh giá xe điện||xe điện VinFast trạm sạc}
+    YOUTUBE_SEARCH_LANGUAGES: ${YOUTUBE_SEARCH_LANGUAGES:-en,vi}
+    YOUTUBE_TRANSCRIPT_LANGUAGES: ${YOUTUBE_TRANSCRIPT_LANGUAGES:-en,vi}
+    YOUTUBE_SEARCH_MAX_RESULTS: ${YOUTUBE_SEARCH_MAX_RESULTS:-10}
+    YOUTUBE_SEARCH_LANGUAGE: ${YOUTUBE_SEARCH_LANGUAGE:-en}
+    YOUTUBE_SEARCH_ORDER: ${YOUTUBE_SEARCH_ORDER:-date}
+    YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS: ${YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS:-20}
+    YOUTUBE_AUTHOR_FETCH_WORKERS: ${YOUTUBE_AUTHOR_FETCH_WORKERS:-8}
+    YOUTUBE_COMMENT_MAX_PAGES: ${YOUTUBE_COMMENT_MAX_PAGES:-3}
+    YOUTUBE_TRANSCRIPT_MAX_FAILURES: ${YOUTUBE_TRANSCRIPT_MAX_FAILURES:-5}
+    YOUTUBE_COLLECTION_TIMEOUT_SECONDS: ${YOUTUBE_COLLECTION_TIMEOUT_SECONDS:-900}
+    YOUTUBE_MAX_EVENTS: ${YOUTUBE_MAX_EVENTS:-1000}
+    X_CDP_URL: ${X_CDP_URL:-}
+    X_CDP_HOST: ${X_CDP_HOST:-host.docker.internal}
+    X_CDP_TOKEN: ${X_CDP_TOKEN:-}
+    X_CDP_WAIT_SECONDS: ${X_CDP_WAIT_SECONDS:-90}
+    X_HEADLESS: ${X_HEADLESS:-false}
+    X_GOOGLE_EMAIL: ${X_GOOGLE_EMAIL:-}
+    X_GOOGLE_LOGIN_WAIT_SECONDS: ${X_GOOGLE_LOGIN_WAIT_SECONDS:-90}
+    X_SEARCH_QUERIES: ${X_SEARCH_QUERIES:-(electric vehicle OR EV OR "electric car") lang:en -filter:replies||(Tesla OR "EV charging" OR "battery range") lang:en -filter:replies||("xe điện" OR "ô tô điện" OR "pin xe điện") lang:vi -filter:replies||(Tesla OR VinFast OR "trạm sạc") lang:vi -filter:replies}
+    X_SEARCH_NAVIGATION_TIMEOUT_MS: ${X_SEARCH_NAVIGATION_TIMEOUT_MS:-30000}
+    X_SEARCH_WAIT_MS: ${X_SEARCH_WAIT_MS:-20000}
+    X_SEARCH_RETRIES: ${X_SEARCH_RETRIES:-3}
+    X_SEARCH_RETRY_SECONDS: ${X_SEARCH_RETRY_SECONDS:-10}
+    X_FAIL_ON_ERROR: ${X_FAIL_ON_ERROR:-false}
+    X_SCROLL_ROUNDS: ${X_SCROLL_ROUNDS:-5}
+    X_SCROLL_WAIT_MS: ${X_SCROLL_WAIT_MS:-1500}
+    X_MAX_EVENTS: ${X_MAX_EVENTS:-1000}
+    REDDIT_SUBREDDITS: ${REDDIT_SUBREDDITS:-electricvehicles,teslamotors}
+    REDDIT_COMMENT_SCAN_LIMIT: ${REDDIT_COMMENT_SCAN_LIMIT:-1000}
+    REDDIT_KEYWORD_MATCH_MODE: ${REDDIT_KEYWORD_MATCH_MODE:-OR}
+    REDDIT_WAIT_MS: ${REDDIT_WAIT_MS:-750}
+    REDDIT_MAX_EVENTS: ${REDDIT_MAX_EVENTS:-1000}
 
   user: "0:0"
 
   volumes:
-    - ${HOST_PROJECT_DIR:-.}/orchestrator/dags:/opt/airflow/dags:ro
-    - ${HOST_PROJECT_DIR:-.}/orchestrator/logs:/opt/airflow/logs
-    - ${HOST_PROJECT_DIR:-.}:/workspace
+    - airflow-logs:/opt/airflow/logs
+    - collector-state:/workspace/data/collector-state
+    - insight-refresh:/workspace/data/insight-refresh
+    - balancing:/workspace/data/balancing
+    - ${HOST_PROJECT_DIR:-.}/data/x-runtime:/workspace/data/x-runtime
     - /var/run/docker.sock:/var/run/docker.sock
 
 services:
@@ -163,8 +205,10 @@ services:
       - "${HOST_BIND_ADDRESS:-127.0.0.1}:${KAFDROP_PORT:-9002}:9000"
 
   dashboard:
+    image: ${DOCKERHUB_NAMESPACE:-raph0603}/user-behavior-social-media-dashboard:${PROJECT_IMAGE_TAG:-latest}
     build:
-      context: ./dashboard
+      context: .
+      dockerfile: dashboard/Dockerfile
     logging: *default-logging
 
     container_name: dashboard
@@ -198,11 +242,13 @@ services:
       - "${HOST_BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_PORT:-8501}:8501"
 
     volumes:
-      - ${HOST_PROJECT_DIR:-.}/data/balancing:/app/balancing:ro
+      - balancing:/app/balancing:ro
 
   youtube-collector:
+    image: ${DOCKERHUB_NAMESPACE:-raph0603}/user-behavior-social-media-playwright:${PROJECT_IMAGE_TAG:-latest}
     build:
-      context: ./playwright
+      context: .
+      dockerfile: playwright/Dockerfile
     logging: *default-logging
 
     depends_on:
@@ -216,7 +262,7 @@ services:
       - SCHEMA_PATH=/app/schemas/playwright_event.avsc
       - SCHEMA_REGISTRY_WAIT_SEC=180
       - PRODUCER_MODE=youtube
-      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY:-}
       - YOUTUBE_OUTPUT_DIR=/app/api/yt_raw_json
       - YOUTUBE_SLEEP_SECONDS=0.5
       - YOUTUBE_SEARCH_QUERIES=${YOUTUBE_SEARCH_QUERIES:-electric vehicle review||EV charging battery range||đánh giá xe điện||xe điện VinFast trạm sạc}
@@ -227,19 +273,21 @@ services:
       - YOUTUBE_SEARCH_ORDER=${YOUTUBE_SEARCH_ORDER:-date}
       - YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS=${YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS:-20}
       - YOUTUBE_AUTHOR_FETCH_WORKERS=${YOUTUBE_AUTHOR_FETCH_WORKERS:-8}
+      - YOUTUBE_COMMENT_MAX_PAGES=${YOUTUBE_COMMENT_MAX_PAGES:-3}
+      - YOUTUBE_TRANSCRIPT_MAX_FAILURES=${YOUTUBE_TRANSCRIPT_MAX_FAILURES:-5}
       - PRODUCER_MAX_EVENTS=${YOUTUBE_MAX_EVENTS:-1000}
       - COLLECTOR_STATE_DB=/app/state/youtube.sqlite
       - BOOTSTRAP_STATE_FROM_KAFKA=true
 
     volumes:
-      - ${HOST_PROJECT_DIR:-.}/schemas:/app/schemas:ro
-      - ${HOST_PROJECT_DIR:-.}/API:/app/api
-      - ${HOST_PROJECT_DIR:-.}/data/collector-state:/app/state
-      - ${HOST_PROJECT_DIR:-.}/data/insight-refresh:/app/insight-refresh
+      - collector-state:/app/state
+      - insight-refresh:/app/insight-refresh
 
   x-collector:
+    image: ${DOCKERHUB_NAMESPACE:-raph0603}/user-behavior-social-media-playwright:${PROJECT_IMAGE_TAG:-latest}
     build:
-      context: ./playwright
+      context: .
+      dockerfile: playwright/Dockerfile
     logging: *default-logging
 
     depends_on:
@@ -275,14 +323,15 @@ services:
       - BOOTSTRAP_STATE_FROM_KAFKA=true
 
     volumes:
-      - ${HOST_PROJECT_DIR:-.}/schemas:/app/schemas:ro
-      - ${HOST_PROJECT_DIR:-.}/data/collector-state:/app/state
+      - collector-state:/app/state
       - ${HOST_PROJECT_DIR:-.}/data/x-runtime:/app/x-runtime:ro
-      - ${HOST_PROJECT_DIR:-.}/data/insight-refresh:/app/insight-refresh
+      - insight-refresh:/app/insight-refresh
 
   reddit-collector:
+    image: ${DOCKERHUB_NAMESPACE:-raph0603}/user-behavior-social-media-playwright:${PROJECT_IMAGE_TAG:-latest}
     build:
-      context: ./playwright
+      context: .
+      dockerfile: playwright/Dockerfile
     logging: *default-logging
 
     depends_on:
@@ -305,14 +354,14 @@ services:
       - BOOTSTRAP_STATE_FROM_KAFKA=true
 
     volumes:
-      - ${HOST_PROJECT_DIR:-.}/schemas:/app/schemas:ro
-      - ${HOST_PROJECT_DIR:-.}/data/collector-state:/app/state
-      - ${HOST_PROJECT_DIR:-.}/data/insight-refresh:/app/insight-refresh
+      - collector-state:/app/state
+      - insight-refresh:/app/insight-refresh
 
   spark-master:
+    image: ${DOCKERHUB_NAMESPACE:-raph0603}/user-behavior-social-media-spark-master:${PROJECT_IMAGE_TAG:-latest}
     build:
-      context: ./spark
-      dockerfile: master/Dockerfile
+      context: .
+      dockerfile: spark/master/Dockerfile
     logging: *default-logging
 
     container_name: spark-master
@@ -342,16 +391,14 @@ services:
       - SPARK_SHUFFLE_PARTITIONS=
 
     volumes:
-      - ${HOST_PROJECT_DIR:-.}/spark/jobs:/opt/spark/jobs
-      - ${HOST_PROJECT_DIR:-.}/schemas:/opt/spark/schemas:ro
-      - ${HOST_PROJECT_DIR:-.}/tests/spark:/opt/spark/tests
-      - ${HOST_PROJECT_DIR:-.}/data/insight-refresh:/opt/spark/insight-refresh
-      - ${HOST_PROJECT_DIR:-.}/data/balancing:/opt/spark/balancing
+      - insight-refresh:/opt/spark/insight-refresh
+      - balancing:/opt/spark/balancing
 
   spark-worker:
+    image: ${DOCKERHUB_NAMESPACE:-raph0603}/user-behavior-social-media-spark-worker:${PROJECT_IMAGE_TAG:-latest}
     build:
-      context: ./spark
-      dockerfile: worker/Dockerfile
+      context: .
+      dockerfile: spark/worker/Dockerfile
     logging: *default-logging
 
     # Do not set container_name to allow scaling (multiple containers)
@@ -374,11 +421,8 @@ services:
       - SPARK_WORKER_MEMORY=2G
 
     volumes:
-      - ${HOST_PROJECT_DIR:-.}/spark/jobs:/opt/spark/jobs
-      - ${HOST_PROJECT_DIR:-.}/schemas:/opt/spark/schemas:ro
-      - ${HOST_PROJECT_DIR:-.}/tests/spark:/opt/spark/tests
-      - ${HOST_PROJECT_DIR:-.}/data/insight-refresh:/opt/spark/insight-refresh
-      - ${HOST_PROJECT_DIR:-.}/data/balancing:/opt/spark/balancing
+      - insight-refresh:/opt/spark/insight-refresh
+      - balancing:/opt/spark/balancing
 
   airflow-postgres:
     image: postgres:15-alpine
@@ -448,5 +492,9 @@ services:
     command: scheduler
 
 volumes:
+  airflow-logs:
   airflow-postgres-data:
+  balancing:
+  collector-state:
+  insight-refresh:
   minio-data:

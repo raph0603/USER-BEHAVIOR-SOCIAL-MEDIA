@@ -10,6 +10,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from xml.etree import ElementTree
 from urllib.parse import (
     parse_qs,
     parse_qsl,
@@ -236,6 +237,86 @@ def _extract_reddit_comment_event(comment, fallback_url: str) -> dict | None:
     }
 
 
+def _extract_reddit_feed_event(entry) -> dict | None:
+    namespace = {"atom": "http://www.w3.org/2005/Atom"}
+    entry_id = (entry.findtext("atom:id", default="", namespaces=namespace) or "")
+    link = entry.find("atom:link", namespace)
+    url = link.get("href", "") if link is not None else entry_id
+    match = re.search(r"/comments/[^/]+/[^/]+/([A-Za-z0-9_]+)/?", url)
+    comment_id = match.group(1) if match else hashlib.sha256(entry_id.encode()).hexdigest()
+    title = _clean_text(entry.findtext("atom:title", default="", namespaces=namespace))
+    content = _clean_text(entry.findtext("atom:content", default="", namespaces=namespace))
+    text = title or content
+    if not text:
+        return None
+    author = entry.find("atom:author/atom:name", namespace)
+    author_name = author.text if author is not None and author.text else "anonymous"
+    timestamp = entry.findtext("atom:updated", default=None, namespaces=namespace)
+    return {
+        "event_id": comment_id,
+        "platform_event_id": comment_id,
+        "user_id": f"reddit-{_hash_identity(author_name)}",
+        "url": url.replace("https://old.reddit.com", "https://www.reddit.com"),
+        "title": text,
+        "timestamp": timestamp,
+        "source": "reddit",
+        "like_count": None,
+        "view_count": None,
+    }
+
+
+def _collect_reddit_feed_events(
+    subreddit: str,
+    state: "ProcessedState",
+    keywords: list[str],
+    keyword_match_mode: str,
+    scan_limit: int,
+) -> tuple[list[dict], int]:
+    url = f"https://www.reddit.com/r/{subreddit}/comments/.rss?limit={scan_limit}"
+    headers = {
+        "User-Agent": _env_str(
+            "REDDIT_USER_AGENT",
+            "Mozilla/5.0 Chrome/124 Safari/537.36 user-behavior-lakehouse/1.0",
+        )
+    }
+    attempts = _env_int("REDDIT_FALLBACK_RETRIES", 3)
+    wait_seconds = _env_float("REDDIT_FALLBACK_RETRY_SECONDS", 5)
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.get(url, headers=headers, timeout=20)
+            if response.status_code >= 400:
+                raise RuntimeError(f"HTTP {response.status_code}")
+            root = ElementTree.fromstring(response.text)
+            events = []
+            discovered = 0
+            for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
+                discovered += 1
+                event = _extract_reddit_feed_event(entry)
+                if event is None or state.contains("reddit", event["event_id"]):
+                    continue
+                if not _matches_keywords(
+                    event["title"],
+                    keywords,
+                    keyword_match_mode,
+                ):
+                    continue
+                events.append(event)
+            return events, discovered
+        except Exception as exc:
+            last_error = exc
+            if attempt < attempts:
+                print(
+                    f"Reddit RSS fallback retry {attempt}/{attempts} "
+                    f"for {subreddit}: {exc}",
+                    flush=True,
+                )
+                time.sleep(wait_seconds)
+    raise RuntimeError(
+        f"Reddit RSS fallback failed for {subreddit}: {last_error}"
+    )
+
+
 def _hash_identity(value: str | None) -> str:
     return hashlib.sha256((value or "anonymous").encode("utf-8")).hexdigest()
 
@@ -403,10 +484,15 @@ def _fetch_video_metadata(youtube, video_id: str):
         return None
 
 
-def _fetch_youtube_comments(youtube, video_id: str, sleep_seconds: float):
+def _fetch_youtube_comments(
+    youtube,
+    video_id: str,
+    sleep_seconds: float,
+    max_pages: int,
+):
     pages = []
     page_token = None
-    while True:
+    while max_pages <= 0 or len(pages) < max_pages:
         try:
             response = youtube.commentThreads().list(
                 part="snippet,replies",
@@ -423,9 +509,13 @@ def _fetch_youtube_comments(youtube, video_id: str, sleep_seconds: float):
         except HttpError as exc:
             print(f"[YouTube] Comment fetch stopped for {video_id}: {exc}")
             return pages
+    return pages
 
 
-def _fetch_youtube_transcript(video_id: str, languages: list[str]) -> list[dict] | None:
+def _fetch_youtube_transcript(
+    video_id: str,
+    languages: list[str],
+) -> tuple[list[dict] | None, str | None]:
     try:
         transcript = YouTubeTranscriptApi().fetch(video_id, languages=languages)
         clean_transcript = []
@@ -440,10 +530,11 @@ def _fetch_youtube_transcript(video_id: str, languages: list[str]) -> list[dict]
                         "duration": getattr(item, "duration", 0.0),
                     }
                 )
-        return clean_transcript or None
+        return clean_transcript or None, None
     except Exception as exc:
-        print(f"[YouTube] Transcript unavailable for {video_id}: {type(exc).__name__}")
-        return None
+        reason = type(exc).__name__
+        print(f"[YouTube] Transcript unavailable for {video_id}: {reason}")
+        return None, reason
 
 
 def _x_is_authenticated(page) -> bool:
@@ -568,7 +659,7 @@ def _x_cdp_access_token() -> str:
     token_file = Path(token_file_value)
     if not token_file.is_file():
         return ""
-    return token_file.read_text(encoding="utf-8").strip()
+    return token_file.read_text(encoding="utf-8-sig").strip()
 
 
 def _with_x_cdp_token(url: str) -> str:
@@ -635,6 +726,38 @@ def _resolve_x_cdp_url(cdp_url: str) -> str:
     if source_host and target_host and source_host != target_host:
         connect_url = connect_url.replace(source_host, target_host, 1)
     return _with_x_cdp_token(connect_url)
+
+
+def _ensure_x_cdp_endpoint(
+    cdp_url: str,
+    headless: bool,
+    deadline: float,
+) -> None:
+    if not cdp_url.startswith(("http://", "https://")):
+        return
+
+    ensure_url = _x_cdp_url_with_path(cdp_url, "/__x_cdp__/ensure")
+    last_error = None
+    while time.time() < deadline:
+        try:
+            control_response = requests.get(
+                ensure_url,
+                params={"headless": str(headless).lower()},
+                timeout=min(10, max(1, int(deadline - time.time()))),
+            )
+            if control_response.status_code in {200, 404}:
+                return
+            control_response.raise_for_status()
+            return
+        except Exception as exc:
+            last_error = exc
+            print(f"Waiting for X CDP control endpoint at {cdp_url}: {exc}")
+            time.sleep(3)
+
+    raise RuntimeError(
+        f"X CDP control endpoint did not become ready at {cdp_url}: "
+        f"{last_error}"
+    )
 
 
 def _x_cdp_url() -> str:
@@ -727,16 +850,8 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
     discovered_statuses = 0
 
     try:
-        if cdp_url.startswith(("http://", "https://")):
-            control_response = requests.get(
-                _x_cdp_url_with_path(cdp_url, "/__x_cdp__/ensure"),
-                params={"headless": str(headless).lower()},
-                timeout=cdp_wait_seconds,
-            )
-            if control_response.status_code not in {200, 404}:
-                control_response.raise_for_status()
-
         deadline = time.time() + cdp_wait_seconds
+        _ensure_x_cdp_endpoint(cdp_url, headless, deadline)
         with sync_playwright() as playwright:
             browser = None
             last_error = None
@@ -977,6 +1092,36 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                 )
                 if response is None:
                     raise RuntimeError(f"Reddit did not return a response for {listing_url}")
+                if response.status in {403, 429}:
+                    print(
+                        "Reddit HTML listing is unavailable "
+                        f"for {subreddit}: HTTP {response.status}; "
+                        "trying RSS fallback",
+                        flush=True,
+                    )
+                    try:
+                        fallback_events, fallback_discovered = (
+                            _collect_reddit_feed_events(
+                                subreddit,
+                                state,
+                                keywords,
+                                keyword_match_mode,
+                                scan_limit,
+                            )
+                        )
+                    except RuntimeError:
+                        if candidates or discovered_comments > 0:
+                            LOGGER.warning(
+                                "Skipping unavailable subreddit %s after "
+                                "discovering Reddit comments",
+                                subreddit,
+                            )
+                            break
+                        raise
+                    for event in fallback_events:
+                        candidates[event["event_id"]] = event
+                    discovered_comments += fallback_discovered
+                    break
                 if response.status >= 400:
                     raise RuntimeError(
                         "Reddit listing did not load "
@@ -1016,6 +1161,9 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                 )
                 listing_url = urljoin(listing_url, next_href) if next_href else None
                 page.wait_for_timeout(wait_ms)
+
+            if max_events > 0 and len(candidates) >= max_events:
+                break
 
         if discovered_comments == 0:
             browser.close()
@@ -1172,6 +1320,11 @@ def main() -> None:
                 "YOUTUBE_TRANSCRIPT_LANGUAGES",
                 ["en", "vi"],
             )
+            comment_max_pages = _env_int("YOUTUBE_COMMENT_MAX_PAGES", 3)
+            transcript_max_failures = _env_int(
+                "YOUTUBE_TRANSCRIPT_MAX_FAILURES",
+                5,
+            )
             search_order = _env_str("YOUTUBE_SEARCH_ORDER", "date")
             youtube_queries = _env_json_list(
                 "YOUTUBE_SEARCH_QUERIES_JSON",
@@ -1233,6 +1386,8 @@ def main() -> None:
                     8,
                 ),
             )
+            transcript_failures = 0
+            transcripts_disabled = transcript_max_failures == 0
             for video_id in candidate_ids:
                 metadata = metadata_by_id[video_id]
                 owner_channel_id = owner_by_id.get(video_id)
@@ -1241,11 +1396,26 @@ def main() -> None:
                     youtube,
                     video_id,
                     _env_float("YOUTUBE_SLEEP_SECONDS", 0.5),
+                    comment_max_pages,
                 )
-                transcript = _fetch_youtube_transcript(
-                    video_id,
-                    transcript_languages,
-                )
+                transcript = None
+                if not transcripts_disabled:
+                    transcript, transcript_error = _fetch_youtube_transcript(
+                        video_id,
+                        transcript_languages,
+                    )
+                    if transcript_error:
+                        transcript_failures += 1
+                        if (
+                            transcript_error == "IpBlocked"
+                            or transcript_failures >= transcript_max_failures
+                        ):
+                            transcripts_disabled = True
+                            print(
+                                "[YouTube] Transcript collection disabled for "
+                                "the remaining videos after "
+                                f"{transcript_failures} failures"
+                            )
                 output_dir.mkdir(parents=True, exist_ok=True)
                 (output_dir / f"{video_id}.json").write_text(
                     json.dumps(

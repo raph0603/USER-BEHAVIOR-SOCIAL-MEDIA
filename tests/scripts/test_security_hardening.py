@@ -56,6 +56,52 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertIn("replace-me-with-a-local-password", env_example)
         self.assertNotIn("DASHBOARD_AIRFLOW_PASSWORD=admin", env_example)
 
+    def test_airflow_receives_collector_runtime_configuration(self):
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+        for variable in (
+            "YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}",
+            "YOUTUBE_SEARCH_QUERIES:",
+            "YOUTUBE_MAX_EVENTS:",
+            "YOUTUBE_COMMENT_MAX_PAGES:",
+            "YOUTUBE_TRANSCRIPT_MAX_FAILURES:",
+            "YOUTUBE_COLLECTION_TIMEOUT_SECONDS:",
+            "X_CDP_HOST:",
+            "X_GOOGLE_EMAIL:",
+            "X_MAX_EVENTS:",
+            "REDDIT_SUBREDDITS:",
+            "REDDIT_MAX_EVENTS:",
+        ):
+            with self.subTest(variable=variable):
+                self.assertIn(variable, compose)
+
+        self.assertIn("YOUTUBE_API_KEY=${YOUTUBE_API_KEY:-}", compose)
+        self.assertNotIn("YOUTUBE_API_KEY=${YOUTUBE_API_KEY}", compose)
+
+    def test_youtube_collection_is_bounded(self):
+        producer = (ROOT / "playwright" / "producer.py").read_text(
+            encoding="utf-8"
+        )
+        for dag_name in (
+            "user_behavior_lakehouse.py",
+            "user_behavior_lakehouse_no_row_checks.py",
+        ):
+            source = (
+                ROOT / "orchestrator" / "dags" / dag_name
+            ).read_text(encoding="utf-8")
+            with self.subTest(dag=dag_name):
+                self.assertIn("timed_docker_compose", source)
+                self.assertIn("YOUTUBE_COLLECTION_TIMEOUT_SECONDS", source)
+                self.assertIn("label=com.docker.compose.project", source)
+                self.assertIn("label=com.docker.compose.service={service}", source)
+                self.assertIn("xargs -r docker stop", source)
+                self.assertIn("execution_timeout=timedelta", source)
+
+        self.assertIn("YOUTUBE_COMMENT_MAX_PAGES", producer)
+        self.assertIn("YOUTUBE_TRANSCRIPT_MAX_FAILURES", producer)
+        self.assertIn("transcripts_disabled", producer)
+        self.assertIn('transcript_error == "IpBlocked"', producer)
+
 
 if __name__ == "__main__":
     unittest.main()

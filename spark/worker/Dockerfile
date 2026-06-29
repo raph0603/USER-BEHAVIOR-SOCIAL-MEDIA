@@ -31,10 +31,14 @@ RUN mkdir -p /opt/spark/jars \
 	&& curl -fL -o /opt/spark/jars/commons-pool2-${COMMONS_POOL2_VERSION}.jar \
 		https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/${COMMONS_POOL2_VERSION}/commons-pool2-${COMMONS_POOL2_VERSION}.jar
 
-COPY requirements.txt /tmp/requirements.txt
+COPY spark/requirements.txt /tmp/requirements.txt
 
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-RUN mkdir -p /opt/spark/jobs
+COPY spark/jobs/ /opt/spark/jobs/
+COPY schemas/ /opt/spark/schemas/
+COPY tests/spark/ /opt/spark/tests/
+
+RUN mkdir -p /opt/spark/insight-refresh /opt/spark/balancing
 
 WORKDIR /opt/spark/jobs

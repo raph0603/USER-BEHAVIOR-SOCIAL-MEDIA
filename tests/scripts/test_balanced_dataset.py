@@ -60,7 +60,7 @@ class BalancedDatasetTests(unittest.TestCase):
 
         self.assertIn('dag_id="build_balanced_comment_dataset"', source)
         self.assertIn('"source"', source)
-        self.assertIn("BALANCE_DATASET_SCHEDULE_MINUTES", source)
+        self.assertIn('BALANCE_DATASET_SCHEDULE_MINUTES", "1440"', source)
         self.assertIn("acquire_pipeline_lock_command", source)
         self.assertIn("release_pipeline_lock_command", source)
         self.assertIn("build_balanced_dataset.py", source)
@@ -78,9 +78,10 @@ class BalancedDatasetTests(unittest.TestCase):
                 self.assertIn("build_balancing_report_command()", source)
                 self.assertIn("BALANCE_DIMENSIONS", source)
                 self.assertIn("build_balanced_dataset.py", source)
-                self.assertIn("update_balancing_report >> stop_realtime_streams", source)
+                self.assertIn("update_balancing_report,", source)
+                self.assertIn("] >> stop_realtime_streams", source)
 
-    def test_crawl_dags_do_not_block_on_unavailable_x_cdp(self):
+    def test_crawl_dags_retry_x_and_reddit_instead_of_skipping(self):
         for dag_name in (
             "user_behavior_lakehouse.py",
             "user_behavior_lakehouse_no_row_checks.py",
@@ -89,9 +90,11 @@ class BalancedDatasetTests(unittest.TestCase):
                 ROOT / "orchestrator" / "dags" / dag_name
             ).read_text(encoding="utf-8")
             with self.subTest(dag=dag_name):
-                self.assertIn("CDP_PORT_FILE", source)
-                self.assertIn("skipping X collection", source)
-                self.assertIn("skip_on_exit_code=99", source)
+                self.assertIn('task_id="collect_x_playwright_events"', source)
+                self.assertIn("-e X_FAIL_ON_ERROR=true ", source)
+                self.assertIn('task_id="collect_reddit_online_events"', source)
+                self.assertNotIn("skip_on_exit_code=99", source)
+                self.assertNotIn("skipping X collection", source)
                 self.assertIn(
                     "trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS",
                     source,

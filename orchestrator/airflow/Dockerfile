@@ -9,4 +9,17 @@ COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr
 
 RUN chmod +x /usr/local/bin/docker /usr/local/lib/docker/cli-plugins/docker-compose
 
+COPY orchestrator/dags/ /opt/airflow/dags/
+COPY docker-compose.yml /workspace/docker-compose.yml
+COPY .env.example /workspace/.env.example
+COPY dashboard/ /workspace/dashboard/
+COPY playwright/ /workspace/playwright/
+COPY spark/ /workspace/spark/
+COPY schemas/ /workspace/schemas/
+COPY scripts/ /workspace/scripts/
+COPY tests/spark/ /workspace/tests/spark/
+COPY orchestrator/airflow/ /workspace/orchestrator/airflow/
+
+RUN mkdir -p /opt/airflow/logs /workspace/data/collector-state /workspace/data/insight-refresh /workspace/data/balancing /workspace/data/x-runtime
+
 USER airflow
