@@ -200,6 +200,9 @@ class EngagementMetadataTests(unittest.TestCase):
         self.assertIn('page.locator("span.next-button a")', producer)
         self.assertIn("while listing_url and scanned_comments < scan_limit:", producer)
         self.assertIn("Reddit listing did not load", producer)
+        self.assertIn("_collect_reddit_feed_events", producer)
+        self.assertIn("trying RSS fallback", producer)
+        self.assertNotIn("raise SystemExit(99)", producer)
         self.assertIn("Treating this as a load/parsing failure", producer)
         self.assertNotIn("?sort=top&t=month", producer)
         self.assertNotIn("Reddit online collection found no public comments", producer)
@@ -234,6 +237,8 @@ class EngagementMetadataTests(unittest.TestCase):
 
         self.assertIn('page_token = response.get("nextPageToken")', producer)
         self.assertIn("while len(video_ids) < max_results:", producer)
+        self.assertIn("YOUTUBE_COMMENT_MAX_PAGES", producer)
+        self.assertIn("YOUTUBE_TRANSCRIPT_MAX_FAILURES", producer)
 
     def test_reddit_keyword_filter_uses_word_boundaries(self):
         producer = (ROOT / "playwright" / "producer.py").read_text(

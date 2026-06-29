@@ -10,6 +10,8 @@ $edgeModePath = Join-Path $projectRoot "data\x-edge-mode.txt"
 $proxyPortPath = Join-Path $runtimePath "cdp-port.txt"
 $edgePortPath = Join-Path $runtimePath "edge-port.txt"
 $proxyTokenPath = Join-Path $runtimePath "cdp-token.txt"
+$proxyLogPath = Join-Path $runtimePath "x-cdp-proxy.log"
+$proxyErrorLogPath = Join-Path $runtimePath "x-cdp-proxy.err.log"
 $edgeCandidates = @(
     (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"),
     (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe")
@@ -191,7 +193,10 @@ $proxyProcess = Start-Process -FilePath $pythonPath -ArgumentList @(
     "`"$profilePath`"",
     "--access-token",
     "$proxyToken"
-) -WindowStyle Hidden -PassThru
+) -WindowStyle Hidden `
+    -RedirectStandardOutput $proxyLogPath `
+    -RedirectStandardError $proxyErrorLogPath `
+    -PassThru
 Set-Content -LiteralPath $proxyPidPath -Value $proxyProcess.Id
 
 $proxyUri = "http://127.0.0.1:$proxyPort/__x_cdp__/ensure?headless=false&token=$proxyToken"

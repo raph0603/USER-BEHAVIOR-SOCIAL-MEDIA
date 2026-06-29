@@ -17,7 +17,7 @@ PROJECT_DIR = "/workspace"
 
 
 def schedule_interval() -> timedelta | None:
-    raw_value = os.getenv("BALANCE_DATASET_SCHEDULE_MINUTES", "0").strip()
+    raw_value = os.getenv("BALANCE_DATASET_SCHEDULE_MINUTES", "1440").strip()
     try:
         minutes = int(raw_value)
     except ValueError as exc:

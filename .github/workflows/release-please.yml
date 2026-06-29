@@ -115,19 +115,19 @@ jobs:
       matrix:
         include:
           - image: user-behavior-social-media-dashboard
-            context: ./dashboard
+            context: .
             dockerfile: ./dashboard/Dockerfile
           - image: user-behavior-social-media-airflow
-            context: ./orchestrator/airflow
+            context: .
             dockerfile: ./orchestrator/airflow/Dockerfile
           - image: user-behavior-social-media-playwright
-            context: ./playwright
+            context: .
             dockerfile: ./playwright/Dockerfile
           - image: user-behavior-social-media-spark-master
-            context: ./spark
+            context: .
             dockerfile: ./spark/master/Dockerfile
           - image: user-behavior-social-media-spark-worker
-            context: ./spark
+            context: .
             dockerfile: ./spark/worker/Dockerfile
 
     env:
