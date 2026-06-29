@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.7.0...v1.8.0) (2026-06-29)
+
+
+### Features
+
+* **docker:** package runtime services ([35637b3](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/35637b31f9a626df2686c74fc22f2cc919decaf4))
+* **docker:** package runtime services ([79e3a7b](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/79e3a7b3c061674c7ee82db466e30e90709a4714))
+
 ## [1.7.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.6.0...v1.7.0) (2026-06-28)
 
 
