@@ -439,6 +439,12 @@ def get_airflow_status():
     return AirflowClient().load_status()
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def get_recent_collector_runs():
+    limit = int(os.getenv("DASHBOARD_COLLECTOR_RUN_HISTORY_LIMIT", "5"))
+    return AirflowClient().load_recent_collector_runs(limit=limit)
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def get_balancing_report():
     report_path = Path(
@@ -518,6 +524,46 @@ def render_airflow_monitoring():
         )
     else:
         st.info("No next run scheduled")
+
+    try:
+        collector_runs = get_recent_collector_runs()
+    except Exception as exc:
+        st.warning(f"Collector run history unavailable: {exc}")
+        collector_runs = []
+
+    if collector_runs:
+        st.subheader("Last collector runs")
+        blocked_runs = [
+            row for row in collector_runs
+            if row["collector_status"] == "blocked"
+        ]
+        if blocked_runs:
+            st.warning(
+                f"{len(blocked_runs)} collector block(s) found in recent runs"
+            )
+        collector_rows = [
+            {
+                "Started": (
+                    row["started_at"].astimezone().strftime("%Y-%m-%d %H:%M:%S")
+                    if row["started_at"]
+                    else "-"
+                ),
+                "DAG": row["dag_id"],
+                "Source": row["source"],
+                "Task": row["task_state"] or "-",
+                "Collector": row["collector_status"],
+                "Message": row["message"],
+                "Run": row["run_id"],
+            }
+            for row in collector_runs
+        ]
+        st.dataframe(
+            collector_rows,
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.info("No recent collector runs found")
 
     st.caption(
         "Auto-refresh every 15 seconds. "

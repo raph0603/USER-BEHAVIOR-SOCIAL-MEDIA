@@ -54,6 +54,47 @@ DEFAULT_YOUTUBE_QUERIES = [
     "xe điện VinFast trạm sạc",
 ]
 
+class CollectorSoftBlock(RuntimeError):
+    """Source auth, quota, or rate-limit issue that should not fail the DAG."""
+
+
+def _http_error_status(exc: Exception) -> int | None:
+    response = getattr(exc, "resp", None)
+    status = getattr(response, "status", None)
+    try:
+        return int(status)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_auth_or_quota_block(exc: Exception) -> bool:
+    status = _http_error_status(exc)
+    if status in {401, 403, 429}:
+        return True
+
+    message = str(exc).lower()
+    markers = (
+        "api key",
+        "auth",
+        "captcha",
+        "credential",
+        "forbidden",
+        "login",
+        "mfa",
+        "permission",
+        "quota",
+        "rate limit",
+        "rate-limit",
+        "too many requests",
+        "temporarily limited",
+        "unauthorized",
+    )
+    return any(marker in message for marker in markers)
+
+
+def _soft_block(source: str, reason: str) -> CollectorSoftBlock:
+    return CollectorSoftBlock(f"{source} collection blocked: {reason}")
+
 
 def _env_int(name: str, default: int) -> int:
     try:
@@ -450,15 +491,20 @@ def _search_youtube_video_ids(
     page_token = None
 
     while len(video_ids) < max_results:
-        response = youtube.search().list(
-            part="id",
-            q=search_query,
-            type="video",
-            relevanceLanguage=relevance_language or None,
-            order=order,
-            maxResults=min(50, max_results - len(video_ids)),
-            pageToken=page_token,
-        ).execute()
+        try:
+            response = youtube.search().list(
+                part="id",
+                q=search_query,
+                type="video",
+                relevanceLanguage=relevance_language or None,
+                order=order,
+                maxResults=min(50, max_results - len(video_ids)),
+                pageToken=page_token,
+            ).execute()
+        except HttpError as exc:
+            if _is_auth_or_quota_block(exc):
+                raise _soft_block("youtube", str(exc)) from exc
+            raise
         video_ids.extend(
             item["id"]["videoId"]
             for item in response.get("items", [])
@@ -1407,6 +1453,8 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                 )
                 return []
     except Exception as exc:
+        if _is_auth_or_quota_block(exc):
+            raise _soft_block("x", str(exc)) from exc
         if _env_bool("X_FAIL_ON_ERROR", False):
             raise RuntimeError(
                 f"X online collection failed: {exc}"
@@ -1496,12 +1544,22 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                                 subreddit,
                             )
                             break
-                        raise
+                        raise _soft_block(
+                            "reddit",
+                            "HTML listing and RSS fallback are unavailable "
+                            f"for {subreddit}: HTTP {response.status}",
+                        )
                     for event in fallback_events:
                         candidates[event["event_id"]] = event
                     discovered_comments += fallback_discovered
                     break
                 if response.status >= 400:
+                    if response.status in {401, 403, 429}:
+                        raise _soft_block(
+                            "reddit",
+                            f"listing is unavailable for {subreddit}: "
+                            f"HTTP {response.status}",
+                        )
                     raise RuntimeError(
                         "Reddit listing did not load "
                         f"for {subreddit}: HTTP {response.status}"
@@ -1688,7 +1746,7 @@ def main() -> None:
         if mode == "youtube":
             api_key = _env_str("YOUTUBE_API_KEY", "")
             if not api_key:
-                raise RuntimeError("YOUTUBE_API_KEY is required")
+                raise _soft_block("youtube", "YOUTUBE_API_KEY is required")
             youtube = _get_youtube_service(api_key)
             search_limit = _env_int("YOUTUBE_SEARCH_MAX_RESULTS", 10)
             search_languages = _env_list(
@@ -1841,6 +1899,8 @@ def main() -> None:
 
         publish(events)
         print(f"Produced {len(events)} new {mode} events")
+    except CollectorSoftBlock as exc:
+        print(f"Collector soft-blocked: {exc}", file=sys.stderr, flush=True)
     finally:
         state.close()
 
