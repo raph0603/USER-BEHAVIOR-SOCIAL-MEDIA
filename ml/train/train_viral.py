@@ -110,6 +110,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train the unified viral classifier.")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA)
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+    parser.add_argument("--bert-model-dir", type=Path, default=None,
+                        help="Folder of the Kaggle-trained BERT content model (required if data has content_score_bert).")
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -117,10 +119,20 @@ def main() -> None:
     df = pd.read_parquet(args.data)
     features = feature_columns(df)
     train_idx, test_idx = split_indices(df, args.test_size, args.seed)
-
-    text = df[TEXT].astype(str)
     y = df[TARGET].astype(int)
-    train_score, test_score, content_model = content_scores(text, y, train_idx, test_idx, args.seed)
+
+    if "content_score_bert" in df.columns:
+        if not args.bert_model_dir:
+            raise SystemExit("Data has 'content_score_bert' -> pass --bert-model-dir so serving uses the same BERT.")
+        scores = df["content_score_bert"].to_numpy()  # out-of-fold from Kaggle -> leakage-free
+        train_score, test_score = scores[train_idx], scores[test_idx]
+        content_bundle = {"content_model_dir": str(args.bert_model_dir)}
+        print("Using precomputed BERT content scores.")
+    else:
+        train_score, test_score, content_model = content_scores(
+            df[TEXT].astype(str), y, train_idx, test_idx, args.seed
+        )
+        content_bundle = {"content_model": content_model}
 
     X = df[features].astype(float)
     features = features + ["content_score"]
@@ -136,7 +148,7 @@ def main() -> None:
     print(shap_importance(model, X_test).head(10).round(4))
 
     args.model.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"model": model, "content_model": content_model, "features": features}, args.model)
+    joblib.dump({"model": model, "features": features, **content_bundle}, args.model)
     print(f"\nSaved -> {args.model}")
 
 

@@ -68,8 +68,12 @@ class ViralExplainer:
     def __init__(self, model_path: Path = MODEL_PATH):
         bundle = joblib.load(model_path)
         self.model = bundle["model"]
-        self.content_model = bundle["content_model"]
         self.features = bundle["features"]
+        if "content_model" in bundle:
+            self.content_model = bundle["content_model"]
+        else:  # BERT backend: rebuild from the saved model folder
+            from features.bert_content import BertContentModel
+            self.content_model = BertContentModel(bundle["content_model_dir"])
         self.roles = RoleFeaturizer()
 
     def _feature_row(self, text: str, source: str):
