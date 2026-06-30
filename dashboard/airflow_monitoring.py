@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from datetime import datetime, timezone
 from urllib.parse import quote
 
@@ -16,6 +17,17 @@ TERMINAL_TASK_STATES = {
 ACTIVE_RUN_STATES = {"queued", "running"}
 CRAWLER_VARIABLE_KEY = "crawler_dashboard_config"
 INSIGHT_VARIABLE_KEY = "insight_dashboard_config"
+COLLECTOR_TASKS = {
+    "collect_youtube_api_events": "youtube",
+    "collect_x_playwright_events": "x",
+    "collect_reddit_online_events": "reddit",
+}
+COLLECTOR_DAG_IDS = {
+    "user_behavior_lakehouse",
+    "user_behavior_lakehouse_no_row_checks",
+}
+SOFT_BLOCK_PATTERN = re.compile(r"Collector soft-blocked:\s*(.+)")
+PRODUCED_PATTERN = re.compile(r"Produced\s+(\d+)\s+new\s+(\w+)\s+events")
 
 
 def get_airflow_config():
@@ -79,8 +91,28 @@ class AirflowClient:
         response.raise_for_status()
         return response.json() if response.content else {}
 
+    def _request_text(self, method, path, params=None):
+        response = self.session.request(
+            method,
+            f"{self.config['base_url']}/api/v1{path}",
+            params=params,
+            json=None,
+            timeout=self.config["timeout"],
+        )
+        response.raise_for_status()
+        try:
+            payload = response.json()
+        except ValueError:
+            return getattr(response, "text", "")
+        if isinstance(payload, dict):
+            return str(payload.get("content", ""))
+        return getattr(response, "text", "")
+
     def _get(self, path, params=None):
         return self._request("GET", path, params=params)
+
+    def _get_text(self, path, params=None):
+        return self._request_text("GET", path, params=params)
 
     def get_variable(self, key, defaults):
         try:
@@ -138,6 +170,113 @@ class AirflowClient:
             f"/dags/{quote(dag_id, safe='')}/dagRuns",
             json_body={"conf": conf},
         )
+
+    def _load_task_log(self, dag_id, run_id, task_id, try_number):
+        encoded_dag_id = quote(dag_id, safe="")
+        encoded_run_id = quote(run_id, safe="")
+        encoded_task_id = quote(task_id, safe="")
+        attempts = [try_number, try_number - 1, 1]
+        seen_attempts = set()
+        for attempt in attempts:
+            if not attempt or attempt < 1 or attempt in seen_attempts:
+                continue
+            seen_attempts.add(attempt)
+            try:
+                return self._get_text(
+                    f"/dags/{encoded_dag_id}/dagRuns/{encoded_run_id}/"
+                    f"taskInstances/{encoded_task_id}/logs/{attempt}",
+                    params={"full_content": "true"},
+                )
+            except requests.HTTPError as exc:
+                if exc.response.status_code == 404:
+                    continue
+                raise
+        return ""
+
+    def _summarize_collector_log(self, source, log_text):
+        soft_match = SOFT_BLOCK_PATTERN.search(log_text or "")
+        if soft_match:
+            return {
+                "collector_status": "blocked",
+                "message": soft_match.group(1).strip(),
+                "produced_events": None,
+            }
+
+        produced_match = PRODUCED_PATTERN.search(log_text or "")
+        if produced_match:
+            return {
+                "collector_status": "collected",
+                "message": f"Produced {produced_match.group(1)} event(s)",
+                "produced_events": int(produced_match.group(1)),
+            }
+
+        return {
+            "collector_status": "unknown",
+            "message": f"No collector summary found for {source}",
+            "produced_events": None,
+        }
+
+    def load_recent_collector_runs(self, limit=5):
+        rows = []
+        for dag_id in sorted(COLLECTOR_DAG_IDS):
+            encoded_dag_id = quote(dag_id, safe="")
+            run_response = self._get(
+                f"/dags/{encoded_dag_id}/dagRuns",
+                params={"limit": limit, "order_by": "-execution_date"},
+            )
+            for run in run_response.get("dag_runs", []):
+                run_id = run.get("dag_run_id")
+                if not run_id:
+                    continue
+                encoded_run_id = quote(run_id, safe="")
+                task_response = self._get(
+                    f"/dags/{encoded_dag_id}/dagRuns/"
+                    f"{encoded_run_id}/taskInstances",
+                    params={"limit": 1000},
+                )
+                tasks = task_response.get("task_instances", [])
+                for task in tasks:
+                    task_id = task.get("task_id")
+                    if task_id not in COLLECTOR_TASKS:
+                        continue
+                    source = COLLECTOR_TASKS[task_id]
+                    task_state = task.get("state")
+                    summary = {
+                        "collector_status": "pending",
+                        "message": "Collector has not finished yet",
+                        "produced_events": None,
+                    }
+                    if task_state in TERMINAL_TASK_STATES:
+                        try_number = int(task.get("try_number") or 1)
+                        log_text = self._load_task_log(
+                            dag_id,
+                            run_id,
+                            task_id,
+                            try_number,
+                        )
+                        summary = self._summarize_collector_log(source, log_text)
+                        if task_state in {"failed", "upstream_failed"}:
+                            summary["collector_status"] = "failed"
+                    rows.append(
+                        {
+                            "dag_id": dag_id,
+                            "run_id": run_id,
+                            "run_state": run.get("state"),
+                            "task_id": task_id,
+                            "task_state": task_state,
+                            "source": source,
+                            "started_at": _parse_datetime(run.get("start_date")),
+                            "ended_at": _parse_datetime(run.get("end_date")),
+                            **summary,
+                        }
+                    )
+        rows.sort(
+            key=lambda row: row["started_at"] or datetime.min.replace(
+                tzinfo=timezone.utc
+            ),
+            reverse=True,
+        )
+        return rows
 
     def load_status(self, now=None):
         now = now or datetime.now(timezone.utc)
