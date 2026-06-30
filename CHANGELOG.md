@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.8.0...v1.9.0) (2026-06-30)
+
+
+### Features
+
+* **annotation:** annotation des rôles marketing EV + sentiment ([1d95e16](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/1d95e165c2dfe7bcdd7636493a1a00bd890a0e6a))
+* **annotation:** annotation des roles marketing EV + sentiment (gold/silver/uncertain restructures) ([b2857ed](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/b2857edcc54e6be0e706feb87cb9bff34aaa4f5d))
+
 ## [1.8.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.7.0...v1.8.0) (2026-06-29)
 
 
