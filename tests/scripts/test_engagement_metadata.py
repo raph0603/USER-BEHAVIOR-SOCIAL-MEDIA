@@ -101,7 +101,7 @@ class EngagementMetadataTests(unittest.TestCase):
 
         self.assertEqual(ENGAGEMENT.extract_x_metric(article, "like"), 23)
 
-    def test_avro_contract_contains_only_common_engagement_metadata(self):
+    def test_avro_contract_contains_engagement_metadata(self):
         schema_path = ROOT / "schemas" / "playwright_event.avsc"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         field_names = {field["name"] for field in schema["fields"]}
@@ -110,19 +110,16 @@ class EngagementMetadataTests(unittest.TestCase):
             "platform_event_id",
             "like_count",
             "view_count",
-            "follower_count",
-            "subscriber_count",
-            "subreddit_member_count",
-        }
-        removed = {
             "bookmark_count",
             "comment_count",
             "reply_count",
             "retweet_count",
             "score",
+            "follower_count",
+            "subscriber_count",
+            "subreddit_member_count",
         }
         self.assertTrue(expected.issubset(field_names))
-        self.assertFalse(removed & field_names)
         self.assertFalse(
             {
                 "content_type",
@@ -135,21 +132,19 @@ class EngagementMetadataTests(unittest.TestCase):
             & field_names
         )
 
-    def test_common_engagement_metrics_are_propagated_to_silver(self):
+    def test_engagement_metrics_are_propagated_to_silver(self):
         expected = {
             "platform_event_id",
             "like_count",
             "view_count",
-            "follower_count",
-            "subscriber_count",
-            "subreddit_member_count",
-        }
-        removed = {
             "bookmark_count",
             "comment_count",
             "reply_count",
             "retweet_count",
             "score",
+            "follower_count",
+            "subscriber_count",
+            "subreddit_member_count",
         }
         paths = [
             ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py",
@@ -177,16 +172,14 @@ class EngagementMetadataTests(unittest.TestCase):
             with self.subTest(path=path):
                 for field_name in expected:
                     self.assertIn(field_name, source)
-                for field_name in removed:
-                    self.assertNotIn(field_name, source)
 
-    def test_reddit_is_not_mapped_to_like_count_from_score(self):
+    def test_reddit_score_is_propagated_separately(self):
         source = (ROOT / "playwright" / "insight_refresh.py").read_text(
             encoding="utf-8"
         )
 
-        self.assertNotIn('update["score"]', source)
-        self.assertNotIn('"score",', source)
+        self.assertIn('"score"', source)
+        self.assertNotIn('"like_count": score', source)
 
     def test_cleaning_tolerates_malformed_avro_records(self):
         source = (
@@ -230,7 +223,7 @@ class EngagementMetadataTests(unittest.TestCase):
         self.assertIn("Collector soft-blocked", producer)
         self.assertIn("_is_auth_or_quota_block", producer)
 
-    def test_producer_emits_only_contract_engagement_metrics(self):
+    def test_producer_emits_contract_engagement_metrics(self):
         producer = (ROOT / "playwright" / "producer.py").read_text(
             encoding="utf-8"
         )
@@ -242,7 +235,7 @@ class EngagementMetadataTests(unittest.TestCase):
             "bookmark_count",
             "score",
         ):
-            self.assertNotIn(f'"{field_name}"', producer)
+            self.assertIn(f'"{field_name}"', producer)
 
     def test_youtube_search_supports_multiple_pages(self):
         producer = (ROOT / "playwright" / "producer.py").read_text(

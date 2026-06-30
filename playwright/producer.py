@@ -55,6 +55,7 @@ DEFAULT_YOUTUBE_QUERIES = [
     "xe điện VinFast trạm sạc",
 ]
 
+
 class CollectorSoftBlock(RuntimeError):
     """Source auth, quota, or rate-limit issue that should not fail the DAG."""
 
@@ -227,7 +228,54 @@ def _matches_keywords(text: str, keywords: list[str], match_mode: str) -> bool:
     return all(matches) if match_mode == "AND" else any(matches)
 
 
-def _extract_reddit_comment_event(comment, fallback_url: str) -> dict | None:
+def _extract_reddit_score(comment) -> int | None:
+    selectors = (
+        "span.score.unvoted",
+        "span.score.likes",
+        "span.score.dislikes",
+        "span.score",
+    )
+    for selector in selectors:
+        score_locator = comment.locator(selector)
+        if not score_locator.count():
+            continue
+        score_node = score_locator.first
+        for raw_value in (
+            score_node.get_attribute("title"),
+            score_node.inner_text(timeout=1000),
+        ):
+            parsed = parse_count(raw_value)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _extract_reddit_subreddit_members(page) -> int | None:
+    selectors = (
+        ".side .subscribers .number",
+        ".side span.subscribers .number",
+        ".side .subscribers",
+    )
+    for selector in selectors:
+        locator = page.locator(selector)
+        if not locator.count():
+            continue
+        node = locator.first
+        for raw_value in (
+            node.get_attribute("title"),
+            node.inner_text(timeout=1000),
+        ):
+            parsed = parse_count(raw_value)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _extract_reddit_comment_event(
+    comment,
+    fallback_url: str,
+    subreddit_member_count: int | None = None,
+) -> dict | None:
     fullname = comment.get_attribute("data-fullname") or ""
     comment_id = fullname.removeprefix("t1_")
     if not comment_id:
@@ -276,6 +324,12 @@ def _extract_reddit_comment_event(comment, fallback_url: str) -> dict | None:
         "source": "reddit",
         "like_count": None,
         "view_count": None,
+        "comment_count": None,
+        "reply_count": None,
+        "retweet_count": None,
+        "bookmark_count": None,
+        "score": _extract_reddit_score(comment),
+        "subreddit_member_count": subreddit_member_count,
     }
 
 
@@ -304,6 +358,12 @@ def _extract_reddit_feed_event(entry) -> dict | None:
         "source": "reddit",
         "like_count": None,
         "view_count": None,
+        "comment_count": None,
+        "reply_count": None,
+        "retweet_count": None,
+        "bookmark_count": None,
+        "score": None,
+        "subreddit_member_count": None,
     }
 
 
@@ -1568,6 +1628,7 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                         "Reddit listing did not load "
                         f"for {subreddit}: HTTP {response.status}"
                     )
+                subreddit_member_count = _extract_reddit_subreddit_members(page)
                 comments = page.locator("div.thing.comment")
                 page_comment_count = min(
                     comments.count(),
@@ -1580,6 +1641,7 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                     event = _extract_reddit_comment_event(
                         comments.nth(index),
                         listing_url,
+                        subreddit_member_count,
                     )
                     if event is None or state.contains(
                         "reddit",
@@ -1634,9 +1696,14 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                     f'[data-fullname="t1_{candidate["event_id"]}"]'
                 ).first
                 if exact_comment.count():
+                    detail_member_count = (
+                        _extract_reddit_subreddit_members(page)
+                        or candidate.get("subreddit_member_count")
+                    )
                     detailed_event = _extract_reddit_comment_event(
                         exact_comment,
                         detail_url,
+                        detail_member_count,
                     )
                     if detailed_event is not None:
                         event = detailed_event
@@ -1733,6 +1800,11 @@ def main() -> None:
                     ),
                     "like_count": event.get("like_count"),
                     "view_count": event.get("view_count"),
+                    "comment_count": event.get("comment_count"),
+                    "reply_count": event.get("reply_count"),
+                    "retweet_count": event.get("retweet_count"),
+                    "bookmark_count": event.get("bookmark_count"),
+                    "score": event.get("score"),
                     "follower_count": event.get("follower_count"),
                     "subscriber_count": event.get("subscriber_count"),
                     "subreddit_member_count": event.get("subreddit_member_count"),

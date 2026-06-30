@@ -15,6 +15,11 @@ from pyspark.sql.types import (
 METRIC_COLUMNS = (
     "like_count",
     "view_count",
+    "comment_count",
+    "reply_count",
+    "retweet_count",
+    "bookmark_count",
+    "score",
     "follower_count",
     "subscriber_count",
     "subreddit_member_count",

@@ -20,6 +20,11 @@ from youtube_authors import fetch_youtube_collaborators
 METRIC_COLUMNS = (
     "like_count",
     "view_count",
+    "comment_count",
+    "reply_count",
+    "retweet_count",
+    "bookmark_count",
+    "score",
     "follower_count",
     "subscriber_count",
     "subreddit_member_count",
@@ -411,6 +416,7 @@ def _refresh_reddit(targets: list[dict]) -> list[dict]:
                 pass
             update = _base_update(target)
             update.update({
+                "score": parse_count(comment.get("score")),
                 "subreddit_member_count": subreddit_subscribers
             })
             updates.append(update)
