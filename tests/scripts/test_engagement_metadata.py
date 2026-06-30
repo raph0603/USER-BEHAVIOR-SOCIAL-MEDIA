@@ -215,6 +215,11 @@ class EngagementMetadataTests(unittest.TestCase):
         self.assertIn("X_SEARCH_NAVIGATION_TIMEOUT_MS", producer)
         self.assertIn("X_FAIL_ON_ERROR", producer)
         self.assertIn("X online collection skipped", producer)
+        self.assertIn("_click_x_google_login_button", producer)
+        self.assertIn("X_LOGIN_DEBUG_DIR", producer)
+        self.assertIn("CollectorSoftBlock", producer)
+        self.assertIn("Collector soft-blocked", producer)
+        self.assertIn("_is_auth_or_quota_block", producer)
 
     def test_producer_emits_only_contract_engagement_metrics(self):
         producer = (ROOT / "playwright" / "producer.py").read_text(

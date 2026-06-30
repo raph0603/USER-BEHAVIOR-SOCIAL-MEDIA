@@ -61,6 +61,8 @@ class DashboardUserProgressionTests(unittest.TestCase):
             "Events",
             "render_overview_summary()",
             "render_recent_events()",
+            "Last collector runs",
+            "get_recent_collector_runs",
         ]
         for value in expected:
             with self.subTest(value=value):

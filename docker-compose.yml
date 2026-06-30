@@ -73,9 +73,17 @@ x-airflow-common: &airflow-common
     X_CDP_HOST: ${X_CDP_HOST:-host.docker.internal}
     X_CDP_TOKEN: ${X_CDP_TOKEN:-}
     X_CDP_WAIT_SECONDS: ${X_CDP_WAIT_SECONDS:-90}
-    X_HEADLESS: ${X_HEADLESS:-false}
+    X_HEADLESS: ${X_HEADLESS:-true}
+    X_USER_DATA_DIR: ${X_USER_DATA_DIR:-/workspace/data/collector-state/x-browser-profile}
+    X_AUTH_TOKEN: ${X_AUTH_TOKEN:-}
+    X_CT0: ${X_CT0:-}
+    X_LOGIN_IDENTIFIER: ${X_LOGIN_IDENTIFIER:-}
+    X_PASSWORD: ${X_PASSWORD:-}
+    X_LOGIN_WAIT_SECONDS: ${X_LOGIN_WAIT_SECONDS:-90}
+    X_LOGIN_STEP_WAIT_SECONDS: ${X_LOGIN_STEP_WAIT_SECONDS:-20}
     X_GOOGLE_EMAIL: ${X_GOOGLE_EMAIL:-}
     X_GOOGLE_LOGIN_WAIT_SECONDS: ${X_GOOGLE_LOGIN_WAIT_SECONDS:-90}
+    X_LOGIN_DEBUG_DIR: ${X_LOGIN_DEBUG_DIR:-/workspace/data/collector-state/x-login-debug}
     X_SEARCH_QUERIES: ${X_SEARCH_QUERIES:-(electric vehicle OR EV OR "electric car") lang:en -filter:replies||(Tesla OR "EV charging" OR "battery range") lang:en -filter:replies||("xe điện" OR "ô tô điện" OR "pin xe điện") lang:vi -filter:replies||(Tesla OR VinFast OR "trạm sạc") lang:vi -filter:replies}
     X_SEARCH_NAVIGATION_TIMEOUT_MS: ${X_SEARCH_NAVIGATION_TIMEOUT_MS:-30000}
     X_SEARCH_WAIT_MS: ${X_SEARCH_WAIT_MS:-20000}
@@ -98,7 +106,6 @@ x-airflow-common: &airflow-common
     - collector-state:/workspace/data/collector-state
     - insight-refresh:/workspace/data/insight-refresh
     - balancing:/workspace/data/balancing
-    - ${HOST_PROJECT_DIR:-.}/data/x-runtime:/workspace/data/x-runtime
     - /var/run/docker.sock:/var/run/docker.sock
 
 services:
@@ -307,9 +314,17 @@ services:
       - X_CDP_TOKEN_FILE=/app/x-runtime/cdp-token.txt
       - X_CDP_TOKEN=${X_CDP_TOKEN:-}
       - X_CDP_WAIT_SECONDS=${X_CDP_WAIT_SECONDS:-90}
-      - X_HEADLESS=${X_HEADLESS:-false}
+      - X_HEADLESS=${X_HEADLESS:-true}
+      - X_USER_DATA_DIR=${X_USER_DATA_DIR:-/app/state/x-browser-profile}
+      - X_AUTH_TOKEN=${X_AUTH_TOKEN:-}
+      - X_CT0=${X_CT0:-}
+      - X_LOGIN_IDENTIFIER=${X_LOGIN_IDENTIFIER:-}
+      - X_PASSWORD=${X_PASSWORD:-}
+      - X_LOGIN_WAIT_SECONDS=${X_LOGIN_WAIT_SECONDS:-90}
+      - X_LOGIN_STEP_WAIT_SECONDS=${X_LOGIN_STEP_WAIT_SECONDS:-20}
       - X_GOOGLE_EMAIL=${X_GOOGLE_EMAIL:-}
       - X_GOOGLE_LOGIN_WAIT_SECONDS=${X_GOOGLE_LOGIN_WAIT_SECONDS:-90}
+      - X_LOGIN_DEBUG_DIR=${X_LOGIN_DEBUG_DIR:-/app/state/x-login-debug}
       - X_SEARCH_QUERIES=${X_SEARCH_QUERIES:-(electric vehicle OR EV OR "electric car") lang:en -filter:replies||(Tesla OR "EV charging" OR "battery range") lang:en -filter:replies||("xe điện" OR "ô tô điện" OR "pin xe điện") lang:vi -filter:replies||(Tesla OR VinFast OR "trạm sạc") lang:vi -filter:replies}
       - X_SEARCH_NAVIGATION_TIMEOUT_MS=${X_SEARCH_NAVIGATION_TIMEOUT_MS:-30000}
       - X_SEARCH_WAIT_MS=${X_SEARCH_WAIT_MS:-20000}
@@ -324,7 +339,6 @@ services:
 
     volumes:
       - collector-state:/app/state
-      - ${HOST_PROJECT_DIR:-.}/data/x-runtime:/app/x-runtime:ro
       - insight-refresh:/app/insight-refresh
 
   reddit-collector:
