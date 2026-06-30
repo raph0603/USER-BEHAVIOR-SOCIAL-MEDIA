@@ -33,7 +33,8 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 from youtube_transcript_api import YouTubeTranscriptApi
 
-from engagement import extract_x_metric, parse_count
+from engagement import extract_x_followers, extract_x_metric, parse_count
+import youtube_authors
 from youtube_authors import fetch_youtube_collaborators
 
 
@@ -1412,6 +1413,9 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                                         article,
                                         "analytics",
                                     ),
+                                    "follower_count": extract_x_followers(
+                                        article
+                                    ),
                                 }
                             )
                             seen_ids.add(status_id)
@@ -1729,6 +1733,9 @@ def main() -> None:
                     ),
                     "like_count": event.get("like_count"),
                     "view_count": event.get("view_count"),
+                    "follower_count": event.get("follower_count"),
+                    "subscriber_count": event.get("subscriber_count"),
+                    "subreddit_member_count": event.get("subreddit_member_count"),
                 },
                 on_delivery=delivery_report,
             )
@@ -1890,6 +1897,7 @@ def main() -> None:
                         "view_count": parse_count(
                             (metadata or {}).get("statistics", {}).get("viewCount")
                         ),
+                        "subscriber_count": youtube_authors.SUBSCRIBER_COUNTS.get(video_id),
                     }
                 )
         elif mode == "x":

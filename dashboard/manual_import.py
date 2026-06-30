@@ -196,6 +196,9 @@ def _normalize_youtube(row):
             _first_value(row, "like_count", "comment_like_count", "video_like_count")
         ),
         "view_count": _parse_count(_first_value(row, "view_count", "video_view_count")),
+        "follower_count": None,
+        "subscriber_count": _parse_count(_first_value(row, "subscriber_count")),
+        "subreddit_member_count": None,
     }
 
 
@@ -221,6 +224,9 @@ def _normalize_x(row):
         "collaborator_channel_ids": None,
         "like_count": _parse_count(_first_value(row, "like_count")),
         "view_count": _parse_count(_first_value(row, "view_count")),
+        "follower_count": _parse_count(_first_value(row, "follower_count")),
+        "subscriber_count": None,
+        "subreddit_member_count": None,
     }
 
 
@@ -244,6 +250,9 @@ def _normalize_reddit(row):
         "collaborator_channel_ids": None,
         "like_count": None,
         "view_count": None,
+        "follower_count": None,
+        "subscriber_count": None,
+        "subreddit_member_count": _parse_count(_first_value(row, "subreddit_member_count", "subreddit_subscribers")),
     }
 
 

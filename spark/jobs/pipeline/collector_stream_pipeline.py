@@ -136,6 +136,9 @@ def main() -> None:
                 ),
                 StructField("like_count", LongType()),
                 StructField("view_count", LongType()),
+                StructField("follower_count", LongType()),
+                StructField("subscriber_count", LongType()),
+                StructField("subreddit_member_count", LongType()),
             ]
         )
         decoded = metadata.select(
@@ -190,6 +193,9 @@ def main() -> None:
                 "collaborator_channel_ids",
                 "like_count",
                 "view_count",
+                "follower_count",
+                "subscriber_count",
+                "subreddit_member_count",
                 lit("clean").alias("stage"),
             )
         ).alias("value"),
@@ -210,6 +216,9 @@ def main() -> None:
                 "collaborator_channel_ids",
                 "like_count",
                 "view_count",
+                "follower_count",
+                "subscriber_count",
+                "subreddit_member_count",
                 "_kafka_topic",
                 "_kafka_partition",
                 "_kafka_offset",

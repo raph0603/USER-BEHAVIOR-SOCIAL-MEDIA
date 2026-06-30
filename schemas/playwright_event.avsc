@@ -17,6 +17,9 @@
       "default": null
     },
     { "name": "like_count", "type": ["null", "long"], "default": null },
-    { "name": "view_count", "type": ["null", "long"], "default": null }
+    { "name": "view_count", "type": ["null", "long"], "default": null },
+    { "name": "follower_count", "type": ["null", "long"], "default": null },
+    { "name": "subscriber_count", "type": ["null", "long"], "default": null },
+    { "name": "subreddit_member_count", "type": ["null", "long"], "default": null }
   ]
 }

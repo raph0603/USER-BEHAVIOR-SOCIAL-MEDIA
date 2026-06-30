@@ -27,6 +27,9 @@ ENGAGEMENT_LABELS = {
     "retweet_count": "Retweets",
     "bookmark_count": "Bookmarks",
     "score": "Score Reddit",
+    "follower_count": "Followers",
+    "subscriber_count": "Subscribers",
+    "subreddit_member_count": "Subreddit Members",
 }
 ENGAGEMENT_COLUMNS = tuple(ENGAGEMENT_LABELS)
 OPTIONAL_DASHBOARD_COLUMNS = (

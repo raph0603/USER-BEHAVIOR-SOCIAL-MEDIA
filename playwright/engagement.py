@@ -59,3 +59,28 @@ def extract_x_metric(article, test_id: str) -> int | None:
     if test_id == "analytics" and analytics_link_found:
         return 0
     return None
+
+
+def extract_x_followers(article) -> int | None:
+    try:
+        page = article.page
+        author_link = article.locator('[data-testid="User-Name"] a').first
+        author_link.hover()
+
+        hover_card = page.locator('[data-testid="HoverCard"], [data-testid="hoverCardRoot"]')
+        hover_card.wait_for(state="visible", timeout=2000)
+
+        links = hover_card.locator('a[href$="/verified_followers"], a[href$="/followers"]')
+        count = links.count()
+        for idx in range(count):
+            try:
+                inner_text = links.nth(idx).inner_text(timeout=1000)
+                parsed = parse_count(inner_text)
+                if parsed is not None:
+                    return parsed
+            except Exception:
+                pass
+        return None
+    except Exception:
+        return None
+

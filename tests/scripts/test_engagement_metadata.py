@@ -53,6 +53,9 @@ class EngagementMetadataTests(unittest.TestCase):
             "1.2K likes": 1200,
             "3M views": 3_000_000,
             "-5 points": -5,
+            "12.4K": 12400,
+            "1.2M": 1200000,
+            "3B": 3000000000,
         }
         for raw_value, expected in cases.items():
             with self.subTest(raw_value=raw_value):
@@ -107,6 +110,9 @@ class EngagementMetadataTests(unittest.TestCase):
             "platform_event_id",
             "like_count",
             "view_count",
+            "follower_count",
+            "subscriber_count",
+            "subreddit_member_count",
         }
         removed = {
             "bookmark_count",
@@ -134,6 +140,9 @@ class EngagementMetadataTests(unittest.TestCase):
             "platform_event_id",
             "like_count",
             "view_count",
+            "follower_count",
+            "subscriber_count",
+            "subreddit_member_count",
         }
         removed = {
             "bookmark_count",
@@ -252,6 +261,105 @@ class EngagementMetadataTests(unittest.TestCase):
 
         self.assertIn("def _matches_keywords(", producer)
         self.assertIn(r'rf"\b{re.escape(normalized_keyword)}\b"', producer)
+
+    def test_extract_x_followers_success(self):
+        class FakeElement:
+            def hover(self):
+                pass
+        class FakeLocator:
+            def __init__(self, elem):
+                self.elem = elem
+            @property
+            def first(self):
+                return self.elem
+        class FakeLinks:
+            def __init__(self, texts):
+                self.texts = texts
+            def count(self):
+                return len(self.texts)
+            def nth(self, idx):
+                class Item:
+                    def __init__(self, txt):
+                        self.txt = txt
+                    def inner_text(self, timeout=None):
+                        return self.txt
+                return Item(self.texts[idx])
+        class FakeHoverCard:
+            def __init__(self, links):
+                self._links = links
+            def wait_for(self, state=None, timeout=None):
+                pass
+            def locator(self, selector):
+                return self._links
+        class FakePage:
+            def __init__(self, hover_card):
+                self._hover_card = hover_card
+            def locator(self, selector):
+                return self._hover_card
+        class FakeArticle:
+            def __init__(self, page, first_elem):
+                self.page = page
+                self._first_elem = first_elem
+            def locator(self, selector):
+                return FakeLocator(self._first_elem)
+
+        links = FakeLinks(["12.4K Followers"])
+        hover_card = FakeHoverCard(links)
+        page = FakePage(hover_card)
+        article = FakeArticle(page, FakeElement())
+
+        followers = ENGAGEMENT.extract_x_followers(article)
+        self.assertEqual(followers, 12400)
+
+    def test_extract_reddit_json_member_count(self):
+        import importlib.util
+        from unittest.mock import patch
+        r_module_path = ROOT / "playwright" / "reddit_json_crawler.py"
+        r_spec = importlib.util.spec_from_file_location("reddit_json_crawler", r_module_path)
+        reddit_json = importlib.util.module_from_spec(r_spec)
+        r_spec.loader.exec_module(reddit_json)
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return [
+                    {
+                        "data": {
+                            "children": [
+                                {
+                                    "data": {
+                                        "subreddit_subscribers": 54321
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "data": {
+                            "children": [
+                                {
+                                    "kind": "t1",
+                                    "data": {
+                                        "author": "user1",
+                                        "body": "hello",
+                                        "id": "c1",
+                                        "parent_id": "p1",
+                                        "created_utc": 1600000000,
+                                        "score": 10,
+                                        "permalink": "/r/test/comments/123/c1/"
+                                    }
+                                }
+                            ]
+                        }
+                    
+                    }
+                ]
+        
+        with patch("requests.get", return_value=FakeResponse()):
+            rows = reddit_json.fetch_post_comments("https://reddit.com/r/test/comments/123")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["subreddit_member_count"], 54321)
 
 
 if __name__ == "__main__":

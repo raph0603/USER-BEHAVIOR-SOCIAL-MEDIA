@@ -37,7 +37,7 @@ def unix_to_iso(ts):
     except:
         return ""
 
-def extract_comment_tree(children, post_url, rows, depth=0):
+def extract_comment_tree(children, post_url, rows, depth=0, subreddit_member_count=None):
     for child in children:
         kind = child.get("kind")
         data = child.get("data", {})
@@ -65,13 +65,14 @@ def extract_comment_tree(children, post_url, rows, depth=0):
                 "created_utc": created_utc,
                 "created_iso": unix_to_iso(created_utc),
                 "score": score,
-                "comment_permalink": f"https://www.reddit.com{permalink}" if permalink else ""
+                "comment_permalink": f"https://www.reddit.com{permalink}" if permalink else "",
+                "subreddit_member_count": subreddit_member_count
             })
 
         replies = data.get("replies")
         if isinstance(replies, dict):
             reply_children = replies.get("data", {}).get("children", [])
-            extract_comment_tree(reply_children, post_url, rows, depth=depth+1)
+            extract_comment_tree(reply_children, post_url, rows, depth=depth+1, subreddit_member_count=subreddit_member_count)
 
 def fetch_post_comments(post_url):
     json_url = make_json_url(post_url)
@@ -91,8 +92,14 @@ def fetch_post_comments(post_url):
     comments_listing = payload[1]
     children = comments_listing.get("data", {}).get("children", [])
 
+    subreddit_subscribers = None
+    try:
+        subreddit_subscribers = payload[0]["data"]["children"][0]["data"].get("subreddit_subscribers")
+    except (IndexError, KeyError, TypeError):
+        pass
+
     rows = []
-    extract_comment_tree(children, post_url, rows, depth=0)
+    extract_comment_tree(children, post_url, rows, depth=0, subreddit_member_count=subreddit_subscribers)
     return rows
 
 def main():
@@ -114,7 +121,8 @@ def main():
             "created_utc",
             "created_iso",
             "score",
-            "comment_permalink"
+            "comment_permalink",
+            "subreddit_member_count"
         ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()

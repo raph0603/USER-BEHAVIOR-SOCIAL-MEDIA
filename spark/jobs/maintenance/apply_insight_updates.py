@@ -15,6 +15,9 @@ from pyspark.sql.types import (
 METRIC_COLUMNS = (
     "like_count",
     "view_count",
+    "follower_count",
+    "subscriber_count",
+    "subreddit_member_count",
 )
 AUTHOR_COLUMNS = (
     "owner_channel_id",

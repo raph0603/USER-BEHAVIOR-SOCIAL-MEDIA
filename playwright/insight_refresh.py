@@ -12,13 +12,17 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-from engagement import extract_x_metric, parse_count
+from engagement import extract_x_followers, extract_x_metric, parse_count
+import youtube_authors
 from youtube_authors import fetch_youtube_collaborators
 
 
 METRIC_COLUMNS = (
     "like_count",
     "view_count",
+    "follower_count",
+    "subscriber_count",
+    "subreddit_member_count",
 )
 SKIPPED_REFRESH_SOURCES = set()
 
@@ -118,6 +122,7 @@ def _refresh_youtube(targets: list[dict]) -> list[dict]:
                     ),
                     "like_count": parse_count(statistics.get("likeCount")),
                     "view_count": parse_count(statistics.get("viewCount")),
+                    "subscriber_count": youtube_authors.SUBSCRIBER_COUNTS.get(item["id"]),
                 }
             )
             updates.append(update)
@@ -307,6 +312,7 @@ def _refresh_x(targets: list[dict]) -> list[dict]:
                                 article,
                                 "analytics",
                             ),
+                            "follower_count": extract_x_followers(article),
                         }
                     )
                     updates.append(update)
@@ -377,14 +383,24 @@ def _refresh_reddit(targets: list[dict]) -> list[dict]:
                 SKIPPED_REFRESH_SOURCES.add("reddit")
                 return updates
             response.raise_for_status()
-            comment = _find_reddit_comment(response.json(), comment_id)
+            payload = response.json()
+            comment = _find_reddit_comment(payload, comment_id)
             if not comment:
                 print(
                     "Unable to refresh Reddit insights for "
                     f"{target['url']}: comment not found in JSON response"
                 )
                 continue
-            updates.append(_base_update(target))
+            subreddit_subscribers = None
+            try:
+                subreddit_subscribers = payload[0]["data"]["children"][0]["data"].get("subreddit_subscribers")
+            except (IndexError, KeyError, TypeError):
+                pass
+            update = _base_update(target)
+            update.update({
+                "subreddit_member_count": subreddit_subscribers
+            })
+            updates.append(update)
         except (ValueError, requests.RequestException) as exc:
             print(
                 "Unable to refresh Reddit insights for "

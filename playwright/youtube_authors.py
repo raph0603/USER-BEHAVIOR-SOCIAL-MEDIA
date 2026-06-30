@@ -1,8 +1,11 @@
 import json
+import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+
+from engagement import parse_count
 
 
 YOUTUBE_WATCH_URL = "https://www.youtube.com/watch"
@@ -11,6 +14,41 @@ INITIAL_DATA_MARKERS = (
     'window["ytInitialData"] = ',
     "ytInitialData = ",
 )
+
+SUBSCRIBER_COUNTS = {}
+_SUBSCRIBER_LOCK = threading.Lock()
+
+
+def extract_youtube_subscriber_count(html: str) -> int | None:
+    initial_data = _extract_initial_data(html)
+    if initial_data is None:
+        return None
+
+    owner_renderer = next(
+        (
+            node["videoOwnerRenderer"]
+            for node in _walk_dicts(initial_data)
+            if isinstance(node.get("videoOwnerRenderer"), dict)
+        ),
+        None,
+    )
+    if owner_renderer is None:
+        return None
+
+    sub_count_text_obj = owner_renderer.get("subscriberCountText")
+    if not sub_count_text_obj:
+        return None
+
+    text = ""
+    if "simpleText" in sub_count_text_obj:
+        text = sub_count_text_obj["simpleText"]
+    elif "runs" in sub_count_text_obj and isinstance(sub_count_text_obj["runs"], list):
+        text = "".join(run.get("text", "") for run in sub_count_text_obj["runs"])
+
+    if not text:
+        return None
+
+    return parse_count(text)
 
 
 def _extract_initial_data(html: str) -> dict | None:
@@ -133,6 +171,10 @@ def fetch_youtube_collaborator_channel_ids(
             f"[YouTube] Collaborator page error for {video_id}: {exc}"
         )
         return None
+
+    sub_count = extract_youtube_subscriber_count(response.text)
+    with _SUBSCRIBER_LOCK:
+        SUBSCRIBER_COUNTS[video_id] = sub_count
 
     collaborator_ids = extract_youtube_collaborator_channel_ids(
         response.text,

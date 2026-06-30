@@ -90,6 +90,9 @@ def main() -> None:
         "collaborator_channel_ids",
         "like_count",
         "view_count",
+        "follower_count",
+        "subscriber_count",
+        "subreddit_member_count",
         "event_date",
     ]
 
@@ -109,6 +112,9 @@ def main() -> None:
           collaborator_channel_ids ARRAY<STRING>,
           like_count BIGINT,
           view_count BIGINT,
+          follower_count BIGINT,
+          subscriber_count BIGINT,
+          subreddit_member_count BIGINT,
           event_date DATE
         )
         USING iceberg
@@ -125,6 +131,9 @@ def main() -> None:
             "collaborator_channel_ids": "ARRAY<STRING>",
             "like_count": "BIGINT",
             "view_count": "BIGINT",
+            "follower_count": "BIGINT",
+            "subscriber_count": "BIGINT",
+            "subreddit_member_count": "BIGINT",
         },
     )
 
@@ -145,6 +154,9 @@ def main() -> None:
             ),
             StructField("like_count", LongType()),
             StructField("view_count", LongType()),
+            StructField("follower_count", LongType()),
+            StructField("subscriber_count", LongType()),
+            StructField("subreddit_member_count", LongType()),
             StructField("event_ts", TimestampType()),
         ]
     )
@@ -222,7 +234,10 @@ def main() -> None:
                 t.collaborator_channel_ids
               ),
               t.like_count = COALESCE(s.like_count, t.like_count),
-              t.view_count = COALESCE(s.view_count, t.view_count)
+              t.view_count = COALESCE(s.view_count, t.view_count),
+              t.follower_count = COALESCE(s.follower_count, t.follower_count),
+              t.subscriber_count = COALESCE(s.subscriber_count, t.subscriber_count),
+              t.subreddit_member_count = COALESCE(s.subreddit_member_count, t.subreddit_member_count)
             WHEN NOT MATCHED THEN
               INSERT ({cols}) VALUES ({', '.join([f's.{c}' for c in silver_columns])})
             """
