@@ -37,12 +37,17 @@ La source de toutes les lignes du dataset final est donc renommée de façon hon
 
 ## 2. Effet sur le split silver / gold
 
-| | Avant cette passe | Après vote/rééquilibrage |
-|---|---|---|
-| `silver_dataset.jsonl` (confiance ≥ 0.75, rôle ≠ uncertain) | 1 059 | **1 266** |
-| `gold_dataset.jsonl` (reste, envoyé en "validation") | 5 817 | **5 610** |
+**Mise à jour (passe de revue qualité ultérieure) : la convention silver/gold a été corrigée.** La version précédente de ce rapport définissait `gold` comme "le reste, envoyé en validation" (5 610 lignes) et `silver` comme le sous-ensemble à confiance ≥0.75 (1 266 lignes) — c'est l'inverse de l'usage standard, où gold doit être le **petit** sous-ensemble fiable et silver le set principal, plus large. Aucune vérification humaine n'existant dans ce projet (contrainte explicite, aucun LLM payant non plus), "gold" est ici redéfini comme le sous-ensemble à confiance algorithmique maximale (≥0.95, accord 3/3 des votes), pas un set "vérifié humainement" :
 
-Le ratio s'améliore (+19,6 % de silver) mais reste **loin des volumes cibles du doc** (silver 5 000–20 000 / gold 500–2 000, section 10). Raison honnête : ces cibles supposent un corpus annoté par un vrai LLM sur un volume de segments bien plus large et plus propre. Ici, le corpus filtré VE ne compte que 6 876 segments au total, et près de la moitié sont du texte structurellement non-marketing (timestamps, génériques de chaîne, adresses, séparateurs, mentions légales, fragments hors-sujet) — les forcer dans une catégorie marketing pour gonfler le silver violerait le principe du doc lui-même ("utiliser `uncertain` si on n'est pas sûr", section 8).
+| | Définition | Lignes |
+|---|---|---|
+| `gold_dataset.jsonl` | confiance ≥ 0.95 (accord 3/3), rôle ≠ uncertain | **286** |
+| `silver_dataset.jsonl` | confiance < 0.95, rôle ≠ uncertain | **3 122** |
+| `uncertain_dataset.jsonl` (nouveau, séparé) | rôle = uncertain | **3 468** |
+
+Avant cette correction, le split était : silver 1 266 / gold 5 610 (avec gold incluant à la fois des segments à rôle réel sous le seuil 0.75 ET tous les `uncertain`, ce qui n'a pas de sens pour un "gold").
+
+Les volumes restent **loin des cibles du doc** (silver 5 000–20 000 / gold 500–2 000, section 10) pour la même raison de fond qu'avant : le corpus filtré VE ne compte que 6 876 segments, et la moitié est structurellement non-marketing (timestamps, génériques de chaîne, mentions légales...). Le nouveau gold (286) est même un peu **sous** la cible basse (500) — c'est le prix de la rigueur du seuil 0.95 ; l'élargir à 0.90 donnerait 959 lignes (dans la cible) mais avec un accord 2/3 inclus, donc moins strictement "gold".
 
 Sur les 3 260 segments qui avaient déjà un rôle réel (≠ uncertain) avant cette passe, la distribution de confiance était :
 
@@ -87,14 +92,17 @@ Distribution des rôles primaires (confiance moyenne entre parenthèses) :
 
 1. **Pas de script d'appel LLM payant** : aucun n'existe, car aucune API payante n'a été utilisée (refus explicite de l'utilisateur).
 2. **Pas de "vraie" double annotation LLM** (3 passes à températures différentes d'un même modèle) : remplacée par le dispositif de vote à 3 angles décrit en section 1, qui répond à l'esprit de la section 9 (réduire l'incertitude par corroboration indépendante) sans appel API.
-3. **Volumes silver/gold encore inversés par rapport aux cibles du doc** : amélioré mais pas conforme — voir explication détaillée en section 2.
-4. **Taux d'`uncertain` élevé (50.4 %)** : reflète la nature réelle du corpus (descriptions YouTube très automatiques, mentions légales, timestamps), pas une sous-performance de l'annotateur.
+3. **Volumes silver/gold** : convention corrigée (voir section 2) ; volumes toujours en deçà des cibles du doc pour des raisons de taille/nature du corpus, pas de méthode.
+4. **Taux d'`uncertain` élevé (50.4 %)** : reflète la nature réelle du corpus (descriptions YouTube très automatiques, mentions légales, timestamps), pas une sous-performance de l'annotateur. Isolé depuis dans `uncertain_dataset.jsonl` (3 468 lignes) pour ne pas polluer silver/gold.
 5. **Filtre "EV uniquement"** : ajout par rapport au doc original, non un écart en soi — réduction du corpus de 11 710 à 6 876 segments pertinents.
+6. **46 segments avaient un tag `language` incorrect** (anglais déclaré mais texte vietnamien) — corrigés. Voir `README.md` pour la limite découverte sur la vérification de cette correction.
 
 ## 5. Fichiers livrés (mise à jour)
 
-- `silver_dataset.jsonl` (1 266 lignes) — source `claude_triple_heuristic_vote`
-- `gold_dataset.jsonl` (5 610 lignes) — source `claude_triple_heuristic_vote`
+- `silver_dataset.jsonl` (3 122 lignes, confiance < 0.95) — source `claude_triple_heuristic_vote`
+- `gold_dataset.jsonl` (286 lignes, confiance ≥ 0.95) — source `claude_triple_heuristic_vote`
+- `uncertain_dataset.jsonl` (3 468 lignes, nouveau) — segments sans rôle marketing assignable
+- `README.md` — avertissements d'usage (à lire avant d'utiliser les données)
 - `rapport_qualite_annotation.md` — ce rapport
 - `rapport_preparation_dataset.md` — rapport de la phase amont (sélection/segmentation), inchangé
 
