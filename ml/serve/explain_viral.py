@@ -26,29 +26,29 @@ MODEL_PATH = ML_ROOT / "models" / "stage1_multisource.joblib"
 DECISION_THRESHOLD = 0.50
 TOP_K = 5
 
-# Map raw feature names -> human-readable Vietnamese labels for the explanation.
+# Map raw feature names -> human-readable labels for the explanation.
 FEATURE_LABELS = {
-    "content_score": "Nội dung/chủ đề bài viết",
-    "char_count": "Độ dài bài (ký tự)",
-    "word_count": "Số từ",
-    "has_question": "Có câu hỏi",
-    "is_vietnamese": "Viết bằng tiếng Việt",
-    "f_word": "Từ vựng khó",
-    "f_sent": "Câu dài",
-    "f_clause": "Câu nhiều mệnh đề",
-    "f_info": "Mật độ thuật ngữ kỹ thuật",
-    "f_visual": "Yếu tố thị giác (CHỮ HOA/!!!/emoji/#)",
-    "cognitive_friction_score": "Độ khó đọc tổng thể",
-    "role_diversity": "Đa dạng vai trò marketing",
-    "role_n_segments": "Số đoạn trong bài",
+    "content_score": "Post content/topic",
+    "char_count": "Post length (chars)",
+    "word_count": "Word count",
+    "has_question": "Contains a question",
+    "is_vietnamese": "Written in Vietnamese",
+    "f_word": "Hard vocabulary",
+    "f_sent": "Long sentences",
+    "f_clause": "Many clauses per sentence",
+    "f_info": "Technical-term density",
+    "f_visual": "Visual emphasis (CAPS/!!!/emoji/#)",
+    "cognitive_friction_score": "Overall reading difficulty",
+    "role_diversity": "Marketing-role diversity",
+    "role_n_segments": "Number of segments",
 }
 _ROLE_LABELS = {
-    "cta": "kêu gọi hành động (CTA)",
-    "hook": "câu hook mở đầu",
-    "proof": "bằng chứng/số liệu",
-    "social_proof": "social proof (người khác đã dùng)",
-    "pain_point": "nêu vấn đề người dùng",
-    "urgency": "tính khẩn cấp",
+    "cta": "call to action (CTA)",
+    "hook": "opening hook",
+    "proof": "proof/metrics",
+    "social_proof": "social proof",
+    "pain_point": "pain point",
+    "urgency": "urgency",
 }
 
 
@@ -56,10 +56,10 @@ def _label_for(feature: str) -> str:
     if feature in FEATURE_LABELS:
         return FEATURE_LABELS[feature]
     if feature.startswith("src_"):
-        return f"Nền tảng {feature[4:]}"
+        return f"Platform {feature[4:]}"
     for role, name in _ROLE_LABELS.items():
         if feature.endswith(role):
-            kind = "Tỉ lệ" if "ratio" in feature else "Số đoạn"
+            kind = "Ratio of" if "ratio" in feature else "Count of"
             return f"{kind} {name}"
     return feature
 
@@ -96,13 +96,13 @@ class ViralExplainer:
         row = X.iloc[0]
         tips = []
         if row.get("role_n_cta", 0) == 0:
-            tips.append("Thêm lời kêu gọi hành động (CTA) rõ ràng.")
+            tips.append("Add a clear call to action (CTA).")
         if row.get("role_n_hook", 0) == 0:
-            tips.append("Mở đầu bằng một câu hook gây chú ý.")
+            tips.append("Open with an attention-grabbing hook.")
         if row.get("role_n_proof", 0) == 0:
-            tips.append("Bổ sung số liệu/bằng chứng cụ thể.")
+            tips.append("Add concrete numbers or proof.")
         if row.get("cognitive_friction_score", 0) >= 0.5:
-            tips.append("Giảm độ khó đọc: câu ngắn hơn, ít thuật ngữ.")
+            tips.append("Lower reading difficulty: shorter sentences, less jargon.")
         return tips[:3]
 
     def explain(self, text: str, source: str = "", threshold: float = DECISION_THRESHOLD) -> dict:
@@ -117,19 +117,19 @@ class ViralExplainer:
                 "label": _label_for(feat),
                 "value": None if pd.isna(X.iloc[0][feat]) else round(float(X.iloc[0][feat]), 4),
                 "contribution": round(float(c), 4),
-                "direction": "tăng" if c > 0 else "giảm",
+                "direction": "up" if c > 0 else "down",
             }
             for feat, c in top.items()
         ]
-        up = [f["label"] for f in top_factors if f["direction"] == "tăng"][:3]
-        down = [f["label"] for f in top_factors if f["direction"] == "giảm"][:3]
+        up = [f["label"] for f in top_factors if f["direction"] == "up"][:3]
+        down = [f["label"] for f in top_factors if f["direction"] == "down"][:3]
         is_viral = int(score >= threshold)
 
-        parts = [f"Dự đoán: {'CÓ khả năng viral' if is_viral else 'ÍT khả năng viral'} (xác suất {score:.0%})."]
+        parts = [f"Prediction: {'likely viral' if is_viral else 'unlikely viral'} (probability {score:.0%})."]
         if up:
-            parts.append("Yếu tố làm TĂNG: " + ", ".join(up) + ".")
+            parts.append("Factors increasing it: " + ", ".join(up) + ".")
         if down:
-            parts.append("Yếu tố làm GIẢM: " + ", ".join(down) + ".")
+            parts.append("Factors decreasing it: " + ", ".join(down) + ".")
 
         return {
             "viral_score": round(score, 3),
