@@ -20,6 +20,8 @@ _SUBSCRIBER_LOCK = threading.Lock()
 
 
 def extract_youtube_subscriber_count(html: str) -> int | None:
+    if not isinstance(html, str):
+        return None
     initial_data = _extract_initial_data(html)
     if initial_data is None:
         return None
@@ -38,12 +40,29 @@ def extract_youtube_subscriber_count(html: str) -> int | None:
     sub_count_text_obj = owner_renderer.get("subscriberCountText")
     if not sub_count_text_obj:
         return None
+    if not isinstance(sub_count_text_obj, dict):
+        return None
 
     text = ""
     if "simpleText" in sub_count_text_obj:
         text = sub_count_text_obj["simpleText"]
     elif "runs" in sub_count_text_obj and isinstance(sub_count_text_obj["runs"], list):
-        text = "".join(run.get("text", "") for run in sub_count_text_obj["runs"])
+        text_runs = []
+        valid = True
+        for run in sub_count_text_obj["runs"]:
+            if not isinstance(run, dict):
+                valid = False
+                break
+            t_val = run.get("text")
+            if t_val is not None:
+                if not isinstance(t_val, str):
+                    valid = False
+                    break
+                text_runs.append(t_val)
+        if valid:
+            text = "".join(text_runs)
+        else:
+            text = ""
 
     if not text:
         return None
@@ -52,6 +71,8 @@ def extract_youtube_subscriber_count(html: str) -> int | None:
 
 
 def _extract_initial_data(html: str) -> dict | None:
+    if not isinstance(html, str):
+        return None
     decoder = json.JSONDecoder()
     for marker in INITIAL_DATA_MARKERS:
         marker_index = html.find(marker)

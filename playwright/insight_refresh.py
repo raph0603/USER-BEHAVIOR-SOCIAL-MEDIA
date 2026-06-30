@@ -48,10 +48,10 @@ def _load_targets(path: Path, source: str) -> list[dict]:
 
 def _base_update(target: dict) -> dict:
     update = {
-        "user_id": target["user_id"],
-        "url": target["url"],
-        "event_ts": target["event_ts"],
-        "source": target["source"],
+        "user_id": target.get("user_id"),
+        "url": target.get("url"),
+        "event_ts": target.get("event_ts"),
+        "source": target.get("source"),
         "platform_event_id": target.get("platform_event_id"),
         "metadata_refreshed_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -349,6 +349,8 @@ def _find_reddit_comment(node, comment_id: str) -> dict | None:
         return None
 
     data = node.get("data", {})
+    if not isinstance(data, dict):
+        return None
     if node.get("kind") == "t1" and data.get("id") == comment_id:
         return data
 
@@ -393,15 +395,26 @@ def _refresh_reddit(targets: list[dict]) -> list[dict]:
                 continue
             subreddit_subscribers = None
             try:
-                subreddit_subscribers = payload[0]["data"]["children"][0]["data"].get("subreddit_subscribers")
-            except (IndexError, KeyError, TypeError):
+                if isinstance(payload, list) and len(payload) > 0:
+                    p0 = payload[0]
+                    if isinstance(p0, dict):
+                        p0_data = p0.get("data")
+                        if isinstance(p0_data, dict):
+                            children = p0_data.get("children")
+                            if isinstance(children, list) and len(children) > 0:
+                                c0 = children[0]
+                                if isinstance(c0, dict):
+                                    c0_data = c0.get("data")
+                                    if isinstance(c0_data, dict):
+                                        subreddit_subscribers = c0_data.get("subreddit_subscribers")
+            except (IndexError, KeyError, TypeError, AttributeError):
                 pass
             update = _base_update(target)
             update.update({
                 "subreddit_member_count": subreddit_subscribers
             })
             updates.append(update)
-        except (ValueError, requests.RequestException) as exc:
+        except (ValueError, requests.RequestException, AttributeError) as exc:
             print(
                 "Unable to refresh Reddit insights for "
                 f"{target['url']}: {exc}"

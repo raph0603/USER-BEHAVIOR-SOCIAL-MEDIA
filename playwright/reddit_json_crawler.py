@@ -94,8 +94,10 @@ def fetch_post_comments(post_url):
 
     subreddit_subscribers = None
     try:
-        subreddit_subscribers = payload[0]["data"]["children"][0]["data"].get("subreddit_subscribers")
-    except (IndexError, KeyError, TypeError):
+        post_data = payload[0]["data"]["children"][0]["data"]
+        if isinstance(post_data, dict):
+            subreddit_subscribers = post_data.get("subreddit_subscribers")
+    except (IndexError, KeyError, TypeError, AttributeError):
         pass
 
     rows = []

@@ -14,13 +14,20 @@ def parse_count(value) -> int | None:
     if not match:
         return None
 
-    number = float(match.group(1))
-    multiplier = {
-        "k": 1_000,
-        "m": 1_000_000,
-        "b": 1_000_000_000,
-    }.get(match.group(2), 1)
-    return int(number * multiplier)
+    try:
+        number = float(match.group(1))
+        multiplier = {
+            "k": 1_000,
+            "m": 1_000_000,
+            "b": 1_000_000_000,
+        }.get(match.group(2), 1)
+        result = number * multiplier
+        import math
+        if math.isinf(result) or math.isnan(result):
+            return None
+        return int(result)
+    except (OverflowError, ValueError):
+        return None
 
 
 def extract_x_metric(article, test_id: str) -> int | None:

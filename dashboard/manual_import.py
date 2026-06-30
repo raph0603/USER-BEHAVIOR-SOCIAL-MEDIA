@@ -72,8 +72,12 @@ def _parse_count(value):
     if multiplier != 1:
         text = text[:-1]
     try:
-        return int(float(text) * multiplier)
-    except ValueError:
+        result = float(text) * multiplier
+        import math
+        if math.isinf(result) or math.isnan(result):
+            return None
+        return int(result)
+    except (ValueError, OverflowError):
         return None
 
 
