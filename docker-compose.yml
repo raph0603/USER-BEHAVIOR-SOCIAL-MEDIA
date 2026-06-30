@@ -491,6 +491,17 @@ services:
 
     command: scheduler
 
+  ai-trainer:
+    image: ${DOCKERHUB_NAMESPACE:-raph0603}/user-behavior-ai-trainer:${PROJECT_IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: ml/Dockerfile
+    logging: *default-logging
+    working_dir: /workspace
+    volumes:
+      - ${HOST_PROJECT_DIR:-.}:/workspace
+    command: python ml/run_pipeline.py --report
+
 volumes:
   airflow-logs:
   airflow-postgres-data:
