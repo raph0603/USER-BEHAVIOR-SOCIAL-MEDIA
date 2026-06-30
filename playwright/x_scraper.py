@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import math
+import os
 import random
 import re
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -19,13 +20,45 @@ INPUT_FILE = BASE_DIR / "x_urls.txt"
 OUTPUT_CSV = BASE_DIR / f"x_thread_parallel_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
 
-def x_cdp_url() -> str:
-    port_file = BASE_DIR.parent / "data" / "x-runtime" / "edge-port.txt"
-    port = int(port_file.read_text(encoding="utf-8").strip())
-    return f"http://127.0.0.1:{port}"
+def env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-CDP_URL = x_cdp_url()
+def x_auth_cookies() -> list[dict]:
+    auth_token = os.getenv("X_AUTH_TOKEN", "").strip()
+    ct0 = os.getenv("X_CT0", "").strip()
+    if not auth_token:
+        return []
+
+    cookies = []
+    for domain in [".x.com", ".twitter.com"]:
+        cookies.append(
+            {
+                "name": "auth_token",
+                "value": auth_token,
+                "domain": domain,
+                "path": "/",
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "None",
+            }
+        )
+        if ct0:
+            cookies.append(
+                {
+                    "name": "ct0",
+                    "value": ct0,
+                    "domain": domain,
+                    "path": "/",
+                    "httpOnly": False,
+                    "secure": True,
+                    "sameSite": "Lax",
+                }
+            )
+    return cookies
 
 NUM_WORKERS = 3
 MAX_SCROLL_ROUNDS = 80
@@ -327,12 +360,21 @@ def worker_process(worker_id: int, urls: list[str]) -> list[dict]:
     print(f"[{worker_name}] Démarrage avec {len(urls)} URLs")
 
     with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(CDP_URL)
-
-        if browser.contexts:
-            context = browser.contexts[0]
-        else:
-            context = browser.new_context()
+        browser = p.chromium.launch(
+            headless=env_bool("X_HEADLESS", True),
+            args=["--no-sandbox"],
+        )
+        context_options = {
+            "locale": "en-US",
+            "viewport": {"width": 1280, "height": 900},
+        }
+        storage_state = os.getenv("X_STORAGE_STATE", "").strip()
+        if storage_state:
+            context_options["storage_state"] = storage_state
+        context = browser.new_context(**context_options)
+        auth_cookies = x_auth_cookies()
+        if auth_cookies:
+            context.add_cookies(auth_cookies)
 
         page = context.new_page()
 
@@ -346,6 +388,7 @@ def worker_process(worker_id: int, urls: list[str]) -> list[dict]:
             page.close()
         except Exception:
             pass
+        browser.close()
 
     print(f"[{worker_name}] Fin worker : {len(all_rows)} lignes collectées")
     return all_rows
@@ -360,7 +403,7 @@ def main() -> None:
 
     print(f"{len(urls)} URLs à scraper.")
     print(f"Workers : {len(url_chunks)}")
-    print(f"Connexion CDP : {CDP_URL}")
+    print(f"Navigateurs Chromium headless lancés par les workers")
 
     all_rows = []
 
