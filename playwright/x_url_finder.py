@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import re
+import os
 from pathlib import Path
 from urllib.parse import quote
 
@@ -12,13 +13,45 @@ BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_FILE = BASE_DIR / "x_urls.txt"
 
 
-def x_cdp_url() -> str:
-    port_file = BASE_DIR.parent / "data" / "x-runtime" / "edge-port.txt"
-    port = int(port_file.read_text(encoding="utf-8").strip())
-    return f"http://127.0.0.1:{port}"
+def env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-CDP_URL = x_cdp_url()
+def x_auth_cookies() -> list[dict]:
+    auth_token = os.getenv("X_AUTH_TOKEN", "").strip()
+    ct0 = os.getenv("X_CT0", "").strip()
+    if not auth_token:
+        return []
+
+    cookies = []
+    for domain in [".x.com", ".twitter.com"]:
+        cookies.append(
+            {
+                "name": "auth_token",
+                "value": auth_token,
+                "domain": domain,
+                "path": "/",
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "None",
+            }
+        )
+        if ct0:
+            cookies.append(
+                {
+                    "name": "ct0",
+                    "value": ct0,
+                    "domain": domain,
+                    "path": "/",
+                    "httpOnly": False,
+                    "secure": True,
+                    "sameSite": "Lax",
+                }
+            )
+    return cookies
 
 SCROLL_ROUNDS_PER_QUERY = 18
 SCROLL_PIXELS_MIN = 1600
@@ -104,12 +137,19 @@ def main() -> None:
     all_urls = set()
 
     with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(CDP_URL)
-
-        if browser.contexts:
-            context = browser.contexts[0]
-        else:
-            context = browser.new_context()
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=os.getenv(
+                "X_USER_DATA_DIR",
+                str(BASE_DIR.parent / "data" / "x-browser-profile"),
+            ),
+            headless=env_bool("X_HEADLESS", True),
+            args=["--no-sandbox"],
+            locale="en-US",
+            viewport={"width": 1280, "height": 900},
+        )
+        auth_cookies = x_auth_cookies()
+        if auth_cookies:
+            context.add_cookies(auth_cookies)
 
         page = context.new_page()
 
@@ -162,6 +202,7 @@ def main() -> None:
         OUTPUT_FILE.write_text("\n".join(sorted_urls) + ("\n" if sorted_urls else ""), encoding="utf-8")
 
         print(f"\n[TERMINÉ] {len(sorted_urls)} URLs sauvegardées dans {OUTPUT_FILE}")
+        context.close()
 
 
 if __name__ == "__main__":

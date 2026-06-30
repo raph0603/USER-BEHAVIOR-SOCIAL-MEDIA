@@ -215,44 +215,77 @@ def _x_cdp_url() -> str:
     return cdp_url
 
 
-def _refresh_x(targets: list[dict]) -> list[dict]:
-    try:
-        cdp_url = _x_cdp_url()
-    except (FileNotFoundError, RuntimeError, ValueError) as exc:
-        print(f"Skipping X insight refresh: CDP endpoint unavailable: {exc}")
-        SKIPPED_REFRESH_SOURCES.add("x")
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _x_auth_cookies() -> list[dict]:
+    auth_token = _env("X_AUTH_TOKEN")
+    ct0 = _env("X_CT0")
+    if not auth_token:
         return []
 
-    if cdp_url.startswith(("http://", "https://")):
-        try:
-            response = requests.get(
-                _x_cdp_url_with_path(cdp_url, "/__x_cdp__/ensure"),
-                params={"headless": _env("X_HEADLESS", "true")},
-                timeout=int(_env("X_CDP_WAIT_SECONDS", "90")),
+    cookies = []
+    for domain in [".x.com", ".twitter.com"]:
+        cookies.append(
+            {
+                "name": "auth_token",
+                "value": auth_token,
+                "domain": domain,
+                "path": "/",
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "None",
+            }
+        )
+        if ct0:
+            cookies.append(
+                {
+                    "name": "ct0",
+                    "value": ct0,
+                    "domain": domain,
+                    "path": "/",
+                    "httpOnly": False,
+                    "secure": True,
+                    "sameSite": "Lax",
+                }
             )
-            if response.status_code not in {200, 404}:
-                response.raise_for_status()
-        except requests.RequestException as exc:
-            print(f"Skipping X insight refresh: CDP proxy unavailable: {exc}")
-            SKIPPED_REFRESH_SOURCES.add("x")
-            return []
+    return cookies
 
+
+def _x_browser_context_options() -> dict:
+    return {
+        "locale": "en-US",
+        "viewport": {"width": 1280, "height": 900},
+        "user_agent": _env(
+            "X_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0 Safari/537.36",
+        ),
+    }
+
+
+def _refresh_x(targets: list[dict]) -> list[dict]:
     updates = []
     with sync_playwright() as playwright:
         try:
-            browser = playwright.chromium.connect_over_cdp(
-                _resolve_cdp_url(cdp_url),
-                timeout=30000,
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=_env("X_USER_DATA_DIR", "/app/x-browser-profile"),
+                headless=_env_bool("X_HEADLESS", True),
+                args=["--no-sandbox"],
+                **_x_browser_context_options(),
             )
-        except (OSError, requests.RequestException, PlaywrightError) as exc:
-            print(f"Skipping X insight refresh: browser CDP unavailable: {exc}")
+        except PlaywrightError as exc:
+            print(f"Skipping X insight refresh: browser unavailable: {exc}")
             SKIPPED_REFRESH_SOURCES.add("x")
             return []
-        context = (
-            browser.contexts[0]
-            if browser.contexts
-            else browser.new_context()
-        )
+        auth_cookies = _x_auth_cookies()
+        if auth_cookies:
+            context.add_cookies(auth_cookies)
         page = context.new_page()
         try:
             for target in targets:
@@ -281,6 +314,7 @@ def _refresh_x(targets: list[dict]) -> list[dict]:
                     print(f"Unable to refresh X insights for {target['url']}: {exc}")
         finally:
             page.close()
+            context.close()
     return updates
 
 
