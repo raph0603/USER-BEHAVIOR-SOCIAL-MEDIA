@@ -399,40 +399,32 @@ transcripts for the remaining videos but still publishes the video event.
 ### Run X collection
 
 X is collected directly from the live website with Playwright. The collector
-connects to an authenticated Chrome or Edge session through CDP and publishes
-new posts to `x.raw.events`:
+launches its own headless Chromium browser and publishes new posts to
+`x.raw.events`:
 
 ```bash
 docker compose run --rm x-collector
 ```
 
 Set `X_COLLECTION_ENABLED=true` to include this step in the Airflow DAG.
-Start the browser with remote debugging enabled before running the DAG:
+The container stores its browser profile in the collector state volume through
+`X_USER_DATA_DIR`, so cookies can be reused across runs. For non-interactive
+headless runs, provide `X_AUTH_TOKEN` and optionally `X_CT0` in `.env` so the
+collector can authenticate without opening a visible browser.
 
-```powershell
-.\scripts\start_x_browser.ps1
-```
+When triggering the DAG from the Airflow UI, set `x_event_count` to the maximum
+number of new X posts to collect (between 1 and 5000). For a direct
+`docker compose run`, `X_MAX_EVENTS` in `.env` provides the limit. If fewer new
+posts are available, the collector publishes fewer events. By default,
+transient X crawler or rate-limit failures are logged and the collector keeps
+any events already collected. Set `X_FAIL_ON_ERROR=true` to make those failures
+fail the task.
 
-The script selects free ports for Edge and its Docker-accessible CDP proxy,
-then writes the selected proxy port to `data/x-runtime/cdp-port.txt` and a
-local access token to `data/x-runtime/cdp-token.txt`. The `x-collector`
-container reads both files automatically, so no fixed X port is required in
-`.env` or Airflow. Keep the token file private. `X_CDP_URL` remains available
-only as a fallback for an externally managed CDP endpoint.
-
-Log in to X in that browser window. When triggering the DAG from the Airflow
-UI, set `x_event_count` to the maximum number of new X posts to collect
-(between 1 and 5000). For a direct `docker compose run`, `X_MAX_EVENTS` in
-`.env` provides the limit. If fewer new posts are available, the collector
-publishes fewer events. By default, transient X crawler, CDP or rate-limit
-failures are logged and the collector keeps any events already collected. Set
-`X_FAIL_ON_ERROR=true` to make those failures fail the task.
-
-Authenticate to X with Google in the Edge window. The crawler reuses that
-authenticated browser session. If the X login page reappears, it clicks the
-Google login option and selects `X_GOOGLE_EMAIL` from the existing Edge
-session. Password, CAPTCHA and MFA challenges still require completion in the
-Edge window.
+Authenticate to X with Google in a non-headless run if you need to seed the
+profile manually. The crawler reuses that authenticated profile on later
+headless runs. If the X login page reappears, it clicks the Google login
+option and selects `X_GOOGLE_EMAIL` when available. Password, CAPTCHA and MFA
+challenges still require a visible browser run.
 
 ### Run Reddit collection
 
