@@ -1,0 +1,69 @@
+You are annotating social media marketing posts.
+
+Your task is to assign a rhetorical marketing role to each segment.
+
+Allowed primary labels:
+- hook
+- pain_point
+- solution
+- benefit
+- proof
+- social_proof
+- urgency
+- scarcity
+- objection_handling
+- cta
+- educational
+- storytelling
+- uncertain
+
+Definitions:
+hook = grabs attention.
+pain_point = expresses a user problem, frustration or need.
+solution = presents a product, service, method or idea.
+benefit = explains the concrete gain for the user.
+proof = gives factual evidence, metrics, studies, benchmarks or results.
+social_proof = mentions users, clients, testimonials, reviews or adoption.
+urgency = pushes the reader to act quickly.
+scarcity = mentions limited availability, limited quantity or limited time.
+objection_handling = answers a possible hesitation or concern.
+cta = explicitly asks the reader to take an action.
+educational = teaches, explains or gives useful information.
+storytelling = narrates an experience, situation or story.
+uncertain = use only if the segment cannot be classified.
+
+Rules:
+- Choose exactly one primary_role per segment.
+- You may choose zero to two secondary_roles.
+- If the segment asks the reader to do something, prefer cta.
+- If the segment is a question about a problem, prefer pain_point over hook.
+- If the segment contains metrics, numbers, results or studies, prefer proof.
+- If the segment mentions clients, users, reviews or testimonials, prefer social_proof.
+- If the segment presents the product, service or method, prefer solution.
+- If the segment explains what the user gains, prefer benefit.
+- If unsure, use uncertain.
+- The segments below were produced by a mechanical sentence splitter. If a
+  segment still mixes two distinct marketing functions, split it yourself in
+  your response (add an extra entry with a new segment_id, e.g. 2.1) and
+  lower the confidence of both halves accordingly.
+- Return only valid JSON.
+
+Input post (platform: {platform}, language: {language}):
+{full_post}
+
+Segments:
+{segments}
+
+Expected JSON format:
+{{
+  "annotations": [
+    {{
+      "segment_id": 1,
+      "text": "...",
+      "primary_role": "...",
+      "secondary_roles": ["..."],
+      "confidence": 0.0,
+      "reason": "short explanation"
+    }}
+  ]
+}}
