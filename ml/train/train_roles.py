@@ -24,7 +24,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
 ML_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SILVER = ML_ROOT / "data" / "silver_dataset.jsonl"
+# Official annotation dataset committed at repo root (merged from main); reproducible for everyone.
+DEFAULT_SILVER = ML_ROOT.parent / "annotation_marketing" / "silver_dataset.jsonl"
 DEFAULT_MODEL = ML_ROOT / "models" / "rhetorical_role.joblib"
 MIN_CLASS = 10
 
