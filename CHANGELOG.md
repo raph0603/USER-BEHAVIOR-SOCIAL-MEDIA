@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.10.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.9.0...v1.10.0) (2026-06-30)
+
+
+### Features
+
+* **dashboard:** surface collector run health ([90a2b15](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/90a2b1589b528b84b498b685c7ae3473ad39b5c9))
+* **dashboard:** surface collector run health ([acc97b3](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/acc97b3a59768d763bb324099e08b33e880ffca1))
+
 ## [1.9.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.8.0...v1.9.0) (2026-06-30)
 
 
