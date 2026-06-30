@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.10.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.10.0...v1.10.1) (2026-06-30)
+
+
+### Bug Fixes
+
+* **playwright:** replace cdp with standalone headless chromium ([a467b2e](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/a467b2e7434791e322eae01fa20d2b5dcb622d13))
+* **playwright:** replace cdp with standalone headless chromium ([219797c](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/219797c60fe7d207ddabbc326dc8b1dc32e42de8))
+
 ## [1.10.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.9.0...v1.10.0) (2026-06-30)
 
 
