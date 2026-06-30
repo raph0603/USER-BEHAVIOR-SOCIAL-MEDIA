@@ -28,6 +28,7 @@ if str(ML_ROOT) not in sys.path:
 
 from features.cognitive_friction import cognitive_friction
 from features.rhetorical_roles import add_role_features
+from features.topics import add_topic_features
 
 DEFAULT_INPUT = ML_ROOT.parent / "data" / "samples" / "filtered_events.csv"
 DEFAULT_OUTPUT = ML_ROOT / "data" / "train_dataset.parquet"
@@ -118,6 +119,7 @@ def build(input_path: Path, output_path: Path, quantile: float = VIRAL_QUANTILE)
     df = filter_rows(df)
     df = add_text_features(df)
     df = add_role_features(df)
+    df = add_topic_features(df)
     df = add_viral_label(df, quantile)
     df = pd.concat([df, pd.get_dummies(df["source"], prefix="src")], axis=1)
 

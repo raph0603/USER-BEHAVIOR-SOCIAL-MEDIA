@@ -20,6 +20,7 @@ if str(ML_ROOT) not in sys.path:
     sys.path.insert(0, str(ML_ROOT))
 
 from features.rhetorical_roles import RoleFeaturizer
+from features.topics import TopicFeaturizer
 from preprocess.build_dataset import add_text_features, clean_text
 
 MODEL_PATH = ML_ROOT / "models" / "stage1_multisource.joblib"
@@ -57,9 +58,13 @@ def _label_for(feature: str) -> str:
         return FEATURE_LABELS[feature]
     if feature.startswith("src_"):
         return f"Platform {feature[4:]}"
-    for role, name in _ROLE_LABELS.items():
-        if feature.endswith(role):
-            kind = "Ratio of" if "ratio" in feature else "Count of"
+    if feature.startswith("topic_"):
+        return f"Topic #{feature[6:]}"
+    for prefix in ("role_n_", "role_ratio_"):
+        if feature.startswith(prefix):
+            role = feature[len(prefix):]
+            name = _ROLE_LABELS.get(role, role)
+            kind = "Count of" if prefix == "role_n_" else "Ratio of"
             return f"{kind} {name}"
     return feature
 
@@ -75,11 +80,14 @@ class ViralExplainer:
             from features.bert_content import BertContentModel
             self.content_model = BertContentModel(bundle["content_model_dir"])
         self.roles = RoleFeaturizer()
+        self.topics = TopicFeaturizer()
 
     def _feature_row(self, text: str, source: str):
         cleaned = clean_text(text)
         df = add_text_features(pd.DataFrame({"clean_text": [cleaned]}))
         for name, value in self.roles.post_features(cleaned).items():
+            df[name] = value
+        for name, value in self.topics.transform([cleaned]).iloc[0].items():
             df[name] = value
         df["content_score"] = self.content_model.predict_proba([cleaned])[:, 1]
         src = (source or "").strip().lower()
