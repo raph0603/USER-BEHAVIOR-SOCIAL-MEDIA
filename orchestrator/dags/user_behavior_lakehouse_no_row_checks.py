@@ -154,6 +154,23 @@ def build_balancing_report_command() -> str:
     """
 
 
+def build_youtube_transcripts_command() -> str:
+    return r"""
+    set -euo pipefail
+    docker exec \
+      -e YOUTUBE_TRANSCRIPT_LANGUAGES="${YOUTUBE_TRANSCRIPT_LANGUAGES:-en,vi}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_LIMIT="${YOUTUBE_TRANSCRIPT_BACKFILL_LIMIT:-500}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_SLEEP_SECONDS="${YOUTUBE_TRANSCRIPT_BACKFILL_SLEEP_SECONDS:-0.25}" \
+      spark-master /opt/spark/bin/spark-submit \
+      --master spark://spark-master:7077 \
+      --driver-memory 512m \
+      --executor-memory 512m \
+      --conf spark.cores.max=2 \
+      --conf spark.executor.cores=1 \
+      /opt/spark/jobs/batch/youtube_transcripts.py
+    """
+
+
 CRAWLER_CONFIG = load_crawler_config()
 
 
@@ -440,6 +457,12 @@ with DAG(
         bash_command=build_balancing_report_command(),
     )
 
+    backfill_youtube_transcripts = BashOperator(
+        task_id="backfill_youtube_transcripts",
+        execution_timeout=timedelta(hours=1),
+        bash_command=build_youtube_transcripts_command(),
+    )
+
     run_youtube_collection = BashOperator(
         task_id="collect_youtube_api_events",
         execution_timeout=timedelta(
@@ -595,7 +618,8 @@ with DAG(
         wait_clean_reddit,
     ] >> start_bronze_stream
     start_bronze_stream >> start_silver_stream
-    start_silver_stream >> update_balancing_report
+    start_silver_stream >> backfill_youtube_transcripts
+    backfill_youtube_transcripts >> update_balancing_report
     [
         start_clean_youtube,
         start_clean_x,
@@ -605,6 +629,7 @@ with DAG(
         wait_clean_reddit,
         start_bronze_stream,
         start_silver_stream,
+        backfill_youtube_transcripts,
         update_balancing_report,
     ] >> stop_realtime_streams
     stop_realtime_streams >> release_pipeline_lock
@@ -617,6 +642,7 @@ with DAG(
         wait_clean_reddit,
         start_bronze_stream,
         start_silver_stream,
+        backfill_youtube_transcripts,
         update_balancing_report,
         stop_realtime_streams,
         acquire_pipeline_lock,

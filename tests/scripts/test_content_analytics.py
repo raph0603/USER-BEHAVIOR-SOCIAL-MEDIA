@@ -111,6 +111,19 @@ class ContentAnalyticsIntegrationTextTests(unittest.TestCase):
         self.assertIn("content_analytics.py", source)
         self.assertIn("update_content_analytics", source)
 
+    def test_airflow_dag_backfills_youtube_transcripts(self):
+        source = (
+            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py"
+        ).read_text(encoding="utf-8")
+        requirements = (ROOT / "spark" / "requirements.txt").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("build_youtube_transcripts_command", source)
+        self.assertIn("youtube_transcripts.py", source)
+        self.assertIn("backfill_youtube_transcripts", source)
+        self.assertIn("youtube-transcript-api==1.2.4", requirements)
+
     def test_dashboard_surfaces_content_explorer(self):
         source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
 
