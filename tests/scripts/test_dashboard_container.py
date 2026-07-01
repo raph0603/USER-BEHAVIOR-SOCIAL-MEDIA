@@ -68,8 +68,8 @@ class DashboardContainerTests(unittest.TestCase):
         airflow = (ROOT / "orchestrator" / "airflow" / "Dockerfile").read_text(
             encoding="utf-8"
         )
-        release_workflow = (
-            ROOT / ".github" / "workflows" / "release-please.yml"
+        publish_workflow = (
+            ROOT / ".github" / "workflows" / "publish-docker-hub.yml"
         ).read_text(encoding="utf-8")
 
         self.assertIn("COPY dashboard/ .", dashboard)
@@ -83,7 +83,7 @@ class DashboardContainerTests(unittest.TestCase):
         self.assertIn("COPY tests/spark/ /opt/spark/tests/", spark_master)
         self.assertIn("COPY orchestrator/dags/ /opt/airflow/dags/", airflow)
         self.assertIn("COPY docker-compose.yml /workspace/docker-compose.yml", airflow)
-        self.assertIn("context: .", release_workflow)
+        self.assertIn("context: .", publish_workflow)
 
 
 if __name__ == "__main__":
