@@ -82,9 +82,23 @@ class ContentAnalyticsContractTests(unittest.TestCase):
             "language",
             "conversation_id",
             "parent_interaction_id",
+            "transcript_text",
+            "transcript_segments_json",
+            "duration_seconds",
+            "has_auto_captions",
         ):
             with self.subTest(column=column):
                 self.assertIn(column, ca.OPTIONAL_EVENT_COLUMNS)
+
+    def test_content_ids_use_root_conversation_before_event_id(self):
+        source = (ROOT / "spark" / "jobs" / "batch" / "content_analytics.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('col("conversation_id")', source)
+        self.assertIn('regexp_extract(col("url"), r"/comments/([^/]+)", 1)', source)
+        self.assertIn('regexp_extract(col("url"), r"/status/(\\d+)", 1)', source)
+        self.assertIn('regexp_extract(col("url"), r"[?&]v=([^&]+)", 1)', source)
 
 
 class ContentAnalyticsIntegrationTextTests(unittest.TestCase):

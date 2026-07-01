@@ -386,10 +386,13 @@ duplicating rows.
   engagement metrics.
 - `lakehouse.gold.user_evolution`: anonymized user activity by day and source.
 
-Some relationship fields are nullable until collectors expose them directly.
-For example, `subreddit`, `conversation_id`, `parent_interaction_id`,
-`x_account`, `youtube_channel_name`, and transcript segment metadata are kept
-in the table contracts even when current events cannot populate them yet.
+Collectors and manual imports now propagate entity relationship fields through
+bronze and silver so the analytics tables can group interactions under their
+root content. Reddit events populate `subreddit`, `conversation_id` from the
+post id, and `parent_interaction_id` for comment replies. X events populate
+`x_account` and use the status id as `conversation_id` when no reply root is
+available. YouTube events populate `conversation_id`, channel name, language,
+transcript text, segment JSON, and duration when those values are available.
 
 Run the job manually with:
 

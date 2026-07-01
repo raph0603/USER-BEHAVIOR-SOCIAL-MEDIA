@@ -173,6 +173,43 @@ class EngagementMetadataTests(unittest.TestCase):
                 for field_name in expected:
                     self.assertIn(field_name, source)
 
+    def test_entity_relationship_fields_are_propagated_to_core_pipeline(self):
+        expected = {
+            "subreddit",
+            "x_account",
+            "youtube_channel_name",
+            "language",
+            "parent_interaction_id",
+            "conversation_id",
+            "transcript_text",
+            "transcript_segments_json",
+            "duration_seconds",
+            "has_auto_captions",
+        }
+        paths = [
+            ROOT / "schemas" / "playwright_event.avsc",
+            ROOT / "playwright" / "producer.py",
+            ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py",
+            ROOT
+            / "spark"
+            / "jobs"
+            / "streaming"
+            / "kafka_to_iceberg_bronze.py",
+            ROOT / "spark" / "jobs" / "batch" / "bronze_to_silver.py",
+            ROOT
+            / "spark"
+            / "jobs"
+            / "batch"
+            / "bronze_to_silver_from_kafka.py",
+            ROOT / "spark" / "jobs" / "batch" / "content_analytics.py",
+        ]
+
+        for path in paths:
+            source = path.read_text(encoding="utf-8")
+            with self.subTest(path=path):
+                for field_name in expected:
+                    self.assertIn(field_name, source)
+
     def test_reddit_score_is_propagated_separately(self):
         source = (ROOT / "playwright" / "insight_refresh.py").read_text(
             encoding="utf-8"

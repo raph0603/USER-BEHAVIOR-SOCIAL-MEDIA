@@ -26,6 +26,7 @@ class ManualImportTests(unittest.TestCase):
         self.assertEqual(events[0]["platform_event_id"], "c1")
         self.assertEqual(events[0]["url"], "https://www.youtube.com/watch?v=abc123")
         self.assertEqual(events[0]["title"], "Great EV review")
+        self.assertEqual(events[0]["conversation_id"], "abc123")
         self.assertEqual(events[0]["like_count"], 7)
         self.assertEqual(events[0]["view_count"], 1000)
 
@@ -49,6 +50,8 @@ class ManualImportTests(unittest.TestCase):
 
         self.assertEqual(events[0]["source"], "x")
         self.assertEqual(events[0]["platform_event_id"], "42")
+        self.assertEqual(events[0]["conversation_id"], "42")
+        self.assertEqual(events[0]["x_account"], "driver")
         self.assertEqual(events[0]["like_count"], 1200)
         self.assertEqual(events[0]["view_count"], 10000)
 
@@ -73,6 +76,8 @@ class ManualImportTests(unittest.TestCase):
 
         self.assertEqual(events[0]["source"], "reddit")
         self.assertEqual(events[0]["platform_event_id"], "r1")
+        self.assertEqual(events[0]["conversation_id"], "post")
+        self.assertEqual(events[0]["subreddit"], "ev")
         self.assertEqual(events[0]["like_count"], None)
         self.assertTrue(events[0]["timestamp"].startswith("2026-06-01"))
 

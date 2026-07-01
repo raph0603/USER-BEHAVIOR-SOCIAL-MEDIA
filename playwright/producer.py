@@ -313,6 +313,13 @@ def _extract_reddit_comment_event(
         "https://old.reddit.com",
         "https://www.reddit.com",
     )
+    post_match = re.search(r"/r/([^/]+)/comments/([^/]+)", comment_url, re.IGNORECASE)
+    subreddit = post_match.group(1) if post_match else None
+    conversation_id = post_match.group(2) if post_match else None
+    parent_id = comment.get_attribute("data-parent") or ""
+    parent_interaction_id = (
+        parent_id.removeprefix("t1_") if parent_id.startswith("t1_") else None
+    )
 
     return {
         "event_id": comment_id,
@@ -322,6 +329,9 @@ def _extract_reddit_comment_event(
         "title": text,
         "timestamp": timestamp,
         "source": "reddit",
+        "subreddit": subreddit,
+        "conversation_id": conversation_id,
+        "parent_interaction_id": parent_interaction_id,
         "like_count": None,
         "view_count": None,
         "comment_count": None,
@@ -340,6 +350,9 @@ def _extract_reddit_feed_event(entry) -> dict | None:
     url = link.get("href", "") if link is not None else entry_id
     match = re.search(r"/comments/[^/]+/[^/]+/([A-Za-z0-9_]+)/?", url)
     comment_id = match.group(1) if match else hashlib.sha256(entry_id.encode()).hexdigest()
+    post_match = re.search(r"/r/([^/]+)/comments/([^/]+)", url, re.IGNORECASE)
+    subreddit = post_match.group(1) if post_match else None
+    conversation_id = post_match.group(2) if post_match else None
     title = _clean_text(entry.findtext("atom:title", default="", namespaces=namespace))
     content = _clean_text(entry.findtext("atom:content", default="", namespaces=namespace))
     text = title or content
@@ -356,6 +369,9 @@ def _extract_reddit_feed_event(entry) -> dict | None:
         "title": text,
         "timestamp": timestamp,
         "source": "reddit",
+        "subreddit": subreddit,
+        "conversation_id": conversation_id,
+        "parent_interaction_id": None,
         "like_count": None,
         "view_count": None,
         "comment_count": None,
@@ -642,6 +658,35 @@ def _fetch_youtube_transcript(
         reason = type(exc).__name__
         print(f"[YouTube] Transcript unavailable for {video_id}: {reason}")
         return None, reason
+
+
+def _youtube_transcript_text(transcript: list[dict] | None) -> str | None:
+    if not transcript:
+        return None
+    text = " ".join(
+        str(item.get("text", "")).strip()
+        for item in transcript
+        if isinstance(item, dict) and str(item.get("text", "")).strip()
+    )
+    return text or None
+
+
+def _parse_youtube_duration_seconds(duration: str | None) -> float | None:
+    if not duration:
+        return None
+    match = re.fullmatch(
+        r"P(?:(?P<days>\d+)D)?"
+        r"(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?"
+        r"(?:(?P<seconds>\d+(?:\.\d+)?)S)?)?",
+        duration,
+    )
+    if not match:
+        return None
+    days = int(match.group("days") or 0)
+    hours = int(match.group("hours") or 0)
+    minutes = int(match.group("minutes") or 0)
+    seconds = float(match.group("seconds") or 0)
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
 def _x_is_authenticated(page) -> bool:
@@ -1465,6 +1510,9 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                                     "title": text,
                                     "timestamp": timestamp,
                                     "source": "x",
+                                    "x_account": screen_name,
+                                    "conversation_id": status_id,
+                                    "parent_interaction_id": None,
                                     "like_count": extract_x_metric(
                                         article,
                                         "like",
@@ -1788,7 +1836,7 @@ def main() -> None:
                     "user_id": event["user_id"],
                     "url": event["url"],
                     "title": event["title"],
-                    "raw_text": event["title"],
+                    "raw_text": event.get("raw_text") or event["title"],
                     "clean_text": None,
                     "text_for_model": None,
                     "timestamp": event.get("timestamp")
@@ -1798,6 +1846,18 @@ def main() -> None:
                     "platform_event_id": event.get("platform_event_id")
                     or event.get("event_id"),
                     "owner_channel_id": event.get("owner_channel_id"),
+                    "subreddit": event.get("subreddit"),
+                    "x_account": event.get("x_account"),
+                    "youtube_channel_name": event.get("youtube_channel_name"),
+                    "language": event.get("language"),
+                    "parent_interaction_id": event.get("parent_interaction_id"),
+                    "conversation_id": event.get("conversation_id"),
+                    "transcript_text": event.get("transcript_text"),
+                    "transcript_segments_json": event.get(
+                        "transcript_segments_json"
+                    ),
+                    "duration_seconds": event.get("duration_seconds"),
+                    "has_auto_captions": event.get("has_auto_captions"),
                     "collaborator_channel_ids": event.get(
                         "collaborator_channel_ids"
                     ),
@@ -1936,6 +1996,9 @@ def main() -> None:
                                 f"{transcript_failures} failures"
                             )
                 output_dir.mkdir(parents=True, exist_ok=True)
+                snippet = (metadata or {}).get("snippet", {})
+                content_details = (metadata or {}).get("contentDetails", {})
+                transcript_text = _youtube_transcript_text(transcript)
                 (output_dir / f"{video_id}.json").write_text(
                     json.dumps(
                         {
@@ -1959,10 +2022,27 @@ def main() -> None:
                         "platform_event_id": video_id,
                         "user_id": f"youtube-{video_id}",
                         "url": f"https://www.youtube.com/watch?v={video_id}",
-                        "title": (metadata or {}).get("snippet", {}).get("title"),
+                        "title": snippet.get("title"),
+                        "raw_text": transcript_text or snippet.get("title"),
                         "timestamp": None,
                         "source": "youtube",
                         "owner_channel_id": owner_channel_id,
+                        "youtube_channel_name": snippet.get("channelTitle"),
+                        "language": (
+                            snippet.get("defaultLanguage")
+                            or snippet.get("defaultAudioLanguage")
+                        ),
+                        "conversation_id": video_id,
+                        "transcript_text": transcript_text,
+                        "transcript_segments_json": (
+                            json.dumps(transcript, ensure_ascii=False)
+                            if transcript
+                            else None
+                        ),
+                        "duration_seconds": _parse_youtube_duration_seconds(
+                            content_details.get("duration")
+                        ),
+                        "has_auto_captions": None,
                         "collaborator_channel_ids": (
                             collaborator_channel_ids
                         ),

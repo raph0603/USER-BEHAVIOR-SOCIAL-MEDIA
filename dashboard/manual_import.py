@@ -116,6 +116,51 @@ def _youtube_video_id(row):
     return parse_qs(urlparse(url).query).get("v", [None])[0]
 
 
+def _x_status_id_from_url(url):
+    url = _clean_value(url)
+    if not url:
+        return None
+    match = re.search(r"/status/(\d+)", url)
+    return match.group(1) if match else None
+
+
+def _reddit_post_id_from_url(url):
+    url = _clean_value(url)
+    if not url:
+        return None
+    match = re.search(r"/comments/([^/]+)", url)
+    return match.group(1) if match else None
+
+
+def _subreddit_from_url(url):
+    url = _clean_value(url)
+    if not url:
+        return None
+    match = re.search(r"/r/([^/]+)", url, flags=re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _json_or_text(value):
+    value = _clean_value(value)
+    if value is None:
+        return None, None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value, None
+    if isinstance(parsed, list):
+        text = " ".join(
+            str(item.get("text", "")).strip()
+            for item in parsed
+            if isinstance(item, dict) and str(item.get("text", "")).strip()
+        )
+        return text or None, json.dumps(parsed, ensure_ascii=False)
+    if isinstance(parsed, dict):
+        text = _clean_value(parsed.get("text") or parsed.get("transcript_text"))
+        return text, json.dumps(parsed, ensure_ascii=False)
+    return value, None
+
+
 def _parse_collaborators(value):
     value = _clean_value(value)
     if value is None:
@@ -161,6 +206,15 @@ def normalize_event(row, source=None):
 
 def _normalize_youtube(row):
     video_id = _youtube_video_id(row)
+    transcript_text, transcript_segments_json = _json_or_text(
+        _first_value(
+            row,
+            "transcript_segments_json",
+            "video_transcript",
+            "transcript",
+            "transcript_text",
+        )
+    )
     platform_event_id = _first_value(
         row,
         "platform_event_id",
@@ -196,6 +250,21 @@ def _normalize_youtube(row):
         "error": _first_value(row, "error"),
         "platform_event_id": platform_event_id,
         "owner_channel_id": _first_value(row, "owner_channel_id"),
+        "subreddit": None,
+        "x_account": None,
+        "youtube_channel_name": _first_value(
+            row,
+            "youtube_channel_name",
+            "channel_title",
+            "channel_name",
+        ),
+        "language": _first_value(row, "language", "lang", "default_language"),
+        "parent_interaction_id": _first_value(row, "parent_interaction_id"),
+        "conversation_id": _first_value(row, "conversation_id", "video_id") or video_id,
+        "transcript_text": transcript_text,
+        "transcript_segments_json": transcript_segments_json,
+        "duration_seconds": _parse_count(_first_value(row, "duration_seconds")),
+        "has_auto_captions": None,
         "collaborator_channel_ids": _parse_collaborators(
             row.get("collaborator_channel_ids")
         ),
@@ -211,6 +280,12 @@ def _normalize_youtube(row):
 
 def _normalize_x(row):
     status_id = _first_value(row, "platform_event_id", "status_id")
+    root_status_id = (
+        _first_value(row, "conversation_id", "root_status_id", "root_content_id")
+        or _x_status_id_from_url(_first_value(row, "page_url"))
+        or status_id
+    )
+    is_reply = str(_first_value(row, "is_reply") or "").lower() in {"1", "true", "yes"}
     return {
         "user_id": _source_user_id(
             "x",
@@ -231,6 +306,22 @@ def _normalize_x(row):
         "error": _first_value(row, "error"),
         "platform_event_id": status_id,
         "owner_channel_id": None,
+        "subreddit": None,
+        "x_account": _first_value(row, "x_account", "screen_name"),
+        "youtube_channel_name": None,
+        "language": _first_value(row, "language", "lang"),
+        "parent_interaction_id": _first_value(
+            row,
+            "parent_interaction_id",
+            "reply_to_status_id",
+            "reply_to_post_id",
+        )
+        or (root_status_id if is_reply and root_status_id != status_id else None),
+        "conversation_id": root_status_id,
+        "transcript_text": None,
+        "transcript_segments_json": None,
+        "duration_seconds": None,
+        "has_auto_captions": None,
         "collaborator_channel_ids": None,
         "like_count": _parse_count(_first_value(row, "like_count")),
         "view_count": _parse_count(_first_value(row, "view_count")),
@@ -241,6 +332,16 @@ def _normalize_x(row):
 
 
 def _normalize_reddit(row):
+    url = _first_value(row, "url", "comment_permalink", "post_url")
+    post_id = (
+        _first_value(row, "conversation_id", "post_id", "root_content_id")
+        or _reddit_post_id_from_url(url)
+    )
+    parent_id = _first_value(row, "parent_interaction_id", "parent_id")
+    if parent_id and parent_id.startswith("t3_"):
+        parent_id = None
+    elif parent_id and parent_id.startswith("t1_"):
+        parent_id = parent_id.removeprefix("t1_")
     return {
         "user_id": _source_user_id(
             "reddit",
@@ -248,7 +349,7 @@ def _normalize_reddit(row):
             "author",
             "comment_id",
         ),
-        "url": _first_value(row, "url", "comment_permalink", "post_url"),
+        "url": url,
         "title": _first_value(row, "title", "comment_text", "text"),
         "raw_text": _first_value(row, "title", "comment_text", "text"),
         "clean_text": None,
@@ -260,6 +361,16 @@ def _normalize_reddit(row):
         "error": _first_value(row, "error"),
         "platform_event_id": _first_value(row, "platform_event_id", "comment_id"),
         "owner_channel_id": None,
+        "subreddit": _first_value(row, "subreddit") or _subreddit_from_url(url),
+        "x_account": None,
+        "youtube_channel_name": None,
+        "language": _first_value(row, "language", "lang"),
+        "parent_interaction_id": parent_id,
+        "conversation_id": post_id,
+        "transcript_text": None,
+        "transcript_segments_json": None,
+        "duration_seconds": None,
+        "has_auto_captions": None,
         "collaborator_channel_ids": None,
         "like_count": None,
         "view_count": None,

@@ -20,6 +20,7 @@ from pyspark.sql.functions import (
     first,
     lit,
     lower,
+    regexp_extract,
     row_number,
     sha2,
     size,
@@ -347,6 +348,10 @@ OPTIONAL_EVENT_COLUMNS = {
     "subreddit_member_count": "BIGINT",
     "parent_interaction_id": "STRING",
     "conversation_id": "STRING",
+    "transcript_text": "STRING",
+    "transcript_segments_json": "STRING",
+    "duration_seconds": "DOUBLE",
+    "has_auto_captions": "BOOLEAN",
 }
 
 
@@ -368,8 +373,21 @@ def _with_optional_event_columns(events: DataFrame) -> DataFrame:
 def normalize_events(events: DataFrame) -> DataFrame:
     prepared = _with_optional_event_columns(events)
     text = coalesce(col("clean_text"), col("title"), col("raw_text"))
-    platform_id = coalesce(col("platform_event_id"), col("url"))
-    content_id = sha2(concat_ws(":", col("source"), platform_id), 256)
+    reddit_post_id = regexp_extract(col("url"), r"/comments/([^/]+)", 1)
+    x_status_id = regexp_extract(col("url"), r"/status/(\d+)", 1)
+    youtube_video_id = regexp_extract(col("url"), r"[?&]v=([^&]+)", 1)
+    derived_root_id = (
+        when((col("source") == "reddit") & (reddit_post_id != ""), reddit_post_id)
+        .when((col("source") == "x") & (x_status_id != ""), x_status_id)
+        .when((col("source") == "youtube") & (youtube_video_id != ""), youtube_video_id)
+    )
+    platform_content_id = coalesce(
+        col("conversation_id"),
+        derived_root_id,
+        col("platform_event_id"),
+        col("url"),
+    )
+    content_id = sha2(concat_ws(":", col("source"), platform_content_id), 256)
     interaction_id = sha2(
         concat_ws(
             ":",
@@ -386,7 +404,7 @@ def normalize_events(events: DataFrame) -> DataFrame:
         prepared.withColumn("created_at", col("event_ts"))
         .withColumn("event_date", to_date(col("event_ts")))
         .withColumn("text", text)
-        .withColumn("platform_content_id", platform_id)
+        .withColumn("platform_content_id", platform_content_id)
         .withColumn("content_id", content_id)
         .withColumn("interaction_id", interaction_id)
         .withColumn(
@@ -475,12 +493,11 @@ def build_snapshots(events: DataFrame) -> DataFrame:
 
 def build_transcripts(events: DataFrame) -> DataFrame:
     normalized = normalize_events(events).filter(col("source") == "youtube")
-    transcript_text = when(
-        col("raw_text").isNotNull() & (col("raw_text") != col("title")),
-        col("raw_text"),
-    ).otherwise(lit(None).cast("string"))
     return (
-        normalized.withColumn("transcript_text", transcript_text)
+        normalized.withColumn(
+            "transcript_text",
+            coalesce(col("transcript_text"), lit(None).cast("string")),
+        )
         .withColumn(
             "word_count",
             when(
@@ -493,13 +510,14 @@ def build_transcripts(events: DataFrame) -> DataFrame:
             "content_id",
             "language",
             "transcript_text",
-            lit(None).cast("string").alias("segments_json"),
-            lit(None).cast("double").alias("duration_seconds"),
+            col("transcript_segments_json").alias("segments_json"),
+            "duration_seconds",
             "word_count",
-            lit(None).cast("boolean").alias("has_auto_captions"),
+            "has_auto_captions",
             "created_at",
             "event_date",
         )
+        .filter(col("transcript_text").isNotNull())
         .dropDuplicates(["video_id", "content_id"])
     )
 
@@ -619,6 +637,36 @@ def _create_tables(spark: SparkSession) -> None:
 
     _ensure_columns(
         spark,
+        CONTENT_TABLE,
+        {
+            "platform_content_id": "STRING",
+            "subreddit": "STRING",
+            "x_account": "STRING",
+            "youtube_channel_id": "STRING",
+            "youtube_channel_name": "STRING",
+            "language": "STRING",
+            "raw_text": "STRING",
+            "clean_text": "STRING",
+            "text_for_model": "STRING",
+        },
+    )
+    _ensure_columns(
+        spark,
+        INTERACTION_TABLE,
+        {
+            "platform_interaction_id": "STRING",
+            "parent_interaction_id": "STRING",
+            "conversation_id": "STRING",
+            "score": "BIGINT",
+            "like_count": "BIGINT",
+            "reply_count": "BIGINT",
+            "raw_text": "STRING",
+            "clean_text": "STRING",
+            "text_for_model": "STRING",
+        },
+    )
+    _ensure_columns(
+        spark,
         SNAPSHOT_TABLE,
         {
             "content_id": "STRING",
@@ -627,6 +675,15 @@ def _create_tables(spark: SparkSession) -> None:
             "follower_count": "BIGINT",
             "subscriber_count": "BIGINT",
             "subreddit_member_count": "BIGINT",
+        },
+    )
+    _ensure_columns(
+        spark,
+        TRANSCRIPT_TABLE,
+        {
+            "segments_json": "STRING",
+            "duration_seconds": "DOUBLE",
+            "has_auto_captions": "BOOLEAN",
         },
     )
 
