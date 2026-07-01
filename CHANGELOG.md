@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.13.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.12.0...v1.13.0) (2026-07-01)
+
+
+### Features
+
+* **ai:** ai behaviour prediction ([8fc2608](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/8fc2608848a3cc364bdab14eb923670990d616f4))
+* **ml:** channel audience features + real YouTube subscriber enrichment; docs + reddit crawler fixes ([da767b8](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/da767b825b33a034e1d8855ccecfbfa00d65070b))
+
 ## [1.12.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.11.0...v1.12.0) (2026-07-01)
 
 
