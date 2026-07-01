@@ -7,6 +7,7 @@ import pandas as pd
 
 DEFAULT_TABLE_PATH = "s3://lakehouse/warehouse/silver/events"
 DEFAULT_MINIO_ENDPOINT = "http://localhost:9000"
+DEFAULT_WAREHOUSE_PATH = "s3://lakehouse/warehouse"
 ENGAGEMENT_COLUMNS = (
     "like_count",
     "view_count",
@@ -84,6 +85,10 @@ def get_iceberg_config():
             "DASHBOARD_ICEBERG_TABLE_PATH",
             DEFAULT_TABLE_PATH,
         ),
+        "warehouse_path": os.getenv(
+            "DASHBOARD_ICEBERG_WAREHOUSE_PATH",
+            DEFAULT_WAREHOUSE_PATH,
+        ),
         "endpoint_url": endpoint_url,
         "access_key": os.getenv(
             "DASHBOARD_MINIO_ACCESS_KEY",
@@ -100,6 +105,15 @@ def get_iceberg_config():
         ).strip().lower()
         in {"1", "true", "yes", "on"},
     }
+
+
+def iceberg_table_path(config, namespace, table_name):
+    warehouse_path = config.get("warehouse_path") or DEFAULT_WAREHOUSE_PATH
+    return (
+        f"{warehouse_path.rstrip('/')}/"
+        f"{namespace.strip('/')}/"
+        f"{table_name.strip('/')}"
+    )
 
 
 def _connect_iceberg(config):
@@ -150,6 +164,9 @@ def load_iceberg_data(config=None):
         optional_columns = [
             *AUTHOR_METADATA_COLUMNS,
             *OPTIONAL_ENGAGEMENT_COLUMNS,
+            "raw_text",
+            "clean_text",
+            "text_for_model",
         ]
         while True:
             try:
@@ -216,3 +233,40 @@ def load_iceberg_data(config=None):
     df["has_question"] = df["text"].fillna("").str.contains(r"\?", regex=True)
 
     return df
+
+
+def load_iceberg_table(table_path, config=None, limit=None):
+    config = config or get_iceberg_config()
+    connection = None
+    limit_sql = ""
+    parameters = [table_path]
+    if limit is not None:
+        limit_sql = " LIMIT ?"
+        parameters.append(int(limit))
+
+    try:
+        connection = _connect_iceberg({**config, "table_path": table_path})
+        return connection.execute(
+            f"""
+            SELECT *
+            FROM iceberg_scan(?, allow_moved_paths = true)
+            {limit_sql}
+            """,
+            parameters,
+        ).fetchdf()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unable to read Iceberg table `{table_path}`: {exc}"
+        ) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def load_optional_iceberg_table(namespace, table_name, config=None, limit=None):
+    config = config or get_iceberg_config()
+    table_path = iceberg_table_path(config, namespace, table_name)
+    try:
+        return load_iceberg_table(table_path, config=config, limit=limit), None
+    except RuntimeError as exc:
+        return pd.DataFrame(), str(exc)
