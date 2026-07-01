@@ -78,8 +78,32 @@ class ManualImportTests(unittest.TestCase):
         self.assertEqual(events[0]["platform_event_id"], "r1")
         self.assertEqual(events[0]["conversation_id"], "post")
         self.assertEqual(events[0]["subreddit"], "ev")
+        self.assertEqual(events[0]["title"], "Battery range matters")
         self.assertEqual(events[0]["like_count"], None)
         self.assertTrue(events[0]["timestamp"].startswith("2026-06-01"))
+
+    def test_reddit_import_prefers_comment_text_over_generic_title(self):
+        payload = json.dumps(
+            [
+                {
+                    "title": "electricvehicles",
+                    "comment_id": "r2",
+                    "post_url": "https://reddit.com/r/electricvehicles/comments/post/my_post",
+                    "author": "user",
+                    "comment_text": "The charging curve is the useful part",
+                    "created_iso": "2026-06-01T10:00:00Z",
+                }
+            ]
+        ).encode("utf-8")
+
+        events = MANUAL_IMPORT.load_import_events(
+            "comments.json",
+            payload,
+            source="reddit",
+        )
+
+        self.assertEqual(events[0]["title"], "The charging curve is the useful part")
+        self.assertEqual(events[0]["subreddit"], "electricvehicles")
 
     def test_manual_import_dag_consumes_json_manual_topics(self):
         source = (

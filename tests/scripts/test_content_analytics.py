@@ -100,6 +100,16 @@ class ContentAnalyticsContractTests(unittest.TestCase):
         self.assertIn('regexp_extract(col("url"), r"/status/(\\d+)", 1)', source)
         self.assertIn('regexp_extract(col("url"), r"[?&]v=([^&]+)", 1)', source)
 
+    def test_reddit_contents_do_not_use_comment_text_as_post_content(self):
+        source = (ROOT / "spark" / "jobs" / "batch" / "content_analytics.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('regexp_extract(col("url"), r"/comments/[^/]+/([^/]+)", 1)', source)
+        self.assertIn('"content_title"', source)
+        self.assertIn('"content_text"', source)
+        self.assertIn('when(col("source") == "reddit", lit(None).cast("string"))', source)
+
 
 class ContentAnalyticsIntegrationTextTests(unittest.TestCase):
     def test_airflow_dag_runs_content_analytics(self):

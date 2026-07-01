@@ -350,8 +350,8 @@ def _normalize_reddit(row):
             "comment_id",
         ),
         "url": url,
-        "title": _first_value(row, "title", "comment_text", "text"),
-        "raw_text": _first_value(row, "title", "comment_text", "text"),
+        "title": _first_value(row, "comment_text", "text", "body", "title"),
+        "raw_text": _first_value(row, "comment_text", "text", "body", "title"),
         "clean_text": None,
         "text_for_model": None,
         "timestamp": _parse_timestamp(

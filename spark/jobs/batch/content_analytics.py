@@ -21,6 +21,7 @@ from pyspark.sql.functions import (
     lit,
     lower,
     regexp_extract,
+    regexp_replace,
     row_number,
     sha2,
     size,
@@ -374,6 +375,11 @@ def normalize_events(events: DataFrame) -> DataFrame:
     prepared = _with_optional_event_columns(events)
     text = coalesce(col("clean_text"), col("title"), col("raw_text"))
     reddit_post_id = regexp_extract(col("url"), r"/comments/([^/]+)", 1)
+    reddit_post_slug = regexp_extract(col("url"), r"/comments/[^/]+/([^/]+)", 1)
+    reddit_post_title = when(
+        (col("source") == "reddit") & (reddit_post_slug != ""),
+        trim(regexp_replace(reddit_post_slug, r"[_-]+", " ")),
+    )
     x_status_id = regexp_extract(col("url"), r"/status/(\d+)", 1)
     youtube_video_id = regexp_extract(col("url"), r"[?&]v=([^&]+)", 1)
     derived_root_id = (
@@ -404,6 +410,32 @@ def normalize_events(events: DataFrame) -> DataFrame:
         prepared.withColumn("created_at", col("event_ts"))
         .withColumn("event_date", to_date(col("event_ts")))
         .withColumn("text", text)
+        .withColumn(
+            "content_title",
+            when(col("source") == "reddit", reddit_post_title).otherwise(col("title")),
+        )
+        .withColumn(
+            "content_text",
+            when(col("source") == "reddit", lit(None).cast("string")).otherwise(text),
+        )
+        .withColumn(
+            "content_raw_text",
+            when(col("source") == "reddit", lit(None).cast("string")).otherwise(
+                col("raw_text")
+            ),
+        )
+        .withColumn(
+            "content_clean_text",
+            when(col("source") == "reddit", lit(None).cast("string")).otherwise(
+                col("clean_text")
+            ),
+        )
+        .withColumn(
+            "content_text_for_model",
+            when(col("source") == "reddit", lit(None).cast("string")).otherwise(
+                col("text_for_model")
+            ),
+        )
         .withColumn("platform_content_id", platform_content_id)
         .withColumn("content_id", content_id)
         .withColumn("interaction_id", interaction_id)
@@ -435,8 +467,8 @@ def build_contents(events: DataFrame) -> DataFrame:
             first("platform_content_id", ignorenulls=True).alias("platform_content_id"),
             first("content_type", ignorenulls=True).alias("content_type"),
             first("url", ignorenulls=True).alias("url"),
-            first("title", ignorenulls=True).alias("title"),
-            first("text", ignorenulls=True).alias("text"),
+            first("content_title", ignorenulls=True).alias("title"),
+            first("content_text", ignorenulls=True).alias("text"),
             first("author_id_hash", ignorenulls=True).alias("author_id_hash"),
             first("created_at", ignorenulls=True).alias("created_at"),
             first("event_date", ignorenulls=True).alias("event_date"),
@@ -447,9 +479,9 @@ def build_contents(events: DataFrame) -> DataFrame:
                 "youtube_channel_name"
             ),
             first("language", ignorenulls=True).alias("language"),
-            first("raw_text", ignorenulls=True).alias("raw_text"),
-            first("clean_text", ignorenulls=True).alias("clean_text"),
-            first("text_for_model", ignorenulls=True).alias("text_for_model"),
+            first("content_raw_text", ignorenulls=True).alias("raw_text"),
+            first("content_clean_text", ignorenulls=True).alias("clean_text"),
+            first("content_text_for_model", ignorenulls=True).alias("text_for_model"),
         )
         .select(*CONTENT_COLUMNS)
     )
