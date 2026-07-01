@@ -81,6 +81,9 @@ def main() -> None:
         "user_id",
         "url",
         "title",
+        "raw_text",
+        "clean_text",
+        "text_for_model",
         "event_ts",
         "source",
         "error",
@@ -121,6 +124,9 @@ def main() -> None:
           user_id STRING,
           url STRING,
           title STRING,
+          raw_text STRING,
+          clean_text STRING,
+          text_for_model STRING,
           event_ts TIMESTAMP,
           source STRING,
           error STRING,
@@ -148,6 +154,9 @@ def main() -> None:
         spark,
         silver_table,
         {
+            "raw_text": "STRING",
+            "clean_text": "STRING",
+            "text_for_model": "STRING",
             "owner_channel_id": "STRING",
             "platform_event_id": "STRING",
             "metadata_refreshed_at": "TIMESTAMP",
@@ -220,6 +229,9 @@ def main() -> None:
            )
         WHEN MATCHED THEN UPDATE SET
           t.title = s.title,
+          t.raw_text = s.raw_text,
+          t.clean_text = s.clean_text,
+          t.text_for_model = s.text_for_model,
           t.source = s.source,
           t.error = s.error,
           t.platform_event_id = COALESCE(

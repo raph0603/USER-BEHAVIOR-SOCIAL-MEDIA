@@ -6,6 +6,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.avro.functions import from_avro
 from pyspark.sql.functions import (
     col,
+    coalesce,
     concat_ws,
     current_timestamp,
     expr,
@@ -25,7 +26,7 @@ from pyspark.sql.types import (
     StructType,
 )
 
-from cleaning import clean_text, invalid_reason
+from cleaning import clean_text, invalid_reason, prepare_text_for_model
 
 
 def _env(name: str, default: str) -> str:
@@ -125,6 +126,9 @@ def main() -> None:
                 StructField("user_id", StringType()),
                 StructField("url", StringType()),
                 StructField("title", StringType()),
+                StructField("raw_text", StringType()),
+                StructField("clean_text", StringType()),
+                StructField("text_for_model", StringType()),
                 StructField("timestamp", StringType()),
                 StructField("source", StringType()),
                 StructField("error", StringType()),
@@ -170,7 +174,10 @@ def main() -> None:
             ),
         )
         .withColumn("url", regexp_replace(col("url"), r"#.*$", ""))
-        .withColumn("title", clean_text(col("title")))
+        .withColumn("raw_text", coalesce(col("raw_text"), col("title")))
+        .withColumn("clean_text", clean_text(col("raw_text")))
+        .withColumn("text_for_model", prepare_text_for_model(col("clean_text")))
+        .withColumn("title", col("clean_text"))
         .withColumn("error", clean_text(col("error")))
     )
 
@@ -190,6 +197,9 @@ def main() -> None:
                 "user_id",
                 "url",
                 "title",
+                "raw_text",
+                "clean_text",
+                "text_for_model",
                 "timestamp",
                 "source",
                 "error",
@@ -218,6 +228,9 @@ def main() -> None:
                 "user_id",
                 "url",
                 "title",
+                "raw_text",
+                "clean_text",
+                "text_for_model",
                 "timestamp",
                 "source",
                 "error",

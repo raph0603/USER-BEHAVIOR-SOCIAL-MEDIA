@@ -1788,6 +1788,9 @@ def main() -> None:
                     "user_id": event["user_id"],
                     "url": event["url"],
                     "title": event["title"],
+                    "raw_text": event["title"],
+                    "clean_text": None,
+                    "text_for_model": None,
                     "timestamp": event.get("timestamp")
                     or datetime.now(timezone.utc).isoformat(),
                     "source": event["source"],
