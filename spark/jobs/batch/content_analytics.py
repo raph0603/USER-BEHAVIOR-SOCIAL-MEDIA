@@ -374,6 +374,7 @@ def _with_optional_event_columns(events: DataFrame) -> DataFrame:
 def normalize_events(events: DataFrame) -> DataFrame:
     prepared = _with_optional_event_columns(events)
     text = coalesce(col("clean_text"), col("title"), col("raw_text"))
+    reddit_subreddit = regexp_extract(col("url"), r"/r/([^/]+)", 1)
     reddit_post_id = regexp_extract(col("url"), r"/comments/([^/]+)", 1)
     reddit_post_slug = regexp_extract(col("url"), r"/comments/[^/]+/([^/]+)", 1)
     reddit_post_title = when(
@@ -392,6 +393,10 @@ def normalize_events(events: DataFrame) -> DataFrame:
         derived_root_id,
         col("platform_event_id"),
         col("url"),
+    )
+    derived_subreddit = coalesce(
+        col("subreddit"),
+        when((col("source") == "reddit") & (reddit_subreddit != ""), reddit_subreddit),
     )
     content_id = sha2(concat_ws(":", col("source"), platform_content_id), 256)
     interaction_id = sha2(
@@ -437,6 +442,7 @@ def normalize_events(events: DataFrame) -> DataFrame:
             ),
         )
         .withColumn("platform_content_id", platform_content_id)
+        .withColumn("derived_subreddit", derived_subreddit)
         .withColumn("content_id", content_id)
         .withColumn("interaction_id", interaction_id)
         .withColumn(
@@ -472,7 +478,7 @@ def build_contents(events: DataFrame) -> DataFrame:
             first("author_id_hash", ignorenulls=True).alias("author_id_hash"),
             first("created_at", ignorenulls=True).alias("created_at"),
             first("event_date", ignorenulls=True).alias("event_date"),
-            first("subreddit", ignorenulls=True).alias("subreddit"),
+            first("derived_subreddit", ignorenulls=True).alias("subreddit"),
             first("x_account", ignorenulls=True).alias("x_account"),
             first("youtube_channel_id", ignorenulls=True).alias("youtube_channel_id"),
             first("youtube_channel_name", ignorenulls=True).alias(

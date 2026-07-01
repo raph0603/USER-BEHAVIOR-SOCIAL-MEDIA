@@ -105,6 +105,9 @@ class ContentAnalyticsContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
+        self.assertIn('regexp_extract(col("url"), r"/r/([^/]+)", 1)', source)
+        self.assertIn('"derived_subreddit"', source)
+        self.assertIn('first("derived_subreddit", ignorenulls=True).alias("subreddit")', source)
         self.assertIn('regexp_extract(col("url"), r"/comments/[^/]+/([^/]+)", 1)', source)
         self.assertIn('"content_title"', source)
         self.assertIn('"content_text"', source)
@@ -144,6 +147,8 @@ class ContentAnalyticsIntegrationTextTests(unittest.TestCase):
             "X",
             "YouTube",
             "Users",
+            "enrich_content_rows",
+            'str.extract(r"/r/([^/]+)"',
             "render_content_analytics()",
             "Transcript keyword",
         ):

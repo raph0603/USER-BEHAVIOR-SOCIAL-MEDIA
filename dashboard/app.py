@@ -1879,6 +1879,32 @@ def filter_content_rows(contents):
     return filtered
 
 
+def enrich_content_rows(contents):
+    enriched = contents.copy()
+    if enriched.empty or "url" not in enriched.columns:
+        return enriched
+
+    if "subreddit" not in enriched.columns:
+        enriched["subreddit"] = pd.NA
+
+    reddit_mask = (
+        enriched.get("source", pd.Series("", index=enriched.index))
+        .astype("string")
+        .str.lower()
+        .eq("reddit")
+    )
+    missing_subreddit = enriched["subreddit"].isna() | (
+        enriched["subreddit"].astype("string").str.strip() == ""
+    )
+    derived_subreddits = (
+        enriched.loc[reddit_mask & missing_subreddit, "url"]
+        .astype("string")
+        .str.extract(r"/r/([^/]+)", expand=False)
+    )
+    enriched.loc[reddit_mask & missing_subreddit, "subreddit"] = derived_subreddits
+    return enriched
+
+
 def content_label(row):
     title = format_optional_text(row.get("title"))
     if title == "N/A":
@@ -1916,7 +1942,7 @@ def render_content_interactions(content_row, interactions):
 def render_content_analytics():
     st.subheader("Content analytics")
     tables, errors = get_content_analytics_tables()
-    contents = prepare_optional_table(tables["contents"])
+    contents = enrich_content_rows(prepare_optional_table(tables["contents"]))
     interactions = prepare_optional_table(tables["interactions"])
     transcripts = prepare_optional_table(tables["transcripts"])
     content_stats = prepare_optional_table(tables["content_stats"])
