@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 import xgboost as xgb
 
@@ -42,6 +43,8 @@ FEATURE_LABELS = {
     "cognitive_friction_score": "Overall reading difficulty",
     "role_diversity": "Marketing-role diversity",
     "role_n_segments": "Number of segments",
+    "chan_log_audience": "Channel audience size (followers/subscribers)",
+    "chan_has_audience": "Channel audience known",
 }
 _ROLE_LABELS = {
     "cta": "call to action (CTA)",
@@ -82,7 +85,7 @@ class ViralExplainer:
         self.roles = RoleFeaturizer()
         self.topics = TopicFeaturizer()
 
-    def _feature_row(self, text: str, source: str):
+    def _feature_row(self, text: str, source: str, audience: float | None = None):
         cleaned = clean_text(text)
         df = add_text_features(pd.DataFrame({"clean_text": [cleaned]}))
         for name, value in self.roles.post_features(cleaned).items():
@@ -94,6 +97,10 @@ class ViralExplainer:
         for col in self.features:
             if col.startswith("src_"):
                 df[col] = 1.0 if col == f"src_{src}" else 0.0
+        if "chan_log_audience" in self.features:  # channel audience size (0 when unknown)
+            aud = max(float(audience or 0.0), 0.0)
+            df["chan_log_audience"] = np.log1p(aud)
+            df["chan_has_audience"] = 1.0 if aud > 0 else 0.0
         return df.reindex(columns=self.features, fill_value=0.0).astype(float)
 
     def _contributions(self, X: pd.DataFrame) -> pd.Series:
@@ -113,8 +120,14 @@ class ViralExplainer:
             tips.append("Lower reading difficulty: shorter sentences, less jargon.")
         return tips[:3]
 
-    def explain(self, text: str, source: str = "", threshold: float = DECISION_THRESHOLD) -> dict:
-        X = self._feature_row(text, source)
+    def explain(
+        self,
+        text: str,
+        source: str = "",
+        audience: float | None = None,
+        threshold: float = DECISION_THRESHOLD,
+    ) -> dict:
+        X = self._feature_row(text, source, audience)
         score = float(self.model.predict_proba(X)[0, 1])
         contribs = self._contributions(X)
 
@@ -152,11 +165,11 @@ class ViralExplainer:
 _explainer: ViralExplainer | None = None
 
 
-def explain_post(text: str, source: str = "") -> dict:
+def explain_post(text: str, source: str = "", audience: float | None = None) -> dict:
     global _explainer
     if _explainer is None:
         _explainer = ViralExplainer()
-    return _explainer.explain(text, source)
+    return _explainer.explain(text, source, audience)
 
 
 if __name__ == "__main__":

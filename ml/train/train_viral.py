@@ -49,7 +49,7 @@ GROUP = "author_hash"
 
 
 def feature_columns(df: pd.DataFrame) -> list[str]:
-    extra = sorted(c for c in df.columns if c.startswith(("src_", "role_", "topic_")))
+    extra = sorted(c for c in df.columns if c.startswith(("src_", "role_", "topic_", "chan_")))
     return CONTENT_FEATURES + extra
 
 

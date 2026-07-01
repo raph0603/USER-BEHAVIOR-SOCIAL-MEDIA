@@ -21,9 +21,17 @@ ML_ROOT = Path(__file__).resolve().parents[1]
 if str(ML_ROOT) not in sys.path:
     sys.path.insert(0, str(ML_ROOT))
 
+from preprocess.build_dataset import CHANNEL_AUDIENCE_COLS
 from serve.explain_viral import explain_post
 
 DEFAULT_OUTPUT = ML_ROOT / "data" / "predictions.jsonl"
+
+
+def _row_audience(row: pd.Series) -> float | None:
+    """Channel audience size for a row, coalesced across the per-platform columns."""
+    vals = [pd.to_numeric(row.get(c), errors="coerce") for c in CHANNEL_AUDIENCE_COLS]
+    vals = [v for v in vals if pd.notna(v) and v > 0]
+    return float(max(vals)) if vals else None
 
 
 def main() -> None:
@@ -45,7 +53,7 @@ def main() -> None:
         for _, row in df.iterrows():
             text = str(row.get(args.text_col, "") or "")
             source = str(row.get(args.source_col, "") or "")
-            result = explain_post(text, source)
+            result = explain_post(text, source, _row_audience(row))
             n_viral += result["label"] == "viral-likely"
             record = {"text": text, "source": source, **result}
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
