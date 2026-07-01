@@ -15,6 +15,14 @@ from pyspark.sql.types import (
 METRIC_COLUMNS = (
     "like_count",
     "view_count",
+    "comment_count",
+    "reply_count",
+    "retweet_count",
+    "bookmark_count",
+    "score",
+    "follower_count",
+    "subscriber_count",
+    "subreddit_member_count",
 )
 AUTHOR_COLUMNS = (
     "owner_channel_id",
@@ -177,6 +185,11 @@ def main() -> None:
                 f"ALTER TABLE {table} ADD COLUMN "
                 "collaborator_channel_ids ARRAY<STRING>"
             )
+        for metric_column in METRIC_COLUMNS:
+            if metric_column not in current_columns:
+                spark.sql(
+                    f"ALTER TABLE {table} ADD COLUMN {metric_column} BIGINT"
+                )
         _merge_updates(spark, table)
 
     print(f"Applied {len(updates)} insight updates to Bronze and Silver")

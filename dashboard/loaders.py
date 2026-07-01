@@ -15,6 +15,9 @@ ENGAGEMENT_COLUMNS = (
     "retweet_count",
     "bookmark_count",
     "score",
+    "follower_count",
+    "subscriber_count",
+    "subreddit_member_count",
 )
 AUTHOR_METADATA_COLUMNS = (
     "platform_event_id",
@@ -28,6 +31,9 @@ OPTIONAL_ENGAGEMENT_COLUMNS = (
     "retweet_count",
     "bookmark_count",
     "score",
+    "follower_count",
+    "subscriber_count",
+    "subreddit_member_count",
 )
 
 
@@ -202,6 +208,8 @@ def load_iceberg_data(config=None):
     )
     df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce", utc=True)
     for column in ENGAGEMENT_COLUMNS:
+        if column not in df.columns:
+            df[column] = pd.NA
         df[column] = pd.to_numeric(df[column], errors="coerce").astype("Int64")
     df["text_len_chars"] = df["text"].fillna("").str.len()
     df["text_len_words"] = df["text"].fillna("").str.split().str.len()
