@@ -5,7 +5,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+import sys
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "playwright"))
 MODULE_PATH = ROOT / "playwright" / "youtube_authors.py"
 SPEC = importlib.util.spec_from_file_location("youtube_authors", MODULE_PATH)
 YOUTUBE_AUTHORS = importlib.util.module_from_spec(SPEC)
@@ -183,6 +185,20 @@ class YouTubeAuthorTests(unittest.TestCase):
             source = path.read_text(encoding="utf-8")
             with self.subTest(coalesce_path=path):
                 self.assertIn("COALESCE", source)
+
+    def test_extract_youtube_subscriber_count_success(self):
+        initial_data = {
+            "videoOwnerRenderer": {
+                "subscriberCountText": {
+                    "simpleText": "1.23M subscribers"
+                }
+            }
+        }
+        html = f"var ytInitialData = {json.dumps(initial_data)};"
+        self.assertEqual(
+            YOUTUBE_AUTHORS.extract_youtube_subscriber_count(html),
+            1230000
+        )
 
 
 if __name__ == "__main__":

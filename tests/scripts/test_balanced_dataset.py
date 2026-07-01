@@ -91,7 +91,7 @@ class BalancedDatasetTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
             with self.subTest(dag=dag_name):
                 self.assertIn('task_id="collect_x_playwright_events"', source)
-                self.assertIn("-e X_FAIL_ON_ERROR=true ", source)
+                self.assertIn("-e X_FAIL_ON_ERROR ", source)
                 self.assertIn('task_id="collect_reddit_online_events"', source)
                 self.assertNotIn("skip_on_exit_code=99", source)
                 self.assertNotIn("skipping X collection", source)

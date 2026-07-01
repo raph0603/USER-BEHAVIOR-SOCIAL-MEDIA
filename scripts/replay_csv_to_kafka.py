@@ -52,8 +52,12 @@ def _parse_count(value: str):
     else:
         mult = 1
     try:
-        return int(float(s) * mult)
-    except ValueError:
+        result = float(s) * mult
+        import math
+        if math.isinf(result) or math.isnan(result):
+            return None
+        return int(result)
+    except (ValueError, OverflowError):
         return None
 
 

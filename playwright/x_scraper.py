@@ -12,7 +12,7 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-from engagement import extract_x_metric
+from engagement import extract_x_followers, extract_x_metric
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -92,6 +92,7 @@ FIELDNAMES = [
     "hashtags",
     "mentions",
     "external_links",
+    "follower_count",
     "scraped_at_utc",
 ]
 
@@ -276,6 +277,7 @@ def scrape_article(article, page_url: str, article_index: int) -> dict:
         "hashtags": extract_hashtags(text),
         "mentions": extract_mentions(text),
         "external_links": collect_external_links(article),
+        "follower_count": extract_x_followers(article),
         "scraped_at_utc": datetime.now(timezone.utc).isoformat(),
     }
 

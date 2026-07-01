@@ -8,6 +8,8 @@ from urllib.parse import urljoin, urlparse
 
 from playwright.sync_api import Locator, Page, TimeoutError, sync_playwright
 
+from engagement import extract_x_followers
+
 
 X_COLUMNS = [
     "page_url",
@@ -33,6 +35,7 @@ X_COLUMNS = [
     "hashtags",
     "mentions",
     "external_links",
+    "follower_count",
     "scraped_at_utc",
 ]
 
@@ -62,6 +65,7 @@ class XRecord:
     hashtags: str | None
     mentions: str | None
     external_links: str | None
+    follower_count: int | None
     scraped_at_utc: str
 
 
@@ -233,6 +237,7 @@ def _extract_record(article: Locator, page_url: str, article_index: int, root_st
     screen_name, display_name = _extract_user(article)
     hashtags, mentions, external_links = _extract_entities(article, text)
     media_count = article.locator('[data-testid="tweetPhoto"], [data-testid="videoPlayer"]').count()
+    follower_count = extract_x_followers(article)
     scraped_at = datetime.now(timezone.utc).isoformat()
 
     return XRecord(
@@ -259,6 +264,7 @@ def _extract_record(article: Locator, page_url: str, article_index: int, root_st
         hashtags=hashtags,
         mentions=mentions,
         external_links=external_links,
+        follower_count=follower_count,
         scraped_at_utc=scraped_at,
     )
 

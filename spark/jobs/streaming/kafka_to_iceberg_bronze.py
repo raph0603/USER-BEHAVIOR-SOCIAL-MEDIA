@@ -95,6 +95,14 @@ def main() -> None:
           collaborator_channel_ids ARRAY<STRING>,
           like_count BIGINT,
           view_count BIGINT,
+          comment_count BIGINT,
+          reply_count BIGINT,
+          retweet_count BIGINT,
+          bookmark_count BIGINT,
+          score BIGINT,
+          follower_count BIGINT,
+          subscriber_count BIGINT,
+          subreddit_member_count BIGINT,
           event_ts TIMESTAMP
         )
         USING iceberg
@@ -111,6 +119,14 @@ def main() -> None:
             "collaborator_channel_ids": "ARRAY<STRING>",
             "like_count": "BIGINT",
             "view_count": "BIGINT",
+            "comment_count": "BIGINT",
+            "reply_count": "BIGINT",
+            "retweet_count": "BIGINT",
+            "bookmark_count": "BIGINT",
+            "score": "BIGINT",
+            "follower_count": "BIGINT",
+            "subscriber_count": "BIGINT",
+            "subreddit_member_count": "BIGINT",
         },
     )
 
@@ -143,6 +159,14 @@ def main() -> None:
                 ),
                 StructField("like_count", LongType()),
                 StructField("view_count", LongType()),
+                StructField("comment_count", LongType()),
+                StructField("reply_count", LongType()),
+                StructField("retweet_count", LongType()),
+                StructField("bookmark_count", LongType()),
+                StructField("score", LongType()),
+                StructField("follower_count", LongType()),
+                StructField("subscriber_count", LongType()),
+                StructField("subreddit_member_count", LongType()),
                 StructField("stage", StringType()),
             ]
         )
@@ -169,6 +193,14 @@ def main() -> None:
         "collaborator_channel_ids",
         "like_count",
         "view_count",
+        "comment_count",
+        "reply_count",
+        "retweet_count",
+        "bookmark_count",
+        "score",
+        "follower_count",
+        "subscriber_count",
+        "subreddit_member_count",
     ).withColumn("event_ts", to_timestamp(col("timestamp")))
     bronze_trigger = _env("BRONZE_TRIGGER", "10 seconds")
     trigger_mode = _env("BRONZE_TRIGGER_MODE", "processing_time").lower()
@@ -186,6 +218,14 @@ def main() -> None:
         "collaborator_channel_ids",
         "like_count",
         "view_count",
+        "comment_count",
+        "reply_count",
+        "retweet_count",
+        "bookmark_count",
+        "score",
+        "follower_count",
+        "subscriber_count",
+        "subreddit_member_count",
         "event_ts",
     ]
 
@@ -243,7 +283,15 @@ def main() -> None:
                     t.collaborator_channel_ids
                   ),
                   t.like_count = COALESCE(s.like_count, t.like_count),
-                  t.view_count = COALESCE(s.view_count, t.view_count)
+                  t.view_count = COALESCE(s.view_count, t.view_count),
+                  t.comment_count = COALESCE(s.comment_count, t.comment_count),
+                  t.reply_count = COALESCE(s.reply_count, t.reply_count),
+                  t.retweet_count = COALESCE(s.retweet_count, t.retweet_count),
+                  t.bookmark_count = COALESCE(s.bookmark_count, t.bookmark_count),
+                  t.score = COALESCE(s.score, t.score),
+                  t.follower_count = COALESCE(s.follower_count, t.follower_count),
+                  t.subscriber_count = COALESCE(s.subscriber_count, t.subscriber_count),
+                  t.subreddit_member_count = COALESCE(s.subreddit_member_count, t.subreddit_member_count)
                 WHEN NOT MATCHED THEN
                   INSERT ({cols})
                   VALUES ({', '.join([f's.{name}' for name in bronze_columns])})

@@ -72,8 +72,12 @@ def _parse_count(value):
     if multiplier != 1:
         text = text[:-1]
     try:
-        return int(float(text) * multiplier)
-    except ValueError:
+        result = float(text) * multiplier
+        import math
+        if math.isinf(result) or math.isnan(result):
+            return None
+        return int(result)
+    except (ValueError, OverflowError):
         return None
 
 
@@ -196,6 +200,9 @@ def _normalize_youtube(row):
             _first_value(row, "like_count", "comment_like_count", "video_like_count")
         ),
         "view_count": _parse_count(_first_value(row, "view_count", "video_view_count")),
+        "follower_count": None,
+        "subscriber_count": _parse_count(_first_value(row, "subscriber_count")),
+        "subreddit_member_count": None,
     }
 
 
@@ -221,6 +228,9 @@ def _normalize_x(row):
         "collaborator_channel_ids": None,
         "like_count": _parse_count(_first_value(row, "like_count")),
         "view_count": _parse_count(_first_value(row, "view_count")),
+        "follower_count": _parse_count(_first_value(row, "follower_count")),
+        "subscriber_count": None,
+        "subreddit_member_count": None,
     }
 
 
@@ -244,6 +254,9 @@ def _normalize_reddit(row):
         "collaborator_channel_ids": None,
         "like_count": None,
         "view_count": None,
+        "follower_count": None,
+        "subscriber_count": None,
+        "subreddit_member_count": _parse_count(_first_value(row, "subreddit_member_count", "subreddit_subscribers")),
     }
 
 

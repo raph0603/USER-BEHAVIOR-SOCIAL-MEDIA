@@ -40,6 +40,7 @@ YOUTUBE_SCHEMA = StructType([
     StructField("kw_range",                   IntegerType(),   nullable=True),
     StructField("kw_charging",                IntegerType(),   nullable=True),
     StructField("video_age_days_at_comment",  DoubleType(),    nullable=True),
+    StructField("subscriber_count",           LongType(),      nullable=True),
 ])
 
 
@@ -57,6 +58,7 @@ REDDIT_SCHEMA = StructType([
     StructField("created_iso",        TimestampType(), nullable=False),
     StructField("score",              LongType(),      nullable=True),
     StructField("comment_permalink",  StringType(),    nullable=True),
+    StructField("subreddit_member_count", LongType(),  nullable=True),
 ])
 
 
@@ -86,5 +88,6 @@ X_SCHEMA = StructType([
     StructField("hashtags",        StringType(),    nullable=True),
     StructField("mentions",        StringType(),    nullable=True),
     StructField("external_links",  StringType(),    nullable=True),
+    StructField("follower_count",  LongType(),      nullable=True),
     StructField("scraped_at_utc",  TimestampType(), nullable=True),
 ])
