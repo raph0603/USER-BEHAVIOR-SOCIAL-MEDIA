@@ -8,7 +8,7 @@ import plotly.express as px
 import streamlit as st
 
 from airflow_monitoring import AirflowClient
-from loaders import get_iceberg_config, load_iceberg_data
+from loaders import get_iceberg_config, load_iceberg_data, load_optional_iceberg_table
 from manual_import import (
     MANUAL_IMPORT_DAG_ID,
     get_manual_import_config,
@@ -47,6 +47,9 @@ OPTIONAL_DASHBOARD_COLUMNS = (
     "metadata_refreshed_at",
     "owner_channel_id",
     "collaborator_channel_ids",
+    "raw_text",
+    "clean_text",
+    "text_for_model",
 )
 
 TRACKING_ROLE_ORDER = [
@@ -61,6 +64,13 @@ VIDEO_LEVEL_ENGAGEMENT_COLUMNS = (
     "comment_count",
 )
 DEFAULT_BALANCING_REPORT_PATH = "/app/balancing/report.json"
+MODEL_PIPELINE_TABLES = {
+    "post_features": ("silver", "post_features"),
+    "engagement_snapshots": ("silver", "engagement_snapshots"),
+    "context_features": ("silver", "context_features"),
+    "model_predictions": ("gold", "model_predictions"),
+    "training_examples": ("gold", "training_examples"),
+}
 
 
 def render_add_data_panel():
@@ -555,6 +565,23 @@ def get_balancing_report():
     report["_report_path"] = str(report_path)
     report["_modified_at"] = pd.Timestamp(report_path.stat().st_mtime, unit="s")
     return report
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_model_pipeline_tables():
+    tables = {}
+    errors = {}
+    for label, (namespace, table_name) in MODEL_PIPELINE_TABLES.items():
+        dataframe, error = load_optional_iceberg_table(
+            namespace,
+            table_name,
+            config,
+            limit=5000,
+        )
+        tables[label] = dataframe
+        if error:
+            errors[label] = error
+    return tables, errors
 
 
 @st.fragment(run_every="15s")
@@ -1415,6 +1442,341 @@ def render_identifier_tracking():
         )
 
 
+def prepare_optional_table(dataframe):
+    prepared = dataframe.copy()
+    for column in (
+        "event_ts",
+        "created_at",
+        "observed_at",
+        "retrieved_at",
+        "prediction_ts",
+    ):
+        if column in prepared.columns:
+            prepared[column] = pd.to_datetime(
+                prepared[column],
+                errors="coerce",
+                utc=True,
+            )
+    for column in (
+        "text_len_chars",
+        "text_len_words",
+        "has_question",
+        "hashtag_count",
+        "mention_count",
+        "url_count",
+        "emoji_count",
+        "age_minutes",
+        "like_count",
+        "view_count",
+        "comment_count",
+        "reply_count",
+        "retweet_count",
+        "bookmark_count",
+        "score",
+        "recent_posts_1h",
+        "top_similarity",
+        "avg_similarity_top10",
+        "trend_growth_1h",
+        "trend_growth_24h",
+        "topic_freshness_hours",
+        "confidence",
+        "virality_score",
+    ):
+        if column in prepared.columns:
+            prepared[column] = pd.to_numeric(prepared[column], errors="coerce")
+    return prepared
+
+
+def render_optional_table_status(label, dataframe, error):
+    if dataframe.empty:
+        st.info(f"`{label}` is not available yet.")
+        if error:
+            with st.expander(f"{label} read details", expanded=False):
+                st.caption(error)
+        return False
+    return True
+
+
+def render_model_pipeline():
+    st.subheader("Model pipeline")
+    tables, errors = get_model_pipeline_tables()
+    prepared_tables = {
+        label: prepare_optional_table(dataframe)
+        for label, dataframe in tables.items()
+    }
+
+    feature_df = prepared_tables["post_features"]
+    snapshot_df = prepared_tables["engagement_snapshots"]
+    context_df = prepared_tables["context_features"]
+    prediction_df = prepared_tables["model_predictions"]
+    training_df = prepared_tables["training_examples"]
+
+    pipeline_metrics = st.columns(5)
+    pipeline_metrics[0].metric("Post features", format_count(len(feature_df)))
+    pipeline_metrics[1].metric("Engagement snapshots", format_count(len(snapshot_df)))
+    pipeline_metrics[2].metric("Context rows", format_count(len(context_df)))
+    pipeline_metrics[3].metric("Predictions", format_count(len(prediction_df)))
+    pipeline_metrics[4].metric("Training examples", format_count(len(training_df)))
+
+    st.caption(
+        "These tables are optional lakehouse outputs from the classification "
+        "pipeline. Missing tables mean the corresponding job or service has "
+        "not produced data yet."
+    )
+
+    if render_optional_table_status(
+        "silver.post_features",
+        feature_df,
+        errors.get("post_features"),
+    ):
+        st.subheader("Text feature layer")
+        feature_metrics = st.columns(4)
+        feature_metrics[0].metric(
+            "Feature versions",
+            format_count(feature_df["feature_version"].dropna().nunique())
+            if "feature_version" in feature_df.columns
+            else "N/A",
+        )
+        feature_metrics[1].metric(
+            "Average words",
+            f"{feature_df['text_len_words'].mean():.1f}"
+            if "text_len_words" in feature_df.columns
+            and feature_df["text_len_words"].notna().any()
+            else "N/A",
+        )
+        feature_metrics[2].metric(
+            "Posts with URLs",
+            format_count((feature_df.get("url_count", pd.Series(dtype=float)).fillna(0) > 0).sum()),
+        )
+        feature_metrics[3].metric(
+            "Posts with mentions",
+            format_count((feature_df.get("mention_count", pd.Series(dtype=float)).fillna(0) > 0).sum()),
+        )
+
+        feature_columns = [
+            column
+            for column in (
+                "source",
+                "event_ts",
+                "text_for_model",
+                "text_len_words",
+                "has_question",
+                "hashtag_count",
+                "mention_count",
+                "url_count",
+                "emoji_count",
+                "feature_version",
+            )
+            if column in feature_df.columns
+        ]
+        st.dataframe(
+            feature_df.sort_values(
+                "event_ts",
+                ascending=False,
+                na_position="last",
+            )[feature_columns].head(100),
+            width="stretch",
+            hide_index=True,
+        )
+
+    if render_optional_table_status(
+        "silver.engagement_snapshots",
+        snapshot_df,
+        errors.get("engagement_snapshots"),
+    ):
+        st.subheader("Engagement snapshots")
+        snapshot_metrics = st.columns(3)
+        snapshot_metrics[0].metric(
+            "Observed posts",
+            format_count(snapshot_df["platform_event_id"].dropna().nunique())
+            if "platform_event_id" in snapshot_df.columns
+            else "N/A",
+        )
+        snapshot_metrics[1].metric(
+            "Latest observation",
+            snapshot_df["observed_at"].max().strftime("%Y-%m-%d %H:%M")
+            if "observed_at" in snapshot_df.columns
+            and pd.notna(snapshot_df["observed_at"].max())
+            else "N/A",
+        )
+        snapshot_metrics[2].metric(
+            "Median age",
+            f"{snapshot_df['age_minutes'].median():.0f} min"
+            if "age_minutes" in snapshot_df.columns
+            and snapshot_df["age_minutes"].notna().any()
+            else "N/A",
+        )
+
+        available_snapshot_metrics = [
+            column
+            for column in (
+                "like_count",
+                "view_count",
+                "comment_count",
+                "reply_count",
+                "retweet_count",
+                "bookmark_count",
+                "score",
+            )
+            if column in snapshot_df.columns
+        ]
+        if available_snapshot_metrics:
+            snapshot_chart = (
+                snapshot_df.groupby("source")[available_snapshot_metrics]
+                .sum(min_count=1)
+                .reset_index()
+                .melt(
+                    id_vars="source",
+                    var_name="metric",
+                    value_name="value",
+                )
+                .dropna(subset=["value"])
+            )
+            if not snapshot_chart.empty:
+                fig_snapshots = px.bar(
+                    snapshot_chart,
+                    x="source",
+                    y="value",
+                    color="metric",
+                    barmode="group",
+                    labels={
+                        "source": "Source",
+                        "value": "Observed total",
+                        "metric": "Metric",
+                    },
+                )
+                st.plotly_chart(fig_snapshots, width="stretch")
+
+    if render_optional_table_status(
+        "silver.context_features",
+        context_df,
+        errors.get("context_features"),
+    ):
+        st.subheader("Retrieval context features")
+        context_columns = [
+            column
+            for column in (
+                "source",
+                "retrieved_at",
+                "top_similarity",
+                "avg_similarity_top10",
+                "recent_posts_1h",
+                "trend_growth_1h",
+                "trend_growth_24h",
+                "topic_freshness_hours",
+                "matched_topics",
+            )
+            if column in context_df.columns
+        ]
+        st.dataframe(
+            context_df.sort_values(
+                "retrieved_at",
+                ascending=False,
+                na_position="last",
+            )[context_columns].head(100),
+            width="stretch",
+            hide_index=True,
+        )
+
+    if render_optional_table_status(
+        "gold.model_predictions",
+        prediction_df,
+        errors.get("model_predictions"),
+    ):
+        st.subheader("Gold predictions")
+        prediction_metrics = st.columns(3)
+        prediction_metrics[0].metric(
+            "Classes",
+            format_count(prediction_df["predicted_class"].dropna().nunique())
+            if "predicted_class" in prediction_df.columns
+            else "N/A",
+        )
+        prediction_metrics[1].metric(
+            "Average confidence",
+            f"{prediction_df['confidence'].mean():.2f}"
+            if "confidence" in prediction_df.columns
+            and prediction_df["confidence"].notna().any()
+            else "N/A",
+        )
+        prediction_metrics[2].metric(
+            "Context used",
+            format_count(prediction_df["context_used"].fillna(False).sum())
+            if "context_used" in prediction_df.columns
+            else "N/A",
+        )
+        prediction_columns = [
+            column
+            for column in (
+                "source",
+                "prediction_ts",
+                "model_version",
+                "model_type",
+                "predicted_class",
+                "confidence",
+                "virality_score",
+                "context_used",
+                "schema_version",
+            )
+            if column in prediction_df.columns
+        ]
+        st.dataframe(
+            prediction_df.sort_values(
+                "prediction_ts",
+                ascending=False,
+                na_position="last",
+            )[prediction_columns].head(100),
+            width="stretch",
+            hide_index=True,
+        )
+
+    if render_optional_table_status(
+        "gold.training_examples",
+        training_df,
+        errors.get("training_examples"),
+    ):
+        st.subheader("Gold training examples")
+        training_summary = (
+            training_df.groupby(["label_horizon", "label_value"])
+            .size()
+            .reset_index(name="examples")
+            if {"label_horizon", "label_value"}.issubset(training_df.columns)
+            else pd.DataFrame()
+        )
+        if not training_summary.empty:
+            fig_training = px.bar(
+                training_summary,
+                x="label_horizon",
+                y="examples",
+                color="label_value",
+                barmode="group",
+                labels={
+                    "label_horizon": "Label horizon",
+                    "examples": "Examples",
+                    "label_value": "Label",
+                },
+            )
+            st.plotly_chart(fig_training, width="stretch")
+        training_columns = [
+            column
+            for column in (
+                "source",
+                "label_horizon",
+                "label_value",
+                "dataset_version",
+                "feature_version",
+                "schema_version",
+                "example_date",
+                "text_for_model",
+            )
+            if column in training_df.columns
+        ]
+        st.dataframe(
+            training_df[training_columns].head(100),
+            width="stretch",
+            hide_index=True,
+        )
+
+
 def render_quality_overview():
     col1, col2 = st.columns(2)
 
@@ -1552,12 +1914,13 @@ def render_recent_events():
         },
     )
 
-overview_tab, engagement_tab, authors_tab, tracking_tab, quality_tab, events_tab = st.tabs(
+overview_tab, engagement_tab, authors_tab, tracking_tab, model_tab, quality_tab, events_tab = st.tabs(
     [
         "Overview",
         "Engagement",
         "YouTube authors",
         "Identifier tracking",
+        "Model pipeline",
         "Quality",
         "Events",
     ]
@@ -1578,6 +1941,9 @@ with authors_tab:
 
 with tracking_tab:
     render_identifier_tracking()
+
+with model_tab:
+    render_model_pipeline()
 
 with quality_tab:
     render_quality_overview()
