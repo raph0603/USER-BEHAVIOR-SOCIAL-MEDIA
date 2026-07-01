@@ -59,6 +59,15 @@ OPTIONAL_DASHBOARD_COLUMNS = (
     "clean_text",
     "text_for_model",
 )
+REDDIT_COMMUNITY_COLUMNS = (
+    "subreddit_title",
+    "subreddit_description",
+    "subreddit_created_at",
+    "subreddit_visibility",
+    "subreddit_member_count",
+    "subreddit_weekly_visitors",
+    "subreddit_weekly_contributions",
+)
 
 TRACKING_ROLE_ORDER = [
     "Author",
@@ -82,6 +91,7 @@ MODEL_PIPELINE_TABLES = {
 CONTENT_ANALYTICS_TABLES = {
     "contents": ("silver", "contents"),
     "interactions": ("silver", "interactions"),
+    "engagement_snapshots": ("silver", "engagement_snapshots"),
     "transcripts": ("silver", "transcripts"),
     "content_stats": ("gold", "content_stats"),
     "user_evolution": ("gold", "user_evolution"),
@@ -1505,6 +1515,11 @@ def prepare_optional_table(dataframe):
         "retweet_count",
         "bookmark_count",
         "score",
+        "follower_count",
+        "subscriber_count",
+        "subreddit_member_count",
+        "subreddit_weekly_visitors",
+        "subreddit_weekly_contributions",
         "recent_posts_1h",
         "top_similarity",
         "avg_similarity_top10",
@@ -1913,6 +1928,43 @@ def enrich_content_rows(contents):
     return enriched
 
 
+def ensure_reddit_community_columns(contents):
+    enriched = contents.copy()
+    for column in REDDIT_COMMUNITY_COLUMNS:
+        if column not in enriched.columns:
+            enriched[column] = pd.NA
+    return enriched
+
+
+def enrich_reddit_community_from_snapshots(contents, snapshots):
+    if contents.empty or snapshots.empty:
+        return contents
+    required_columns = {"content_id", "source", "subreddit_member_count"}
+    if not required_columns.issubset(snapshots.columns):
+        return contents
+
+    reddit_snapshots = snapshots[snapshots["source"] == "reddit"].copy()
+    reddit_snapshots = reddit_snapshots.dropna(subset=["content_id"])
+    if reddit_snapshots.empty:
+        return contents
+    if "snapshot_at" in reddit_snapshots.columns:
+        reddit_snapshots = reddit_snapshots.sort_values("snapshot_at")
+
+    latest_members = (
+        reddit_snapshots.groupby("content_id", dropna=False)["subreddit_member_count"]
+        .last()
+        .rename("snapshot_subreddit_member_count")
+        .reset_index()
+    )
+    enriched = contents.merge(latest_members, on="content_id", how="left")
+    missing_members = enriched["subreddit_member_count"].isna()
+    enriched.loc[missing_members, "subreddit_member_count"] = enriched.loc[
+        missing_members,
+        "snapshot_subreddit_member_count",
+    ]
+    return enriched.drop(columns=["snapshot_subreddit_member_count"])
+
+
 def content_label(row):
     title = format_optional_text(row.get("title"))
     if title == "N/A":
@@ -1952,9 +2004,13 @@ def render_content_analytics():
     tables, errors = get_content_analytics_tables()
     contents = enrich_content_rows(prepare_optional_table(tables["contents"]))
     interactions = prepare_optional_table(tables["interactions"])
+    engagement_snapshots = prepare_optional_table(tables["engagement_snapshots"])
     transcripts = prepare_optional_table(tables["transcripts"])
     content_stats = prepare_optional_table(tables["content_stats"])
     user_evolution = prepare_optional_table(tables["user_evolution"])
+    contents = ensure_reddit_community_columns(
+        enrich_reddit_community_from_snapshots(contents, engagement_snapshots)
+    )
 
     metric_columns = st.columns(5)
     metric_columns[0].metric("Contents", format_count(len(contents)))
@@ -2000,6 +2056,11 @@ def render_content_analytics():
                 "content_type",
                 "created_at",
                 "subreddit",
+                "subreddit_title",
+                "subreddit_description",
+                "subreddit_member_count",
+                "subreddit_weekly_visitors",
+                "subreddit_weekly_contributions",
                 "youtube_channel_id",
                 "title",
                 "interaction_count",
@@ -2029,31 +2090,28 @@ def render_content_analytics():
         if reddit_contents.empty:
             st.info("No Reddit content available.")
         else:
-            community_columns = [
-                column
-                for column in (
-                    "subreddit_title",
-                    "subreddit_description",
-                    "subreddit_created_at",
-                    "subreddit_visibility",
-                    "subreddit_member_count",
-                    "subreddit_weekly_visitors",
-                    "subreddit_weekly_contributions",
-                )
-                if column in reddit_contents.columns
-            ]
             subreddit_summary = (
                 reddit_contents.groupby("subreddit", dropna=False)
                 .agg(
                     posts=("content_id", "count"),
                     **{
                         column: (column, "first")
-                        for column in community_columns
+                        for column in REDDIT_COMMUNITY_COLUMNS
                     },
                 )
                 .reset_index()
                 .sort_values("posts", ascending=False)
             )
+            empty_community_columns = [
+                column
+                for column in REDDIT_COMMUNITY_COLUMNS
+                if subreddit_summary[column].isna().all()
+            ]
+            if empty_community_columns:
+                st.caption(
+                    "Some Reddit community columns are empty until the Reddit "
+                    "collector runs again and content analytics is refreshed."
+                )
             st.dataframe(
                 subreddit_summary,
                 width="stretch",

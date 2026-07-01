@@ -161,6 +161,8 @@ class ContentAnalyticsIntegrationTextTests(unittest.TestCase):
             "YouTube",
             "Users",
             "enrich_content_rows",
+            "enrich_reddit_community_from_snapshots",
+            "engagement_snapshots",
             'str.extract(r"/r/([^/]+)"',
             "render_content_analytics()",
             "Transcript keyword",
