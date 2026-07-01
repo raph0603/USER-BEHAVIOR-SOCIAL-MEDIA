@@ -71,6 +71,13 @@ MODEL_PIPELINE_TABLES = {
     "model_predictions": ("gold", "model_predictions"),
     "training_examples": ("gold", "training_examples"),
 }
+CONTENT_ANALYTICS_TABLES = {
+    "contents": ("silver", "contents"),
+    "interactions": ("silver", "interactions"),
+    "transcripts": ("silver", "transcripts"),
+    "content_stats": ("gold", "content_stats"),
+    "user_evolution": ("gold", "user_evolution"),
+}
 
 
 def render_add_data_panel():
@@ -577,6 +584,23 @@ def get_model_pipeline_tables():
             table_name,
             config,
             limit=5000,
+        )
+        tables[label] = dataframe
+        if error:
+            errors[label] = error
+    return tables, errors
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_content_analytics_tables():
+    tables = {}
+    errors = {}
+    for label, (namespace, table_name) in CONTENT_ANALYTICS_TABLES.items():
+        dataframe, error = load_optional_iceberg_table(
+            namespace,
+            table_name,
+            config,
+            limit=10000,
         )
         tables[label] = dataframe
         if error:
@@ -1777,6 +1801,305 @@ def render_model_pipeline():
         )
 
 
+def filter_content_rows(contents):
+    filtered = contents.copy()
+    if filtered.empty:
+        return filtered
+
+    st.subheader("Filters")
+    filter_columns = st.columns(3)
+    if "source" in filtered.columns:
+        source_options = sorted(filtered["source"].dropna().unique())
+        selected_sources = filter_columns[0].multiselect(
+            "Source",
+            source_options,
+            default=source_options,
+        )
+        filtered = filtered[filtered["source"].isin(selected_sources)]
+    if "content_type" in filtered.columns:
+        type_options = sorted(filtered["content_type"].dropna().unique())
+        selected_types = filter_columns[1].multiselect(
+            "Content type",
+            type_options,
+            default=type_options,
+        )
+        filtered = filtered[filtered["content_type"].isin(selected_types)]
+    if "subreddit" in filtered.columns:
+        subreddit_options = sorted(filtered["subreddit"].dropna().unique())
+        selected_subreddits = filter_columns[2].multiselect(
+            "Subreddit",
+            subreddit_options,
+            default=subreddit_options,
+        )
+        if selected_subreddits:
+            filtered = filtered[filtered["subreddit"].isin(selected_subreddits)]
+
+    text_columns = st.columns(3)
+    user_filter = text_columns[0].text_input("User")
+    keyword_filter = text_columns[1].text_input("Keyword")
+    date_column = "created_at" if "created_at" in filtered.columns else None
+
+    if user_filter and "author_id_hash" in filtered.columns:
+        filtered = filtered[
+            filtered["author_id_hash"].fillna("").str.contains(
+                user_filter,
+                case=False,
+                regex=False,
+            )
+        ]
+    if keyword_filter:
+        searchable = pd.Series("", index=filtered.index, dtype="string")
+        for column in ("title", "text", "url"):
+            if column in filtered.columns:
+                searchable = searchable.str.cat(
+                    filtered[column].fillna("").astype("string"),
+                    sep=" ",
+                )
+        filtered = filtered[
+            searchable.str.contains(keyword_filter, case=False, regex=False)
+        ]
+    if date_column and filtered[date_column].notna().any():
+        min_date = filtered[date_column].min().date()
+        max_date = filtered[date_column].max().date()
+        selected_range = text_columns[2].date_input(
+            "Date",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+        )
+        if isinstance(selected_range, tuple) and len(selected_range) == 2:
+            start_date, end_date = selected_range
+            filtered = filtered[
+                filtered[date_column].isna()
+                | (
+                    (filtered[date_column].dt.date >= start_date)
+                    & (filtered[date_column].dt.date <= end_date)
+                )
+            ]
+    return filtered
+
+
+def content_label(row):
+    title = format_optional_text(row.get("title"))
+    if title == "N/A":
+        title = format_optional_text(row.get("url"))
+    return f"{row.get('source', 'unknown')} | {title[:90]}"
+
+
+def render_content_interactions(content_row, interactions):
+    content_id = content_row.get("content_id")
+    if interactions.empty or "parent_content_id" not in interactions.columns:
+        st.info("No interaction table available for this content.")
+        return
+    related = interactions[interactions["parent_content_id"] == content_id].copy()
+    if related.empty:
+        st.info("No comments or replies found for this content.")
+        return
+    columns = [
+        column
+        for column in (
+            "created_at",
+            "interaction_type",
+            "author_id_hash",
+            "text",
+            "score",
+            "like_count",
+            "reply_count",
+        )
+        if column in related.columns
+    ]
+    if "created_at" in related.columns:
+        related = related.sort_values("created_at", ascending=False)
+    st.dataframe(related[columns].head(200), width="stretch", hide_index=True)
+
+
+def render_content_analytics():
+    st.subheader("Content analytics")
+    tables, errors = get_content_analytics_tables()
+    contents = prepare_optional_table(tables["contents"])
+    interactions = prepare_optional_table(tables["interactions"])
+    transcripts = prepare_optional_table(tables["transcripts"])
+    content_stats = prepare_optional_table(tables["content_stats"])
+    user_evolution = prepare_optional_table(tables["user_evolution"])
+
+    metric_columns = st.columns(5)
+    metric_columns[0].metric("Contents", format_count(len(contents)))
+    metric_columns[1].metric("Interactions", format_count(len(interactions)))
+    metric_columns[2].metric("Transcripts", format_count(len(transcripts)))
+    metric_columns[3].metric("Content stats", format_count(len(content_stats)))
+    metric_columns[4].metric("User days", format_count(len(user_evolution)))
+
+    if contents.empty:
+        render_optional_table_status("silver.contents", contents, errors.get("contents"))
+        return
+
+    explorer_tab, reddit_tab, x_tab, youtube_tab, users_tab = st.tabs(
+        ["Content Explorer", "Reddit", "X", "YouTube", "Users"]
+    )
+
+    with explorer_tab:
+        filtered_contents = filter_content_rows(contents)
+        stat_columns = [
+            "content_id",
+            "interaction_count",
+            "unique_interacting_users",
+            "avg_interaction_length",
+            "latest_view_count",
+            "latest_like_count",
+            "latest_comment_count",
+            "latest_reply_count",
+        ]
+        available_stats = [
+            column for column in stat_columns if column in content_stats.columns
+        ]
+        display_rows = filtered_contents.copy()
+        if not content_stats.empty and available_stats:
+            display_rows = display_rows.merge(
+                content_stats[available_stats],
+                on="content_id",
+                how="left",
+            )
+        table_columns = [
+            column
+            for column in (
+                "source",
+                "content_type",
+                "created_at",
+                "subreddit",
+                "youtube_channel_id",
+                "title",
+                "interaction_count",
+                "unique_interacting_users",
+                "latest_view_count",
+                "latest_like_count",
+                "url",
+            )
+            if column in display_rows.columns
+        ]
+        st.dataframe(
+            display_rows[table_columns].head(250),
+            width="stretch",
+            hide_index=True,
+            column_config={"url": st.column_config.LinkColumn("URL")},
+        )
+        if not filtered_contents.empty:
+            selected_index = st.selectbox(
+                "Content",
+                options=filtered_contents.index.tolist(),
+                format_func=lambda index: content_label(filtered_contents.loc[index]),
+            )
+            render_content_interactions(filtered_contents.loc[selected_index], interactions)
+
+    with reddit_tab:
+        reddit_contents = contents[contents["source"] == "reddit"].copy()
+        if reddit_contents.empty:
+            st.info("No Reddit content available.")
+        else:
+            subreddit_summary = (
+                reddit_contents.groupby("subreddit", dropna=False)
+                .size()
+                .reset_index(name="posts")
+                .sort_values("posts", ascending=False)
+            )
+            st.dataframe(subreddit_summary, width="stretch", hide_index=True)
+            selected_index = st.selectbox(
+                "Reddit post",
+                options=reddit_contents.index.tolist(),
+                format_func=lambda index: content_label(reddit_contents.loc[index]),
+            )
+            render_content_interactions(reddit_contents.loc[selected_index], interactions)
+
+    with x_tab:
+        x_contents = contents[contents["source"] == "x"].copy()
+        if x_contents.empty:
+            st.info("No X content available.")
+        else:
+            selected_index = st.selectbox(
+                "X post",
+                options=x_contents.index.tolist(),
+                format_func=lambda index: content_label(x_contents.loc[index]),
+            )
+            selected = x_contents.loc[selected_index]
+            render_content_interactions(selected, interactions)
+
+    with youtube_tab:
+        youtube_contents = contents[contents["source"] == "youtube"].copy()
+        if youtube_contents.empty:
+            st.info("No YouTube content available.")
+        else:
+            selected_index = st.selectbox(
+                "YouTube video",
+                options=youtube_contents.index.tolist(),
+                format_func=lambda index: content_label(youtube_contents.loc[index]),
+            )
+            selected = youtube_contents.loc[selected_index]
+            render_content_interactions(selected, interactions)
+            if "content_id" in transcripts.columns:
+                video_transcripts = transcripts[
+                    transcripts["content_id"] == selected.get("content_id")
+                ].copy()
+            else:
+                video_transcripts = pd.DataFrame()
+            if video_transcripts.empty:
+                st.info("No transcript available for this video.")
+            else:
+                transcript = video_transcripts.iloc[0].get("transcript_text")
+                keyword = st.text_input("Transcript keyword")
+                transcript_text = "" if pd.isna(transcript) else str(transcript)
+                if keyword:
+                    lines = [
+                        line
+                        for line in transcript_text.splitlines()
+                        if keyword.lower() in line.lower()
+                    ]
+                    st.text_area("Transcript", "\n".join(lines), height=260)
+                else:
+                    st.text_area("Transcript", transcript_text, height=260)
+
+    with users_tab:
+        if user_evolution.empty:
+            render_optional_table_status(
+                "gold.user_evolution",
+                user_evolution,
+                errors.get("user_evolution"),
+            )
+        else:
+            users = sorted(user_evolution["user_id_hash"].dropna().unique())
+            if not users:
+                st.info("No user identifier available in user evolution yet.")
+                return
+            selected_user = st.selectbox("User", users)
+            user_rows = user_evolution[
+                user_evolution["user_id_hash"] == selected_user
+            ].copy()
+            st.dataframe(user_rows, width="stretch", hide_index=True)
+            if "event_date" in user_rows.columns and not user_rows.empty:
+                chart_rows = user_rows.melt(
+                    id_vars=["event_date", "source"],
+                    value_vars=[
+                        column
+                        for column in (
+                            "contents_created",
+                            "interactions_created",
+                            "distinct_contents_touched",
+                            "question_count",
+                        )
+                        if column in user_rows.columns
+                    ],
+                    var_name="metric",
+                    value_name="value",
+                )
+                fig_user = px.line(
+                    chart_rows,
+                    x="event_date",
+                    y="value",
+                    color="metric",
+                    line_dash="source",
+                    markers=True,
+                )
+                st.plotly_chart(fig_user, width="stretch")
+
+
 def render_quality_overview():
     col1, col2 = st.columns(2)
 
@@ -1914,12 +2237,13 @@ def render_recent_events():
         },
     )
 
-overview_tab, engagement_tab, authors_tab, tracking_tab, model_tab, quality_tab, events_tab = st.tabs(
+overview_tab, engagement_tab, authors_tab, tracking_tab, content_tab, model_tab, quality_tab, events_tab = st.tabs(
     [
         "Overview",
         "Engagement",
         "YouTube authors",
         "Identifier tracking",
+        "Content Explorer",
         "Model pipeline",
         "Quality",
         "Events",
@@ -1941,6 +2265,9 @@ with authors_tab:
 
 with tracking_tab:
     render_identifier_tracking()
+
+with content_tab:
+    render_content_analytics()
 
 with model_tab:
     render_model_pipeline()

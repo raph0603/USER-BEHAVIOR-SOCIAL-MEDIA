@@ -1,0 +1,118 @@
+import sys
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+BATCH_PATH = ROOT / "spark" / "jobs" / "batch"
+sys.path.insert(0, str(BATCH_PATH))
+
+import content_analytics as ca
+
+
+class ContentAnalyticsContractTests(unittest.TestCase):
+    def test_silver_contents_contract(self):
+        for column in (
+            "content_id",
+            "source",
+            "platform_content_id",
+            "content_type",
+            "author_id_hash",
+            "subreddit",
+            "youtube_channel_id",
+            "text_for_model",
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, ca.CONTENT_COLUMNS)
+                self.assertIn(column, ca.CREATE_CONTENTS_SQL)
+
+    def test_silver_interactions_contract(self):
+        for column in (
+            "interaction_id",
+            "parent_content_id",
+            "parent_interaction_id",
+            "conversation_id",
+            "interaction_type",
+            "author_id_hash",
+            "reply_count",
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, ca.INTERACTION_COLUMNS)
+                self.assertIn(column, ca.CREATE_INTERACTIONS_SQL)
+
+    def test_silver_snapshots_extend_existing_table(self):
+        for column in (
+            "content_id",
+            "snapshot_at",
+            "view_count",
+            "follower_count",
+            "subscriber_count",
+            "subreddit_member_count",
+            "snapshot_date",
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, ca.SNAPSHOT_COLUMNS)
+                self.assertIn(column, ca.CREATE_SNAPSHOTS_SQL)
+
+    def test_gold_contracts(self):
+        for column in (
+            "interaction_count",
+            "unique_interacting_users",
+            "latest_snapshot_at",
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, ca.CONTENT_STATS_COLUMNS)
+                self.assertIn(column, ca.CREATE_CONTENT_STATS_SQL)
+
+        for column in (
+            "user_id_hash",
+            "contents_created",
+            "interactions_created",
+            "distinct_contents_touched",
+            "question_count",
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, ca.USER_EVOLUTION_COLUMNS)
+                self.assertIn(column, ca.CREATE_USER_EVOLUTION_SQL)
+
+    def test_nullable_source_columns_are_declared(self):
+        for column in (
+            "subreddit",
+            "x_account",
+            "language",
+            "conversation_id",
+            "parent_interaction_id",
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, ca.OPTIONAL_EVENT_COLUMNS)
+
+
+class ContentAnalyticsIntegrationTextTests(unittest.TestCase):
+    def test_airflow_dag_runs_content_analytics(self):
+        source = (
+            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("build_content_analytics_command", source)
+        self.assertIn("content_analytics.py", source)
+        self.assertIn("update_content_analytics", source)
+
+    def test_dashboard_surfaces_content_explorer(self):
+        source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
+
+        for value in (
+            "CONTENT_ANALYTICS_TABLES",
+            "Content Explorer",
+            "Reddit",
+            "X",
+            "YouTube",
+            "Users",
+            "render_content_analytics()",
+            "Transcript keyword",
+        ):
+            with self.subTest(value=value):
+                self.assertIn(value, source)
+
+
+if __name__ == "__main__":
+    unittest.main()
