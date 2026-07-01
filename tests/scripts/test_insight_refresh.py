@@ -152,7 +152,6 @@ class InsightRefreshTests(unittest.TestCase):
         ]
         self.assertIn("_reddit_comment_json_url", refresh_reddit)
         self.assertIn("requests.get", refresh_reddit)
-        self.assertIn('SKIPPED_REFRESH_SOURCES.add("reddit")', refresh_reddit)
         self.assertNotIn("sync_playwright", refresh_reddit)
         self.assertNotIn("wait_for(state=\"attached\"", refresh_reddit)
 

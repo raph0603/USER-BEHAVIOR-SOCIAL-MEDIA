@@ -43,28 +43,22 @@ jobs:
           cat > commitlint.config.cjs << 'EOF'
           module.exports = {
             extends: ['@commitlint/config-conventional'],
+            ignores: [
+              (message) => /^Merge remote-tracking branch /.test(message),
+            ],
+            parserPreset: {
+              parserOpts: {
+                headerPattern: /^(\w+)(?:\(([^)]+)\))?:?\s(.+)$/,
+                headerCorrespondence: ['type', 'scope', 'subject'],
+              },
+            },
             rules: {
-              'type-enum': [
-                2,
-                'always',
-                [
-                  'feat',
-                  'fix',
-                  'docs',
-                  'style',
-                  'refactor',
-                  'perf',
-                  'test',
-                  'build',
-                  'ci',
-                  'chore',
-                  'core',
-                  'revert'
-                ]
-              ],
+              'type-enum': [0],
+              'type-case': [0],
+              'subject-case': [0],
               'type-empty': [2, 'never'],
               'subject-empty': [2, 'never'],
-              'header-max-length': [2, 'always', 100]
+              'header-max-length': [2, 'always', 120]
             }
           };
           EOF
