@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.12.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.11.0...v1.12.0) (2026-07-01)
+
+
+### Features
+
+* **dashboard:** surface model pipeline tables ([29937a9](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/29937a994a3a70f8c81150b330ef8d1566cf09ab)), closes [#83](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/83) [#84](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/84) [#85](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/85) [#86](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/86)
+* **data:** standardize social event text fields Refs [#82](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/82) ([8270281](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/82702812c5f707c6dd39558297a625e71a441234))
+* **silver:** add model-ready classification layers ([3a74392](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/3a7439299ec1b5ea8d5427bfcd2bdf1df27fc7e9))
+* **silver:** add model-ready classification layers ([2af7ea6](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/2af7ea607886eff6fd753b81f8d15bdf4bd59ed1)), closes [#83](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/83) [#84](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/84) [#85](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/85) [#86](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/86)
+
 ## [1.11.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.10.1...v1.11.0) (2026-07-01)
 
 
