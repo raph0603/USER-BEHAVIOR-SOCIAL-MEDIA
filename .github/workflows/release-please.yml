@@ -103,3 +103,15 @@ jobs:
           gh workflow run release-please.yml \
             --repo "$REPO" \
             --ref production
+
+      - name: Dispatch Docker Hub publish workflow
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG_NAME: ${{ steps.release.outputs.tag_name }}
+        run: |
+          gh workflow run publish-docker-hub.yml \
+            --repo "$REPO" \
+            --ref production \
+            -f tag_name="$TAG_NAME"
