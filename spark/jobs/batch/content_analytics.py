@@ -83,6 +83,13 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.contents (
   created_at TIMESTAMP,
   event_date DATE,
   subreddit STRING,
+  subreddit_title STRING,
+  subreddit_description STRING,
+  subreddit_created_at STRING,
+  subreddit_visibility STRING,
+  subreddit_weekly_visitors BIGINT,
+  subreddit_weekly_contributions BIGINT,
+  subreddit_member_count BIGINT,
   x_account STRING,
   youtube_channel_id STRING,
   youtube_channel_name STRING,
@@ -229,6 +236,13 @@ CONTENT_COLUMNS = [
     "created_at",
     "event_date",
     "subreddit",
+    "subreddit_title",
+    "subreddit_description",
+    "subreddit_created_at",
+    "subreddit_visibility",
+    "subreddit_weekly_visitors",
+    "subreddit_weekly_contributions",
+    "subreddit_member_count",
     "x_account",
     "youtube_channel_id",
     "youtube_channel_name",
@@ -331,6 +345,12 @@ OPTIONAL_EVENT_COLUMNS = {
     "metadata_refreshed_at": "TIMESTAMP",
     "owner_channel_id": "STRING",
     "subreddit": "STRING",
+    "subreddit_title": "STRING",
+    "subreddit_description": "STRING",
+    "subreddit_created_at": "STRING",
+    "subreddit_visibility": "STRING",
+    "subreddit_weekly_visitors": "BIGINT",
+    "subreddit_weekly_contributions": "BIGINT",
     "x_account": "STRING",
     "youtube_channel_name": "STRING",
     "language": "STRING",
@@ -479,6 +499,25 @@ def build_contents(events: DataFrame) -> DataFrame:
             first("created_at", ignorenulls=True).alias("created_at"),
             first("event_date", ignorenulls=True).alias("event_date"),
             first("derived_subreddit", ignorenulls=True).alias("subreddit"),
+            first("subreddit_title", ignorenulls=True).alias("subreddit_title"),
+            first("subreddit_description", ignorenulls=True).alias(
+                "subreddit_description"
+            ),
+            first("subreddit_created_at", ignorenulls=True).alias(
+                "subreddit_created_at"
+            ),
+            first("subreddit_visibility", ignorenulls=True).alias(
+                "subreddit_visibility"
+            ),
+            first("subreddit_weekly_visitors", ignorenulls=True).alias(
+                "subreddit_weekly_visitors"
+            ),
+            first("subreddit_weekly_contributions", ignorenulls=True).alias(
+                "subreddit_weekly_contributions"
+            ),
+            first("subreddit_member_count", ignorenulls=True).alias(
+                "subreddit_member_count"
+            ),
             first("x_account", ignorenulls=True).alias("x_account"),
             first("youtube_channel_id", ignorenulls=True).alias("youtube_channel_id"),
             first("youtube_channel_name", ignorenulls=True).alias(
@@ -679,6 +718,13 @@ def _create_tables(spark: SparkSession) -> None:
         {
             "platform_content_id": "STRING",
             "subreddit": "STRING",
+            "subreddit_title": "STRING",
+            "subreddit_description": "STRING",
+            "subreddit_created_at": "STRING",
+            "subreddit_visibility": "STRING",
+            "subreddit_weekly_visitors": "BIGINT",
+            "subreddit_weekly_contributions": "BIGINT",
+            "subreddit_member_count": "BIGINT",
             "x_account": "STRING",
             "youtube_channel_id": "STRING",
             "youtube_channel_name": "STRING",

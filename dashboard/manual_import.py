@@ -362,6 +362,28 @@ def _normalize_reddit(row):
         "platform_event_id": _first_value(row, "platform_event_id", "comment_id"),
         "owner_channel_id": None,
         "subreddit": _first_value(row, "subreddit") or _subreddit_from_url(url),
+        "subreddit_title": _first_value(row, "subreddit_title", "community_title"),
+        "subreddit_description": _first_value(
+            row,
+            "subreddit_description",
+            "community_description",
+        ),
+        "subreddit_created_at": _first_value(row, "subreddit_created_at"),
+        "subreddit_visibility": _first_value(
+            row,
+            "subreddit_visibility",
+            "community_visibility",
+        ),
+        "subreddit_weekly_visitors": _parse_count(
+            _first_value(row, "subreddit_weekly_visitors", "weekly_visitors")
+        ),
+        "subreddit_weekly_contributions": _parse_count(
+            _first_value(
+                row,
+                "subreddit_weekly_contributions",
+                "weekly_contributions",
+            )
+        ),
         "x_account": None,
         "youtube_channel_name": None,
         "language": _first_value(row, "language", "lang"),

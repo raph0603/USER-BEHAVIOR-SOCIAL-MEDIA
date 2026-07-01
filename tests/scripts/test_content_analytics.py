@@ -19,6 +19,11 @@ class ContentAnalyticsContractTests(unittest.TestCase):
             "content_type",
             "author_id_hash",
             "subreddit",
+            "subreddit_title",
+            "subreddit_description",
+            "subreddit_member_count",
+            "subreddit_weekly_visitors",
+            "subreddit_weekly_contributions",
             "youtube_channel_id",
             "text_for_model",
         ):
@@ -78,6 +83,12 @@ class ContentAnalyticsContractTests(unittest.TestCase):
     def test_nullable_source_columns_are_declared(self):
         for column in (
             "subreddit",
+            "subreddit_title",
+            "subreddit_description",
+            "subreddit_created_at",
+            "subreddit_visibility",
+            "subreddit_weekly_visitors",
+            "subreddit_weekly_contributions",
             "x_account",
             "language",
             "conversation_id",
@@ -144,6 +155,8 @@ class ContentAnalyticsIntegrationTextTests(unittest.TestCase):
             "CONTENT_ANALYTICS_TABLES",
             "Content Explorer",
             "Reddit",
+            "subreddit_weekly_visitors",
+            "subreddit_weekly_contributions",
             "X",
             "YouTube",
             "Users",

@@ -30,6 +30,8 @@ ENGAGEMENT_LABELS = {
     "follower_count": "Followers",
     "subscriber_count": "Subscribers",
     "subreddit_member_count": "Subreddit Members",
+    "subreddit_weekly_visitors": "Weekly Visitors",
+    "subreddit_weekly_contributions": "Weekly Contributions",
 }
 ENGAGEMENT_COLUMNS = tuple(ENGAGEMENT_LABELS)
 PROFILE_ENGAGEMENT_COLUMNS = (
@@ -46,6 +48,12 @@ OPTIONAL_DASHBOARD_COLUMNS = (
     "platform_event_id",
     "metadata_refreshed_at",
     "owner_channel_id",
+    "subreddit_title",
+    "subreddit_description",
+    "subreddit_created_at",
+    "subreddit_visibility",
+    "subreddit_weekly_visitors",
+    "subreddit_weekly_contributions",
     "collaborator_channel_ids",
     "raw_text",
     "clean_text",
@@ -2021,13 +2029,50 @@ def render_content_analytics():
         if reddit_contents.empty:
             st.info("No Reddit content available.")
         else:
+            community_columns = [
+                column
+                for column in (
+                    "subreddit_title",
+                    "subreddit_description",
+                    "subreddit_created_at",
+                    "subreddit_visibility",
+                    "subreddit_member_count",
+                    "subreddit_weekly_visitors",
+                    "subreddit_weekly_contributions",
+                )
+                if column in reddit_contents.columns
+            ]
             subreddit_summary = (
                 reddit_contents.groupby("subreddit", dropna=False)
-                .size()
-                .reset_index(name="posts")
+                .agg(
+                    posts=("content_id", "count"),
+                    **{
+                        column: (column, "first")
+                        for column in community_columns
+                    },
+                )
+                .reset_index()
                 .sort_values("posts", ascending=False)
             )
-            st.dataframe(subreddit_summary, width="stretch", hide_index=True)
+            st.dataframe(
+                subreddit_summary,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "subreddit_member_count": st.column_config.NumberColumn(
+                        "Subscribers",
+                        format="%d",
+                    ),
+                    "subreddit_weekly_visitors": st.column_config.NumberColumn(
+                        "Weekly visitors",
+                        format="%d",
+                    ),
+                    "subreddit_weekly_contributions": st.column_config.NumberColumn(
+                        "Weekly contributions",
+                        format="%d",
+                    ),
+                },
+            )
             selected_index = st.selectbox(
                 "Reddit post",
                 options=reddit_contents.index.tolist(),

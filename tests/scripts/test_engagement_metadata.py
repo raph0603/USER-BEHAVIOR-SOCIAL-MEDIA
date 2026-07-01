@@ -176,6 +176,12 @@ class EngagementMetadataTests(unittest.TestCase):
     def test_entity_relationship_fields_are_propagated_to_core_pipeline(self):
         expected = {
             "subreddit",
+            "subreddit_title",
+            "subreddit_description",
+            "subreddit_created_at",
+            "subreddit_visibility",
+            "subreddit_weekly_visitors",
+            "subreddit_weekly_contributions",
             "x_account",
             "youtube_channel_name",
             "language",

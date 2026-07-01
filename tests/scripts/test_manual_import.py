@@ -64,6 +64,13 @@ class ManualImportTests(unittest.TestCase):
                     "author": "user",
                     "comment_text": "Battery range matters",
                     "created_utc": 1780308000,
+                    "subreddit_title": "EV community",
+                    "subreddit_description": "Electric vehicles discussion",
+                    "subreddit_created_at": "Jun 1, 2010",
+                    "subreddit_visibility": "Public",
+                    "subreddit_weekly_visitors": "4.9 M",
+                    "subreddit_weekly_contributions": "51 k",
+                    "subreddit_subscribers": "20,456,209",
                 }
             ]
         ).encode("utf-8")
@@ -78,6 +85,16 @@ class ManualImportTests(unittest.TestCase):
         self.assertEqual(events[0]["platform_event_id"], "r1")
         self.assertEqual(events[0]["conversation_id"], "post")
         self.assertEqual(events[0]["subreddit"], "ev")
+        self.assertEqual(events[0]["subreddit_title"], "EV community")
+        self.assertEqual(
+            events[0]["subreddit_description"],
+            "Electric vehicles discussion",
+        )
+        self.assertEqual(events[0]["subreddit_created_at"], "Jun 1, 2010")
+        self.assertEqual(events[0]["subreddit_visibility"], "Public")
+        self.assertEqual(events[0]["subreddit_weekly_visitors"], 4900000)
+        self.assertEqual(events[0]["subreddit_weekly_contributions"], 51000)
+        self.assertEqual(events[0]["subreddit_member_count"], 20456209)
         self.assertEqual(events[0]["title"], "Battery range matters")
         self.assertEqual(events[0]["like_count"], None)
         self.assertTrue(events[0]["timestamp"].startswith("2026-06-01"))
