@@ -181,6 +181,9 @@ def _normalize_youtube(row):
         ),
         "url": url,
         "title": _first_value(row, "title", "text", "comment_text", "video_title"),
+        "raw_text": _first_value(row, "title", "text", "comment_text", "video_title"),
+        "clean_text": None,
+        "text_for_model": None,
         "timestamp": _parse_timestamp(
             _first_value(
                 row,
@@ -218,6 +221,9 @@ def _normalize_x(row):
         ),
         "url": _first_value(row, "url", "tweet_url", "page_url"),
         "title": _first_value(row, "title", "tweet_text", "text"),
+        "raw_text": _first_value(row, "title", "tweet_text", "text"),
+        "clean_text": None,
+        "text_for_model": None,
         "timestamp": _parse_timestamp(
             _first_value(row, "timestamp", "tweet_time_iso", "tweet_time")
         ),
@@ -244,6 +250,9 @@ def _normalize_reddit(row):
         ),
         "url": _first_value(row, "url", "comment_permalink", "post_url"),
         "title": _first_value(row, "title", "comment_text", "text"),
+        "raw_text": _first_value(row, "title", "comment_text", "text"),
+        "clean_text": None,
+        "text_for_model": None,
         "timestamp": _parse_timestamp(
             _first_value(row, "timestamp", "created_iso", "created_utc")
         ),

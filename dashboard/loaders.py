@@ -150,6 +150,9 @@ def load_iceberg_data(config=None):
         optional_columns = [
             *AUTHOR_METADATA_COLUMNS,
             *OPTIONAL_ENGAGEMENT_COLUMNS,
+            "raw_text",
+            "clean_text",
+            "text_for_model",
         ]
         while True:
             try:
