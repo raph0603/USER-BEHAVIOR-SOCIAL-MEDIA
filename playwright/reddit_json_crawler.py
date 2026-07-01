@@ -4,6 +4,7 @@ import hashlib
 import time
 import random
 from datetime import datetime, timezone
+from urllib.parse import urlparse, urlunparse
 
 INPUT_FILE = "reddit_urls.txt"
 OUTPUT_CSV = f"reddit_comments_json_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
@@ -19,14 +20,18 @@ def hash_username(username):
 
 def load_urls():
     try:
-        with open(INPUT_FILE, "r", encoding="utf-8") as f:
+        # utf-8-sig strips a BOM if the file was saved by PowerShell Out-File -Encoding utf8
+        with open(INPUT_FILE, "r", encoding="utf-8-sig") as f:
             return [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
-        print(f"Fichier introuvable : {INPUT_FILE}")
+        print(f"Input file not found: {INPUT_FILE}")
         return []
 
-def make_json_url(post_url):
+def make_json_url(post_url, host=None):
     post_url = post_url.rstrip("/")
+    if host:  # swap the hostname (e.g. old.reddit.com fallback) while keeping the path
+        parsed = urlparse(post_url)
+        post_url = urlunparse((parsed.scheme or "https", host, parsed.path, "", "", ""))
     return post_url + ".json?limit=500"
 
 def unix_to_iso(ts):
@@ -74,19 +79,32 @@ def extract_comment_tree(children, post_url, rows, depth=0, subreddit_member_cou
             reply_children = replies.get("data", {}).get("children", [])
             extract_comment_tree(reply_children, post_url, rows, depth=depth+1, subreddit_member_count=subreddit_member_count)
 
-def fetch_post_comments(post_url):
-    json_url = make_json_url(post_url)
+def _fetch_json(post_url):
+    """Fetch the post JSON; on 403/429 (Reddit blocking www) retry via old.reddit.com."""
+    for host in (None, "old.reddit.com"):
+        json_url = make_json_url(post_url, host)
+        try:
+            response = requests.get(json_url, headers=HEADERS, timeout=30)
+            if response.status_code in (403, 429):
+                print(f"  HTTP {response.status_code} for {json_url} -> trying fallback")
+                time.sleep(random.uniform(1.0, 2.0))
+                continue
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"  Error {json_url}: {e}")
+            continue
+    return None
 
-    try:
-        response = requests.get(json_url, headers=HEADERS, timeout=30)
-        response.raise_for_status()
-        payload = response.json()
-    except Exception as e:
-        print(f"Erreur requête JSON pour {post_url} : {e}")
+
+def fetch_post_comments(post_url):
+    payload = _fetch_json(post_url)
+    if payload is None:
+        print(f"JSON request failed for {post_url} (www + old.reddit both blocked)")
         return []
 
     if not isinstance(payload, list) or len(payload) < 2:
-        print(f"Format JSON inattendu pour {post_url}")
+        print(f"Unexpected JSON format for {post_url}")
         return []
 
     comments_listing = payload[1]
@@ -109,7 +127,7 @@ def main():
     if not urls:
         return
 
-    print(f"Scraping JSON de {len(urls)} URLs...")
+    print(f"Scraping JSON from {len(urls)} URLs...")
 
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as csvfile:
         fieldnames = [
@@ -136,7 +154,7 @@ def main():
             print(url)
 
             rows = fetch_post_comments(url)
-            print(f"Commentaires récupérés : {len(rows)}")
+            print(f"Comments fetched: {len(rows)}")
 
             for row in rows:
                 writer.writerow(row)
@@ -147,7 +165,7 @@ def main():
             sleep_time = random.uniform(1.5, 4.0)
             time.sleep(sleep_time)
 
-    print(f"\n[TERMINÉ] {total_comments} commentaires sauvegardés dans {OUTPUT_CSV}")
+    print(f"\n[DONE] {total_comments} comments saved to {OUTPUT_CSV}")
 
 if __name__ == "__main__":
     main()
