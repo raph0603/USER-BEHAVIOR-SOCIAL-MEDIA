@@ -32,6 +32,21 @@ class DashboardUserProgressionTests(unittest.TestCase):
         self.assertIn("deduplicate_youtube_videos(df_filtered)", source)
         self.assertIn("grouped by video", source)
 
+    def test_dashboard_explains_missing_engagement_metadata(self):
+        source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
+
+        expected = [
+            "def build_engagement_by_source",
+            "Metadata coverage",
+            "Latest metadata",
+            "format_metric_cell",
+            "known value",
+            "instead of a sum",
+        ]
+        for value in expected:
+            with self.subTest(value=value):
+                self.assertIn(value, source)
+
     def test_dashboard_links_balancing_report(self):
         source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
 
@@ -61,6 +76,8 @@ class DashboardUserProgressionTests(unittest.TestCase):
             "Events",
             "render_overview_summary()",
             "render_recent_events()",
+            "Last collector runs",
+            "get_recent_collector_runs",
         ]
         for value in expected:
             with self.subTest(value=value):

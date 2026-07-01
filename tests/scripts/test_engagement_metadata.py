@@ -53,6 +53,9 @@ class EngagementMetadataTests(unittest.TestCase):
             "1.2K likes": 1200,
             "3M views": 3_000_000,
             "-5 points": -5,
+            "12.4K": 12400,
+            "1.2M": 1200000,
+            "3B": 3000000000,
         }
         for raw_value, expected in cases.items():
             with self.subTest(raw_value=raw_value):
@@ -98,7 +101,7 @@ class EngagementMetadataTests(unittest.TestCase):
 
         self.assertEqual(ENGAGEMENT.extract_x_metric(article, "like"), 23)
 
-    def test_avro_contract_contains_only_common_engagement_metadata(self):
+    def test_avro_contract_contains_engagement_metadata(self):
         schema_path = ROOT / "schemas" / "playwright_event.avsc"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         field_names = {field["name"] for field in schema["fields"]}
@@ -107,16 +110,16 @@ class EngagementMetadataTests(unittest.TestCase):
             "platform_event_id",
             "like_count",
             "view_count",
-        }
-        removed = {
             "bookmark_count",
             "comment_count",
             "reply_count",
             "retweet_count",
             "score",
+            "follower_count",
+            "subscriber_count",
+            "subreddit_member_count",
         }
         self.assertTrue(expected.issubset(field_names))
-        self.assertFalse(removed & field_names)
         self.assertFalse(
             {
                 "content_type",
@@ -129,18 +132,19 @@ class EngagementMetadataTests(unittest.TestCase):
             & field_names
         )
 
-    def test_common_engagement_metrics_are_propagated_to_silver(self):
+    def test_engagement_metrics_are_propagated_to_silver(self):
         expected = {
             "platform_event_id",
             "like_count",
             "view_count",
-        }
-        removed = {
             "bookmark_count",
             "comment_count",
             "reply_count",
             "retweet_count",
             "score",
+            "follower_count",
+            "subscriber_count",
+            "subreddit_member_count",
         }
         paths = [
             ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py",
@@ -168,16 +172,14 @@ class EngagementMetadataTests(unittest.TestCase):
             with self.subTest(path=path):
                 for field_name in expected:
                     self.assertIn(field_name, source)
-                for field_name in removed:
-                    self.assertNotIn(field_name, source)
 
-    def test_reddit_is_not_mapped_to_like_count_from_score(self):
+    def test_reddit_score_is_propagated_separately(self):
         source = (ROOT / "playwright" / "insight_refresh.py").read_text(
             encoding="utf-8"
         )
 
-        self.assertNotIn('update["score"]', source)
-        self.assertNotIn('"score",', source)
+        self.assertIn('"score"', source)
+        self.assertNotIn('"like_count": score', source)
 
     def test_cleaning_tolerates_malformed_avro_records(self):
         source = (
@@ -215,8 +217,13 @@ class EngagementMetadataTests(unittest.TestCase):
         self.assertIn("X_SEARCH_NAVIGATION_TIMEOUT_MS", producer)
         self.assertIn("X_FAIL_ON_ERROR", producer)
         self.assertIn("X online collection skipped", producer)
+        self.assertIn("_click_x_google_login_button", producer)
+        self.assertIn("X_LOGIN_DEBUG_DIR", producer)
+        self.assertIn("CollectorSoftBlock", producer)
+        self.assertIn("Collector soft-blocked", producer)
+        self.assertIn("_is_auth_or_quota_block", producer)
 
-    def test_producer_emits_only_contract_engagement_metrics(self):
+    def test_producer_emits_contract_engagement_metrics(self):
         producer = (ROOT / "playwright" / "producer.py").read_text(
             encoding="utf-8"
         )
@@ -228,7 +235,7 @@ class EngagementMetadataTests(unittest.TestCase):
             "bookmark_count",
             "score",
         ):
-            self.assertNotIn(f'"{field_name}"', producer)
+            self.assertIn(f'"{field_name}"', producer)
 
     def test_youtube_search_supports_multiple_pages(self):
         producer = (ROOT / "playwright" / "producer.py").read_text(
@@ -247,6 +254,105 @@ class EngagementMetadataTests(unittest.TestCase):
 
         self.assertIn("def _matches_keywords(", producer)
         self.assertIn(r'rf"\b{re.escape(normalized_keyword)}\b"', producer)
+
+    def test_extract_x_followers_success(self):
+        class FakeElement:
+            def hover(self):
+                pass
+        class FakeLocator:
+            def __init__(self, elem):
+                self.elem = elem
+            @property
+            def first(self):
+                return self.elem
+        class FakeLinks:
+            def __init__(self, texts):
+                self.texts = texts
+            def count(self):
+                return len(self.texts)
+            def nth(self, idx):
+                class Item:
+                    def __init__(self, txt):
+                        self.txt = txt
+                    def inner_text(self, timeout=None):
+                        return self.txt
+                return Item(self.texts[idx])
+        class FakeHoverCard:
+            def __init__(self, links):
+                self._links = links
+            def wait_for(self, state=None, timeout=None):
+                pass
+            def locator(self, selector):
+                return self._links
+        class FakePage:
+            def __init__(self, hover_card):
+                self._hover_card = hover_card
+            def locator(self, selector):
+                return self._hover_card
+        class FakeArticle:
+            def __init__(self, page, first_elem):
+                self.page = page
+                self._first_elem = first_elem
+            def locator(self, selector):
+                return FakeLocator(self._first_elem)
+
+        links = FakeLinks(["12.4K Followers"])
+        hover_card = FakeHoverCard(links)
+        page = FakePage(hover_card)
+        article = FakeArticle(page, FakeElement())
+
+        followers = ENGAGEMENT.extract_x_followers(article)
+        self.assertEqual(followers, 12400)
+
+    def test_extract_reddit_json_member_count(self):
+        import importlib.util
+        from unittest.mock import patch
+        r_module_path = ROOT / "playwright" / "reddit_json_crawler.py"
+        r_spec = importlib.util.spec_from_file_location("reddit_json_crawler", r_module_path)
+        reddit_json = importlib.util.module_from_spec(r_spec)
+        r_spec.loader.exec_module(reddit_json)
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return [
+                    {
+                        "data": {
+                            "children": [
+                                {
+                                    "data": {
+                                        "subreddit_subscribers": 54321
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "data": {
+                            "children": [
+                                {
+                                    "kind": "t1",
+                                    "data": {
+                                        "author": "user1",
+                                        "body": "hello",
+                                        "id": "c1",
+                                        "parent_id": "p1",
+                                        "created_utc": 1600000000,
+                                        "score": 10,
+                                        "permalink": "/r/test/comments/123/c1/"
+                                    }
+                                }
+                            ]
+                        }
+                    
+                    }
+                ]
+        
+        with patch("requests.get", return_value=FakeResponse()):
+            rows = reddit_json.fetch_post_comments("https://reddit.com/r/test/comments/123")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["subreddit_member_count"], 54321)
 
 
 if __name__ == "__main__":

@@ -27,8 +27,21 @@ ENGAGEMENT_LABELS = {
     "retweet_count": "Retweets",
     "bookmark_count": "Bookmarks",
     "score": "Score Reddit",
+    "follower_count": "Followers",
+    "subscriber_count": "Subscribers",
+    "subreddit_member_count": "Subreddit Members",
 }
 ENGAGEMENT_COLUMNS = tuple(ENGAGEMENT_LABELS)
+PROFILE_ENGAGEMENT_COLUMNS = (
+    "follower_count",
+    "subscriber_count",
+    "subreddit_member_count",
+)
+SUMMED_ENGAGEMENT_COLUMNS = tuple(
+    column
+    for column in ENGAGEMENT_COLUMNS
+    if column not in PROFILE_ENGAGEMENT_COLUMNS
+)
 OPTIONAL_DASHBOARD_COLUMNS = (
     "platform_event_id",
     "metadata_refreshed_at",
@@ -129,6 +142,91 @@ def format_engagement_total(series):
     if values.empty:
         return "N/A"
     return f"{int(values.sum()):,}"
+
+
+def latest_known_value(series):
+    values = series.dropna()
+    if values.empty:
+        return pd.NA
+    return values.iloc[-1]
+
+
+def format_metric_cell(value):
+    if pd.isna(value):
+        return "N/A"
+    return f"{int(value):,}"
+
+
+def format_datetime_cell(value):
+    if pd.isna(value):
+        return "N/A"
+    return value.strftime("%Y-%m-%d %H:%M")
+
+
+def build_engagement_by_source(dataframe):
+    summary_columns = [
+        "Source",
+        "Events",
+        "Metadata rows",
+        "Metadata coverage",
+        "Latest metadata",
+        *ENGAGEMENT_LABELS.values(),
+    ]
+    if dataframe.empty or "source" not in dataframe.columns:
+        return pd.DataFrame(columns=summary_columns), pd.DataFrame(
+            columns=["Source", *ENGAGEMENT_LABELS.values()]
+        )
+
+    source_rows = dataframe.copy()
+    for column in ENGAGEMENT_COLUMNS:
+        if column not in source_rows.columns:
+            source_rows[column] = pd.NA
+    if "metadata_refreshed_at" not in source_rows.columns:
+        source_rows["metadata_refreshed_at"] = pd.NaT
+
+    sort_columns = [
+        column
+        for column in ("created_at", "metadata_refreshed_at")
+        if column in source_rows.columns
+    ]
+    if sort_columns:
+        source_rows = source_rows.sort_values(sort_columns, na_position="first")
+
+    grouped = source_rows.groupby("source", dropna=False)
+    summed = grouped[list(SUMMED_ENGAGEMENT_COLUMNS)].sum(min_count=1)
+    profile = grouped[list(PROFILE_ENGAGEMENT_COLUMNS)].agg(latest_known_value)
+    metrics = pd.concat([summed, profile], axis=1)
+    metrics = metrics[list(ENGAGEMENT_COLUMNS)].reset_index().rename(
+        columns={"source": "Source", **ENGAGEMENT_LABELS}
+    )
+
+    observed = grouped.agg(
+        Events=("source", "size"),
+        **{
+            "Metadata rows": (
+                "metadata_refreshed_at",
+                lambda series: int(series.notna().sum()),
+            ),
+            "Latest metadata": ("metadata_refreshed_at", "max"),
+        },
+    )
+    observed["Metadata coverage"] = (
+        observed["Metadata rows"].astype(str)
+        + "/"
+        + observed["Events"].astype(str)
+    )
+    observed = observed.reset_index().rename(columns={"source": "Source"})
+    raw_summary = observed.merge(metrics, on="Source", how="left")
+    display_summary = raw_summary.copy()
+    display_summary["Latest metadata"] = display_summary[
+        "Latest metadata"
+    ].apply(format_datetime_cell)
+    for column in ENGAGEMENT_LABELS.values():
+        display_summary[column] = display_summary[column].apply(
+            format_metric_cell
+        )
+
+    return display_summary[summary_columns], metrics
 
 
 def normalize_collaborators(value):
@@ -439,6 +537,12 @@ def get_airflow_status():
     return AirflowClient().load_status()
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def get_recent_collector_runs():
+    limit = int(os.getenv("DASHBOARD_COLLECTOR_RUN_HISTORY_LIMIT", "5"))
+    return AirflowClient().load_recent_collector_runs(limit=limit)
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def get_balancing_report():
     report_path = Path(
@@ -518,6 +622,46 @@ def render_airflow_monitoring():
         )
     else:
         st.info("No next run scheduled")
+
+    try:
+        collector_runs = get_recent_collector_runs()
+    except Exception as exc:
+        st.warning(f"Collector run history unavailable: {exc}")
+        collector_runs = []
+
+    if collector_runs:
+        st.subheader("Last collector runs")
+        blocked_runs = [
+            row for row in collector_runs
+            if row["collector_status"] == "blocked"
+        ]
+        if blocked_runs:
+            st.warning(
+                f"{len(blocked_runs)} collector block(s) found in recent runs"
+            )
+        collector_rows = [
+            {
+                "Started": (
+                    row["started_at"].astimezone().strftime("%Y-%m-%d %H:%M:%S")
+                    if row["started_at"]
+                    else "-"
+                ),
+                "DAG": row["dag_id"],
+                "Source": row["source"],
+                "Task": row["task_state"] or "-",
+                "Collector": row["collector_status"],
+                "Message": row["message"],
+                "Run": row["run_id"],
+            }
+            for row in collector_runs
+        ]
+        st.dataframe(
+            collector_rows,
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.info("No recent collector runs found")
 
     st.caption(
         "Auto-refresh every 15 seconds. "
@@ -628,24 +772,25 @@ def render_engagement_metadata():
     ):
         metric.metric(label, format_engagement_total(analytics_df[column]))
 
-    engagement_by_source = (
-        analytics_df.groupby("source")[list(ENGAGEMENT_COLUMNS)]
-        .sum(min_count=1)
-        .reset_index()
-        .rename(columns={"source": "Source", **ENGAGEMENT_LABELS})
+    engagement_by_source, engagement_by_source_metrics = (
+        build_engagement_by_source(analytics_df)
     )
     st.dataframe(
         engagement_by_source,
         width="stretch",
         hide_index=True,
         column_config={
-            label: st.column_config.NumberColumn(label, format="%d")
-            for label in ENGAGEMENT_LABELS.values()
+            "Events": st.column_config.NumberColumn("Events", format="%d"),
+            "Metadata rows": st.column_config.NumberColumn(
+                "Metadata rows",
+                format="%d",
+            ),
         },
     )
     st.caption(
-        "N/A values are metrics unavailable for the "
-        "platform. Reddit score is kept separate from likes."
+        "N/A values are metrics unavailable for the platform or not collected "
+        "yet. Follower, subscriber and subreddit member counts use the latest "
+        "known value instead of a sum."
     )
 
     st.caption(
@@ -659,7 +804,7 @@ def render_engagement_metadata():
         "reply_count",
     ]
     engagement_chart_data = (
-        engagement_by_source.rename(
+        engagement_by_source_metrics.rename(
             columns={
                 ENGAGEMENT_LABELS[column]: column
                 for column in common_engagement_columns

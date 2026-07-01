@@ -15,6 +15,9 @@ ENGAGEMENT_COLUMNS = (
     "retweet_count",
     "bookmark_count",
     "score",
+    "follower_count",
+    "subscriber_count",
+    "subreddit_member_count",
 )
 AUTHOR_METADATA_COLUMNS = (
     "platform_event_id",
@@ -28,6 +31,9 @@ OPTIONAL_ENGAGEMENT_COLUMNS = (
     "retweet_count",
     "bookmark_count",
     "score",
+    "follower_count",
+    "subscriber_count",
+    "subreddit_member_count",
 )
 
 

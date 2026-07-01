@@ -108,7 +108,7 @@ class InsightRefreshTests(unittest.TestCase):
         self.assertIn("s.platform_event_id IS NOT NULL", apply_source)
         self.assertIn("t.platform_event_id = s.platform_event_id", apply_source)
 
-    def test_x_refresh_keeps_shared_cdp_browser_open(self):
+    def test_x_refresh_launches_headless_browser(self):
         source = (
             ROOT / "playwright" / "insight_refresh.py"
         ).read_text(encoding="utf-8")
@@ -118,9 +118,11 @@ class InsightRefreshTests(unittest.TestCase):
                 "def _reddit_comment_id"
             )
         ]
-        self.assertNotIn("browser.close()", refresh_x)
+        self.assertIn("launch_persistent_context", refresh_x)
+        self.assertIn('headless=_env_bool("X_HEADLESS", True)', refresh_x)
+        self.assertIn("context.close()", refresh_x)
 
-    def test_x_refresh_skips_unavailable_cdp_without_failing_dag(self):
+    def test_x_refresh_skips_unavailable_browser_without_failing_dag(self):
         source = (
             ROOT / "playwright" / "insight_refresh.py"
         ).read_text(encoding="utf-8")
@@ -132,7 +134,7 @@ class InsightRefreshTests(unittest.TestCase):
         ]
         self.assertIn("Skipping X insight refresh", refresh_x)
         self.assertIn('SKIPPED_REFRESH_SOURCES.add("x")', refresh_x)
-        self.assertIn("requests.RequestException", refresh_x)
+        self.assertIn("PlaywrightError", refresh_x)
         self.assertIn("return []", refresh_x)
 
         self.assertIn(

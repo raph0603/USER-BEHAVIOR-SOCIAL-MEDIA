@@ -33,7 +33,8 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 from youtube_transcript_api import YouTubeTranscriptApi
 
-from engagement import extract_x_metric, parse_count
+from engagement import extract_x_followers, extract_x_metric, parse_count
+import youtube_authors
 from youtube_authors import fetch_youtube_collaborators
 
 
@@ -53,6 +54,48 @@ DEFAULT_YOUTUBE_QUERIES = [
     "đánh giá xe điện",
     "xe điện VinFast trạm sạc",
 ]
+
+
+class CollectorSoftBlock(RuntimeError):
+    """Source auth, quota, or rate-limit issue that should not fail the DAG."""
+
+
+def _http_error_status(exc: Exception) -> int | None:
+    response = getattr(exc, "resp", None)
+    status = getattr(response, "status", None)
+    try:
+        return int(status)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_auth_or_quota_block(exc: Exception) -> bool:
+    status = _http_error_status(exc)
+    if status in {401, 403, 429}:
+        return True
+
+    message = str(exc).lower()
+    markers = (
+        "api key",
+        "auth",
+        "captcha",
+        "credential",
+        "forbidden",
+        "login",
+        "mfa",
+        "permission",
+        "quota",
+        "rate limit",
+        "rate-limit",
+        "too many requests",
+        "temporarily limited",
+        "unauthorized",
+    )
+    return any(marker in message for marker in markers)
+
+
+def _soft_block(source: str, reason: str) -> CollectorSoftBlock:
+    return CollectorSoftBlock(f"{source} collection blocked: {reason}")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -185,7 +228,54 @@ def _matches_keywords(text: str, keywords: list[str], match_mode: str) -> bool:
     return all(matches) if match_mode == "AND" else any(matches)
 
 
-def _extract_reddit_comment_event(comment, fallback_url: str) -> dict | None:
+def _extract_reddit_score(comment) -> int | None:
+    selectors = (
+        "span.score.unvoted",
+        "span.score.likes",
+        "span.score.dislikes",
+        "span.score",
+    )
+    for selector in selectors:
+        score_locator = comment.locator(selector)
+        if not score_locator.count():
+            continue
+        score_node = score_locator.first
+        for raw_value in (
+            score_node.get_attribute("title"),
+            score_node.inner_text(timeout=1000),
+        ):
+            parsed = parse_count(raw_value)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _extract_reddit_subreddit_members(page) -> int | None:
+    selectors = (
+        ".side .subscribers .number",
+        ".side span.subscribers .number",
+        ".side .subscribers",
+    )
+    for selector in selectors:
+        locator = page.locator(selector)
+        if not locator.count():
+            continue
+        node = locator.first
+        for raw_value in (
+            node.get_attribute("title"),
+            node.inner_text(timeout=1000),
+        ):
+            parsed = parse_count(raw_value)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _extract_reddit_comment_event(
+    comment,
+    fallback_url: str,
+    subreddit_member_count: int | None = None,
+) -> dict | None:
     fullname = comment.get_attribute("data-fullname") or ""
     comment_id = fullname.removeprefix("t1_")
     if not comment_id:
@@ -234,6 +324,12 @@ def _extract_reddit_comment_event(comment, fallback_url: str) -> dict | None:
         "source": "reddit",
         "like_count": None,
         "view_count": None,
+        "comment_count": None,
+        "reply_count": None,
+        "retweet_count": None,
+        "bookmark_count": None,
+        "score": _extract_reddit_score(comment),
+        "subreddit_member_count": subreddit_member_count,
     }
 
 
@@ -262,6 +358,12 @@ def _extract_reddit_feed_event(entry) -> dict | None:
         "source": "reddit",
         "like_count": None,
         "view_count": None,
+        "comment_count": None,
+        "reply_count": None,
+        "retweet_count": None,
+        "bookmark_count": None,
+        "score": None,
+        "subreddit_member_count": None,
     }
 
 
@@ -450,15 +552,20 @@ def _search_youtube_video_ids(
     page_token = None
 
     while len(video_ids) < max_results:
-        response = youtube.search().list(
-            part="id",
-            q=search_query,
-            type="video",
-            relevanceLanguage=relevance_language or None,
-            order=order,
-            maxResults=min(50, max_results - len(video_ids)),
-            pageToken=page_token,
-        ).execute()
+        try:
+            response = youtube.search().list(
+                part="id",
+                q=search_query,
+                type="video",
+                relevanceLanguage=relevance_language or None,
+                order=order,
+                maxResults=min(50, max_results - len(video_ids)),
+                pageToken=page_token,
+            ).execute()
+        except HttpError as exc:
+            if _is_auth_or_quota_block(exc):
+                raise _soft_block("youtube", str(exc)) from exc
+            raise
         video_ids.extend(
             item["id"]["videoId"]
             for item in response.get("items", [])
@@ -560,6 +667,338 @@ def _x_has_auth_cookies(context) -> bool:
     return {"auth_token", "ct0"}.issubset(cookie_names)
 
 
+def _x_login_debug_dir() -> Path:
+    return Path(_env_str("X_LOGIN_DEBUG_DIR", "/app/state/x-login-debug"))
+
+
+def _write_x_login_debug_artifacts(page, reason: str) -> str:
+    debug_dir = _x_login_debug_dir()
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    artifacts = []
+
+    for index, candidate_page in enumerate(page.context.pages):
+        prefix = debug_dir / f"x-login-{timestamp}-page-{index + 1}"
+        html_path = prefix.with_suffix(".html")
+        screenshot_path = prefix.with_suffix(".png")
+
+        try:
+            html_path.write_text(candidate_page.content(), encoding="utf-8")
+        except PlaywrightError as exc:
+            html_path = prefix.with_suffix(".html-error.txt")
+            html_path.write_text(str(exc), encoding="utf-8")
+
+        try:
+            candidate_page.screenshot(path=str(screenshot_path), full_page=True)
+        except PlaywrightError as exc:
+            screenshot_path = prefix.with_suffix(".screenshot-error.txt")
+            screenshot_path.write_text(str(exc), encoding="utf-8")
+
+        artifacts.extend([html_path, screenshot_path])
+
+    return (
+        f"{reason}. Saved X login debug artifacts to "
+        f"{', '.join(str(artifact) for artifact in artifacts)}."
+    )
+
+
+def _google_login_started(context, page) -> bool:
+    if any("accounts.google.com" in candidate.url for candidate in context.pages):
+        return True
+    return _x_has_auth_cookies(context)
+
+
+def _click_first_visible(locator, timeout_ms: int = 15000) -> bool:
+    try:
+        count = locator.count()
+    except PlaywrightError:
+        return False
+
+    for index in range(count):
+        candidate = locator.nth(index)
+        try:
+            if candidate.is_visible(timeout=1000):
+                candidate.scroll_into_view_if_needed(timeout=3000)
+                candidate.click(timeout=timeout_ms)
+                return True
+        except PlaywrightError:
+            try:
+                candidate.click(timeout=timeout_ms, force=True)
+                return True
+            except PlaywrightError:
+                try:
+                    candidate.evaluate("(element) => element.click()")
+                    return True
+                except PlaywrightError:
+                    continue
+    return False
+
+
+def _click_x_form_submit(page) -> bool:
+    scope = _x_active_login_scope(page)
+    buttons = scope.locator("button, [role='button']")
+    try:
+        count = buttons.count()
+    except PlaywrightError:
+        return False
+
+    for index in range(count):
+        button = buttons.nth(index)
+        try:
+            label = button.inner_text(timeout=1000).strip()
+            normalized_label = re.sub(r"\s+", " ", label).lower()
+            if normalized_label not in {"next", "continue", "log in"}:
+                continue
+            if any(
+                blocked in normalized_label
+                for blocked in ("phone", "google", "apple")
+            ):
+                continue
+            if button.is_visible(timeout=1000):
+                button.scroll_into_view_if_needed(timeout=3000)
+                button.click(timeout=5000)
+                return True
+        except PlaywrightError:
+            continue
+    return False
+
+
+def _x_active_login_scope(page):
+    modal = page.locator('[aria-modal="true"]').last
+    try:
+        if modal.count() > 0 and modal.is_visible(timeout=1000):
+            return modal
+    except PlaywrightError:
+        pass
+
+    dialog = page.locator('[role="dialog"]').last
+    try:
+        if dialog.count() > 0 and dialog.is_visible(timeout=1000):
+            return dialog
+    except PlaywrightError:
+        pass
+
+    return page
+
+
+def _click_x_google_login_button(page, pattern: re.Pattern) -> bool:
+    context = page.context
+    candidates = [
+        page.locator('[aria-modal="true"] button').filter(has_text=pattern),
+        page.locator('[role="dialog"] button').filter(has_text=pattern),
+        page.locator('[aria-modal="true"] [role="button"]').filter(has_text=pattern),
+        page.locator('[role="dialog"] [role="button"]').filter(has_text=pattern),
+        page.locator("button").filter(has_text=pattern),
+        page.locator('[role="button"]').filter(has_text=pattern),
+        page.get_by_role("button", name=pattern),
+        page.locator('div[data-testid="google_sign_in_container"] [role="button"]'),
+    ]
+
+    for candidate in candidates:
+        if _click_first_visible(candidate):
+            page.wait_for_timeout(3000)
+            if _google_login_started(context, page):
+                return True
+
+    for frame in page.frames:
+        if "accounts.google.com" not in frame.url:
+            continue
+        frame_candidates = [
+            frame.get_by_role("button", name=pattern),
+            frame.get_by_text(pattern),
+            frame.locator('[role="button"]').filter(has_text=pattern),
+            frame.locator('[role="button"], button').first,
+        ]
+        for candidate in frame_candidates:
+            if _click_first_visible(candidate):
+                page.wait_for_timeout(3000)
+                if _google_login_started(context, page):
+                    return True
+
+    return False
+
+
+def _click_google_next(candidate) -> bool:
+    next_button = candidate.get_by_role(
+        "button",
+        name=re.compile(r"next|suivant", re.IGNORECASE),
+    ).first
+    if next_button.count() > 0:
+        try:
+            next_button.click(timeout=5000)
+            return True
+        except PlaywrightError:
+            pass
+    return False
+
+
+def _submit_google_email(candidate, google_email: str) -> bool:
+    if not google_email:
+        return False
+
+    email_input = candidate.locator(
+        'input[type="email"], input[name="identifier"], input#identifierId'
+    ).first
+    if email_input.count() == 0:
+        return False
+
+    try:
+        email_input.fill(google_email, timeout=5000)
+        return _click_google_next(candidate)
+    except PlaywrightError:
+        return False
+
+
+def _x_verification_prompt_text(page) -> str:
+    try:
+        return page.locator('[role="dialog"], main').first.inner_text(timeout=2000)
+    except PlaywrightError:
+        return ""
+
+
+def _raise_if_x_direct_login_requires_phone(page) -> None:
+    prompt_text = _x_verification_prompt_text(page)
+    if re.search(
+        r"temporarily limited your login|try again later|"
+        r"temporairement limit[eé]",
+        prompt_text,
+        re.IGNORECASE,
+    ):
+        raise RuntimeError(
+            _write_x_login_debug_artifacts(
+                page,
+                "X temporarily limited direct email login. Try again later",
+            )
+        )
+
+    if not re.search(
+        r"enter your phone number|phone number|num[eé]ro de t[eé]l[eé]phone",
+        prompt_text,
+        re.IGNORECASE,
+    ):
+        return
+
+    raise RuntimeError(
+        _write_x_login_debug_artifacts(
+            page,
+            "X direct login used the email identifier, but X requested a phone "
+            "number as an additional account verification step",
+        )
+    )
+
+
+def _x_password_input(page):
+    return _x_active_login_scope(page).locator(
+        'input[autocomplete="current-password"], input[name="password"], '
+        'input[type="password"]'
+    ).first
+
+
+def _wait_for_x_login_step_after_identifier(page, timeout_seconds: int = 20) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if _x_has_auth_cookies(page.context):
+            return
+        if _x_password_input(page).count() > 0:
+            return
+        _raise_if_x_direct_login_requires_phone(page)
+        page.wait_for_timeout(1000)
+
+    raise RuntimeError(
+        _write_x_login_debug_artifacts(
+            page,
+            "X direct login submitted the email but did not advance before "
+            "the timeout",
+        )
+    )
+
+
+def _click_x_login_next(page) -> bool:
+    scope = _x_active_login_scope(page)
+    login_button = scope.locator('[data-testid="LoginForm_Login_Button"]').first
+    if login_button.count() > 0 and _click_first_visible(login_button):
+        return True
+    return _click_x_form_submit(page)
+
+
+def _login_to_x_directly(page) -> bool:
+    identifier = _env_str("X_LOGIN_IDENTIFIER", "")
+    password = _env_str("X_PASSWORD", "")
+    if not identifier or not password:
+        return False
+
+    context = page.context
+    page.goto(
+        "https://x.com/i/flow/login",
+        wait_until="domcontentloaded",
+        timeout=60000,
+    )
+    page.wait_for_timeout(2500)
+
+    scope = _x_active_login_scope(page)
+    identifier_input = scope.locator(
+        'input[autocomplete="username"], input[name="text"], '
+        'input[type="text"]'
+    ).first
+    if identifier_input.count() == 0:
+        raise RuntimeError(
+            _write_x_login_debug_artifacts(
+                page,
+                "X direct login could not find the identifier input",
+            )
+        )
+
+    identifier_input.fill(identifier, timeout=10000)
+    try:
+        identifier_input.press("Enter", timeout=3000)
+    except PlaywrightError:
+        pass
+    page.wait_for_timeout(2500)
+    if _x_password_input(page).count() == 0:
+        _click_x_login_next(page)
+
+    _wait_for_x_login_step_after_identifier(
+        page,
+        _env_int("X_LOGIN_STEP_WAIT_SECONDS", 20),
+    )
+
+    password_input = _x_password_input(page)
+    if password_input.count() == 0:
+        raise RuntimeError(
+            _write_x_login_debug_artifacts(
+                page,
+                "X direct login needs an additional verification step before "
+                "the password field",
+            )
+        )
+
+    password_input.fill(password, timeout=10000)
+    if not _click_x_login_next(page):
+        raise RuntimeError(
+            _write_x_login_debug_artifacts(
+                page,
+                "X direct login could not submit the password",
+            )
+        )
+
+    deadline = time.time() + _env_int("X_LOGIN_WAIT_SECONDS", 90)
+    while time.time() < deadline:
+        if _x_has_auth_cookies(context):
+            page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=60000)
+            return True
+
+        _raise_if_x_direct_login_requires_phone(page)
+
+        page.wait_for_timeout(1000)
+
+    raise RuntimeError(
+        _write_x_login_debug_artifacts(
+            page,
+            "X direct login did not complete before the timeout",
+        )
+    )
+
+
 def _login_to_x_with_google(page) -> None:
     context = page.context
     google_email = _env_str("X_GOOGLE_EMAIL", "")
@@ -572,26 +1011,18 @@ def _login_to_x_with_google(page) -> None:
 
     google_button_pattern = re.compile(
         r"continue with google|sign in with google|log in with google|"
-        r"continuer avec google|se connecter avec google",
+        r"continue as|google|"
+        r"continuer avec google|se connecter avec google|continuer en tant que",
         re.IGNORECASE,
     )
-    google_button = page.get_by_text(google_button_pattern).first
-    clicked = False
-    if google_button.count() > 0:
-        google_button.click(timeout=15000)
-        clicked = True
-    else:
-        for frame in page.frames:
-            if "accounts.google.com/gsi/button" not in frame.url:
-                continue
-            frame_button = frame.locator('[role="button"]').first
-            if frame_button.count() > 0:
-                frame_button.click(timeout=15000)
-                clicked = True
-                break
-
-    if not clicked:
-        raise RuntimeError("The Google login button was not found on X")
+    if not _click_x_google_login_button(page, google_button_pattern):
+        raise RuntimeError(
+            _write_x_login_debug_artifacts(
+                page,
+                "The Google login button was not found on X or did not open "
+                "the Google login flow",
+            )
+        )
 
     deadline = time.time() + _env_int("X_GOOGLE_LOGIN_WAIT_SECONDS", 90)
     while time.time() < deadline:
@@ -603,10 +1034,16 @@ def _login_to_x_with_google(page) -> None:
             if "accounts.google.com" not in candidate.url:
                 continue
 
+            if _submit_google_email(candidate, google_email):
+                candidate.wait_for_timeout(1500)
+
             if candidate.locator('input[type="password"]').count() > 0:
                 raise RuntimeError(
-                    "Google requested a password, CAPTCHA or MFA. Complete the "
-                    "challenge in the Edge window and rerun the task."
+                    _write_x_login_debug_artifacts(
+                        candidate,
+                        "Google requested a password, CAPTCHA or MFA. Complete "
+                        "the challenge in the Edge window and rerun the task",
+                    )
                 )
 
             account = None
@@ -643,8 +1080,11 @@ def _login_to_x_with_google(page) -> None:
         page.wait_for_timeout(1000)
 
     raise RuntimeError(
-        "Google login did not complete before the timeout. Complete any visible "
-        "Google or X challenge in the Edge window."
+        _write_x_login_debug_artifacts(
+            page,
+            "Google login did not complete before the timeout. Complete any "
+            "visible Google or X challenge in the Edge window",
+        )
     )
 
 
@@ -766,8 +1206,7 @@ def _x_cdp_url() -> str:
         port_file = Path(port_file_value)
         if not port_file.is_file():
             raise FileNotFoundError(
-                f"X CDP runtime port file not found: {port_file}. "
-                "Run scripts/start_x_browser.ps1 first."
+                f"X CDP runtime port file not found: {port_file}."
             )
         try:
             port = int(port_file.read_text(encoding="utf-8").strip())
@@ -785,6 +1224,53 @@ def _x_cdp_url() -> str:
             "or set X_CDP_URL explicitly."
         )
     return cdp_url
+
+
+def _x_auth_cookies() -> list[dict]:
+    auth_token = os.getenv("X_AUTH_TOKEN", "").strip()
+    ct0 = os.getenv("X_CT0", "").strip()
+    if not auth_token:
+        return []
+
+    cookies = []
+    for domain in [".x.com", ".twitter.com"]:
+        cookies.append(
+            {
+                "name": "auth_token",
+                "value": auth_token,
+                "domain": domain,
+                "path": "/",
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "None",
+            }
+        )
+        if ct0:
+            cookies.append(
+                {
+                    "name": "ct0",
+                    "value": ct0,
+                    "domain": domain,
+                    "path": "/",
+                    "httpOnly": False,
+                    "secure": True,
+                    "sameSite": "Lax",
+                }
+            )
+    return cookies
+
+
+def _x_browser_context_options() -> dict:
+    return {
+        "locale": "en-US",
+        "viewport": {"width": 1280, "height": 900},
+        "user_agent": _env_str(
+            "X_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0 Safari/537.36",
+        ),
+    }
 
 
 def _load_x_full_tweet_text(context, tweet_url: str, fallback_text: str) -> str:
@@ -822,9 +1308,8 @@ def _load_x_full_tweet_text(context, tweet_url: str, fallback_text: str) -> str:
 
 
 def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
-    cdp_url = _x_cdp_url()
-    cdp_wait_seconds = _env_int("X_CDP_WAIT_SECONDS", 60)
-    headless = _env_bool("X_HEADLESS", False)
+    headless = _env_bool("X_HEADLESS", True)
+    user_data_dir = _env_str("X_USER_DATA_DIR", "/app/x-browser-profile")
     queries = _env_json_list(
         "X_SEARCH_QUERIES_JSON",
         [
@@ -848,35 +1333,27 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
     events = []
     seen_ids = set()
     discovered_statuses = 0
+    limit_reached = False
+    page_closed_after_posts = False
 
     try:
-        deadline = time.time() + cdp_wait_seconds
-        _ensure_x_cdp_endpoint(cdp_url, headless, deadline)
         with sync_playwright() as playwright:
-            browser = None
-            last_error = None
-            while time.time() < deadline:
-                try:
-                    connect_url = _resolve_x_cdp_url(cdp_url)
-                    browser = playwright.chromium.connect_over_cdp(
-                        connect_url,
-                        timeout=20000,
-                    )
-                    break
-                except Exception as exc:
-                    last_error = exc
-                    print(f"Waiting for responsive X CDP at {cdp_url}...")
-                    time.sleep(3)
-
-            if browser is None:
-                raise RuntimeError(
-                    f"X CDP unavailable after {cdp_wait_seconds} seconds"
-                ) from last_error
-
-            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=user_data_dir,
+                headless=headless,
+                args=["--no-sandbox"],
+                **_x_browser_context_options(),
+            )
+            auth_cookies = _x_auth_cookies()
+            if auth_cookies:
+                context.add_cookies(auth_cookies)
             page = context.new_page()
             if not _x_is_authenticated(page):
-                _login_to_x_with_google(page)
+                if not _login_to_x_directly(page):
+                    raise RuntimeError(
+                        "X direct login requires X_LOGIN_IDENTIFIER and "
+                        "X_PASSWORD, or X_AUTH_TOKEN/X_CT0 cookies."
+                    )
 
             for query in queries:
                 search_url = (
@@ -996,13 +1473,20 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                                         article,
                                         "analytics",
                                     ),
+                                    "follower_count": extract_x_followers(
+                                        article
+                                    ),
                                 }
                             )
                             seen_ids.add(status_id)
                             if max_events > 0 and len(events) >= max_events:
-                                return events
+                                limit_reached = True
+                                break
                         except (PlaywrightTimeoutError, PlaywrightError):
                             continue
+
+                    if limit_reached:
+                        break
 
                     try:
                         page.mouse.wheel(0, 2200)
@@ -1013,13 +1497,18 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                                 "X page closed after posts were discovered; "
                                 "keeping the collected batch"
                             )
-                            return events
+                            page_closed_after_posts = True
+                            break
                         raise
+
+                if limit_reached or page_closed_after_posts:
+                    break
 
             try:
                 page.close()
             except PlaywrightError:
                 pass
+            context.close()
             if discovered_statuses == 0:
                 print(
                     "No X posts were visible after all search retries. The X "
@@ -1028,11 +1517,13 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                 )
                 return []
     except Exception as exc:
+        if _is_auth_or_quota_block(exc):
+            raise _soft_block("x", str(exc)) from exc
         if _env_bool("X_FAIL_ON_ERROR", False):
             raise RuntimeError(
-                f"X online collection failed via {cdp_url}: {exc}"
+                f"X online collection failed: {exc}"
             ) from exc
-        print(f"X online collection skipped via {cdp_url}: {exc}", flush=True)
+        print(f"X online collection skipped: {exc}", flush=True)
         return events
 
     return events
@@ -1117,16 +1608,27 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                                 subreddit,
                             )
                             break
-                        raise
+                        raise _soft_block(
+                            "reddit",
+                            "HTML listing and RSS fallback are unavailable "
+                            f"for {subreddit}: HTTP {response.status}",
+                        )
                     for event in fallback_events:
                         candidates[event["event_id"]] = event
                     discovered_comments += fallback_discovered
                     break
                 if response.status >= 400:
+                    if response.status in {401, 403, 429}:
+                        raise _soft_block(
+                            "reddit",
+                            f"listing is unavailable for {subreddit}: "
+                            f"HTTP {response.status}",
+                        )
                     raise RuntimeError(
                         "Reddit listing did not load "
                         f"for {subreddit}: HTTP {response.status}"
                     )
+                subreddit_member_count = _extract_reddit_subreddit_members(page)
                 comments = page.locator("div.thing.comment")
                 page_comment_count = min(
                     comments.count(),
@@ -1139,6 +1641,7 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                     event = _extract_reddit_comment_event(
                         comments.nth(index),
                         listing_url,
+                        subreddit_member_count,
                     )
                     if event is None or state.contains(
                         "reddit",
@@ -1193,9 +1696,14 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                     f'[data-fullname="t1_{candidate["event_id"]}"]'
                 ).first
                 if exact_comment.count():
+                    detail_member_count = (
+                        _extract_reddit_subreddit_members(page)
+                        or candidate.get("subreddit_member_count")
+                    )
                     detailed_event = _extract_reddit_comment_event(
                         exact_comment,
                         detail_url,
+                        detail_member_count,
                     )
                     if detailed_event is not None:
                         event = detailed_event
@@ -1292,6 +1800,14 @@ def main() -> None:
                     ),
                     "like_count": event.get("like_count"),
                     "view_count": event.get("view_count"),
+                    "comment_count": event.get("comment_count"),
+                    "reply_count": event.get("reply_count"),
+                    "retweet_count": event.get("retweet_count"),
+                    "bookmark_count": event.get("bookmark_count"),
+                    "score": event.get("score"),
+                    "follower_count": event.get("follower_count"),
+                    "subscriber_count": event.get("subscriber_count"),
+                    "subreddit_member_count": event.get("subreddit_member_count"),
                 },
                 on_delivery=delivery_report,
             )
@@ -1309,7 +1825,7 @@ def main() -> None:
         if mode == "youtube":
             api_key = _env_str("YOUTUBE_API_KEY", "")
             if not api_key:
-                raise RuntimeError("YOUTUBE_API_KEY is required")
+                raise _soft_block("youtube", "YOUTUBE_API_KEY is required")
             youtube = _get_youtube_service(api_key)
             search_limit = _env_int("YOUTUBE_SEARCH_MAX_RESULTS", 10)
             search_languages = _env_list(
@@ -1453,6 +1969,7 @@ def main() -> None:
                         "view_count": parse_count(
                             (metadata or {}).get("statistics", {}).get("viewCount")
                         ),
+                        "subscriber_count": youtube_authors.SUBSCRIBER_COUNTS.get(video_id),
                     }
                 )
         elif mode == "x":
@@ -1462,6 +1979,8 @@ def main() -> None:
 
         publish(events)
         print(f"Produced {len(events)} new {mode} events")
+    except CollectorSoftBlock as exc:
+        print(f"Collector soft-blocked: {exc}", file=sys.stderr, flush=True)
     finally:
         state.close()
 

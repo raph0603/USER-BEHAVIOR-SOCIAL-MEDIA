@@ -12,13 +12,22 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-from engagement import extract_x_metric, parse_count
+from engagement import extract_x_followers, extract_x_metric, parse_count
+import youtube_authors
 from youtube_authors import fetch_youtube_collaborators
 
 
 METRIC_COLUMNS = (
     "like_count",
     "view_count",
+    "comment_count",
+    "reply_count",
+    "retweet_count",
+    "bookmark_count",
+    "score",
+    "follower_count",
+    "subscriber_count",
+    "subreddit_member_count",
 )
 SKIPPED_REFRESH_SOURCES = set()
 
@@ -31,7 +40,7 @@ def _env(name: str, default: str = "") -> str:
 def _load_targets(path: Path, source: str) -> list[dict]:
     if not path.is_file():
         return []
-    with path.open(encoding="utf-8") as target_file:
+    with path.open(encoding="utf-8-sig") as target_file:
         targets = []
         for line in target_file:
             if not line.strip():
@@ -44,10 +53,10 @@ def _load_targets(path: Path, source: str) -> list[dict]:
 
 def _base_update(target: dict) -> dict:
     update = {
-        "user_id": target["user_id"],
-        "url": target["url"],
-        "event_ts": target["event_ts"],
-        "source": target["source"],
+        "user_id": target.get("user_id"),
+        "url": target.get("url"),
+        "event_ts": target.get("event_ts"),
+        "source": target.get("source"),
         "platform_event_id": target.get("platform_event_id"),
         "metadata_refreshed_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -118,6 +127,7 @@ def _refresh_youtube(targets: list[dict]) -> list[dict]:
                     ),
                     "like_count": parse_count(statistics.get("likeCount")),
                     "view_count": parse_count(statistics.get("viewCount")),
+                    "subscriber_count": youtube_authors.SUBSCRIBER_COUNTS.get(item["id"]),
                 }
             )
             updates.append(update)
@@ -215,44 +225,77 @@ def _x_cdp_url() -> str:
     return cdp_url
 
 
-def _refresh_x(targets: list[dict]) -> list[dict]:
-    try:
-        cdp_url = _x_cdp_url()
-    except (FileNotFoundError, RuntimeError, ValueError) as exc:
-        print(f"Skipping X insight refresh: CDP endpoint unavailable: {exc}")
-        SKIPPED_REFRESH_SOURCES.add("x")
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _x_auth_cookies() -> list[dict]:
+    auth_token = _env("X_AUTH_TOKEN")
+    ct0 = _env("X_CT0")
+    if not auth_token:
         return []
 
-    if cdp_url.startswith(("http://", "https://")):
-        try:
-            response = requests.get(
-                _x_cdp_url_with_path(cdp_url, "/__x_cdp__/ensure"),
-                params={"headless": _env("X_HEADLESS", "true")},
-                timeout=int(_env("X_CDP_WAIT_SECONDS", "90")),
+    cookies = []
+    for domain in [".x.com", ".twitter.com"]:
+        cookies.append(
+            {
+                "name": "auth_token",
+                "value": auth_token,
+                "domain": domain,
+                "path": "/",
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "None",
+            }
+        )
+        if ct0:
+            cookies.append(
+                {
+                    "name": "ct0",
+                    "value": ct0,
+                    "domain": domain,
+                    "path": "/",
+                    "httpOnly": False,
+                    "secure": True,
+                    "sameSite": "Lax",
+                }
             )
-            if response.status_code not in {200, 404}:
-                response.raise_for_status()
-        except requests.RequestException as exc:
-            print(f"Skipping X insight refresh: CDP proxy unavailable: {exc}")
-            SKIPPED_REFRESH_SOURCES.add("x")
-            return []
+    return cookies
 
+
+def _x_browser_context_options() -> dict:
+    return {
+        "locale": "en-US",
+        "viewport": {"width": 1280, "height": 900},
+        "user_agent": _env(
+            "X_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0 Safari/537.36",
+        ),
+    }
+
+
+def _refresh_x(targets: list[dict]) -> list[dict]:
     updates = []
     with sync_playwright() as playwright:
         try:
-            browser = playwright.chromium.connect_over_cdp(
-                _resolve_cdp_url(cdp_url),
-                timeout=30000,
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=_env("X_USER_DATA_DIR", "/app/x-browser-profile"),
+                headless=_env_bool("X_HEADLESS", True),
+                args=["--no-sandbox"],
+                **_x_browser_context_options(),
             )
-        except (OSError, requests.RequestException, PlaywrightError) as exc:
-            print(f"Skipping X insight refresh: browser CDP unavailable: {exc}")
+        except PlaywrightError as exc:
+            print(f"Skipping X insight refresh: browser unavailable: {exc}")
             SKIPPED_REFRESH_SOURCES.add("x")
             return []
-        context = (
-            browser.contexts[0]
-            if browser.contexts
-            else browser.new_context()
-        )
+        auth_cookies = _x_auth_cookies()
+        if auth_cookies:
+            context.add_cookies(auth_cookies)
         page = context.new_page()
         try:
             for target in targets:
@@ -274,6 +317,7 @@ def _refresh_x(targets: list[dict]) -> list[dict]:
                                 article,
                                 "analytics",
                             ),
+                            "follower_count": extract_x_followers(article),
                         }
                     )
                     updates.append(update)
@@ -281,6 +325,7 @@ def _refresh_x(targets: list[dict]) -> list[dict]:
                     print(f"Unable to refresh X insights for {target['url']}: {exc}")
         finally:
             page.close()
+            context.close()
     return updates
 
 
@@ -297,6 +342,20 @@ def _reddit_comment_json_url(url: str) -> str:
     return f"{url.rstrip('/')}.json"
 
 
+def _reddit_old_url(url: str) -> str:
+    parsed = urlparse(url)
+    return urlunparse(
+        (
+            parsed.scheme or "https",
+            "old.reddit.com",
+            parsed.path,
+            "",
+            "",
+            "",
+        )
+    )
+
+
 def _find_reddit_comment(node, comment_id: str) -> dict | None:
     if isinstance(node, list):
         for item in node:
@@ -309,10 +368,128 @@ def _find_reddit_comment(node, comment_id: str) -> dict | None:
         return None
 
     data = node.get("data", {})
+    if not isinstance(data, dict):
+        return None
     if node.get("kind") == "t1" and data.get("id") == comment_id:
         return data
 
     return _find_reddit_comment(data.get("children", []), comment_id)
+
+
+def _reddit_post_data(payload) -> dict:
+    try:
+        if isinstance(payload, list) and payload:
+            post = payload[0]["data"]["children"][0]["data"]
+            return post if isinstance(post, dict) else {}
+    except (IndexError, KeyError, TypeError, AttributeError):
+        pass
+    return {}
+
+
+def _count_reddit_reply_children(replies) -> int | None:
+    if not isinstance(replies, dict):
+        return 0
+
+    children = replies.get("data", {}).get("children", [])
+    if not isinstance(children, list):
+        return 0
+
+    count = 0
+    for child in children:
+        if not isinstance(child, dict) or child.get("kind") != "t1":
+            continue
+        count += 1
+        child_data = child.get("data", {})
+        if isinstance(child_data, dict):
+            nested_count = _count_reddit_reply_children(
+                child_data.get("replies")
+            )
+            count += nested_count or 0
+    return count
+
+
+def _extract_old_reddit_comment_block(html: str, comment_id: str) -> str:
+    marker = f'data-fullname="t1_{comment_id}"'
+    start = html.find(marker)
+    if start < 0:
+        return ""
+    block_start = html.rfind("<div", 0, start)
+    if block_start < 0:
+        block_start = start
+    next_start = html.find('data-fullname="t1_', start + len(marker))
+    return html[block_start:next_start if next_start > start else len(html)]
+
+
+def _extract_old_reddit_comment_score(block: str) -> int | None:
+    for pattern in (
+        r'<span[^>]+class="score[^"]*"[^>]+title="([^"]+)"',
+        r'<span[^>]+class="score[^"]*"[^>]*>([^<]+)</span>',
+        r'data-score="([^"]+)"',
+    ):
+        match = re.search(pattern, block, re.IGNORECASE)
+        if match:
+            parsed = parse_count(match.group(1))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _extract_old_reddit_member_count(html: str) -> int | None:
+    for pattern in (
+        r'<span[^>]+class="number"[^>]*>([^<]+)</span>\s*'
+        r'<span[^>]+class="word"[^>]*>(?:subscribers|members)</span>',
+        r'([0-9][0-9,.kmbKMB]*)\s+(?:subscribers|members)',
+    ):
+        match = re.search(pattern, html, re.IGNORECASE)
+        if match:
+            parsed = parse_count(match.group(1))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _extract_old_reddit_comment_count(html: str) -> int | None:
+    for pattern in (
+        r'<a[^>]+class="[^"]*comments[^"]*"[^>]*>([0-9][0-9,.kmbKMB]*)\s+comments?',
+        r'([0-9][0-9,.kmbKMB]*)\s+comments?',
+    ):
+        match = re.search(pattern, html, re.IGNORECASE)
+        if match:
+            parsed = parse_count(match.group(1))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _extract_old_reddit_reply_count(block: str) -> int:
+    return max(0, len(re.findall(r'data-fullname="t1_', block)) - 1)
+
+
+def _refresh_reddit_from_html(target: dict, headers: dict) -> dict | None:
+    comment_id = _reddit_comment_id(target["url"])
+    if not comment_id:
+        return None
+    response = requests.get(
+        _reddit_old_url(target["url"]),
+        headers=headers,
+        timeout=int(_env("REDDIT_REFRESH_TIMEOUT_SECONDS", "15")),
+    )
+    response.raise_for_status()
+    html = response.text
+    block = _extract_old_reddit_comment_block(html, comment_id)
+    if not block:
+        return None
+
+    update = _base_update(target)
+    update.update(
+        {
+            "comment_count": _extract_old_reddit_comment_count(html),
+            "reply_count": _extract_old_reddit_reply_count(block),
+            "score": _extract_old_reddit_comment_score(block),
+            "subreddit_member_count": _extract_old_reddit_member_count(html),
+        }
+    )
+    return update
 
 
 def _refresh_reddit(targets: list[dict]) -> list[dict]:
@@ -336,22 +513,38 @@ def _refresh_reddit(targets: list[dict]) -> list[dict]:
                 timeout=timeout,
             )
             if response.status_code in {403, 429}:
+                html_update = _refresh_reddit_from_html(target, headers)
+                if html_update:
+                    updates.append(html_update)
+                    continue
                 print(
-                    "Skipping Reddit insight refresh: Reddit JSON endpoint "
-                    f"returned HTTP {response.status_code}"
+                    "Unable to refresh Reddit insights from JSON or HTML for "
+                    f"{target['url']}: HTTP {response.status_code}"
                 )
-                SKIPPED_REFRESH_SOURCES.add("reddit")
-                return updates
+                continue
             response.raise_for_status()
-            comment = _find_reddit_comment(response.json(), comment_id)
+            payload = response.json()
+            comment = _find_reddit_comment(payload, comment_id)
             if not comment:
                 print(
                     "Unable to refresh Reddit insights for "
                     f"{target['url']}: comment not found in JSON response"
                 )
                 continue
-            updates.append(_base_update(target))
-        except (ValueError, requests.RequestException) as exc:
+            post = _reddit_post_data(payload)
+            update = _base_update(target)
+            update.update({
+                "comment_count": parse_count(post.get("num_comments")),
+                "reply_count": _count_reddit_reply_children(
+                    comment.get("replies")
+                ),
+                "score": parse_count(comment.get("score")),
+                "subreddit_member_count": parse_count(
+                    post.get("subreddit_subscribers")
+                ),
+            })
+            updates.append(update)
+        except (ValueError, requests.RequestException, AttributeError) as exc:
             print(
                 "Unable to refresh Reddit insights for "
                 f"{target['url']}: {exc}"

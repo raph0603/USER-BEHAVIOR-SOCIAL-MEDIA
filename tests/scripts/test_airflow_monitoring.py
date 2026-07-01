@@ -15,11 +15,14 @@ class FakeResponse:
     def __init__(self, payload):
         self.payload = payload
         self.content = b"{}"
+        self.text = payload if isinstance(payload, str) else ""
 
     def raise_for_status(self):
         return None
 
     def json(self):
+        if isinstance(self.payload, str):
+            raise ValueError("text response")
         return self.payload
 
 
@@ -90,6 +93,54 @@ class AirflowMonitoringTests(unittest.TestCase):
             MONITORING.format_countdown(-90),
             "en attente depuis 1 min 30 s",
         )
+
+    def test_recent_collector_runs_extract_soft_blocks_from_logs(self):
+        responses = {
+            "/dags/user_behavior_lakehouse/dagRuns": {
+                "dag_runs": [
+                    {
+                        "dag_run_id": "scheduled__run",
+                        "state": "success",
+                        "start_date": "2026-06-15T10:00:00+00:00",
+                        "end_date": "2026-06-15T10:02:00+00:00",
+                    }
+                ]
+            },
+            "/dags/user_behavior_lakehouse/dagRuns/scheduled__run/taskInstances": {
+                "task_instances": [
+                    {
+                        "task_id": "collect_x_playwright_events",
+                        "state": "success",
+                        "try_number": 1,
+                    }
+                ]
+            },
+            (
+                "/dags/user_behavior_lakehouse/dagRuns/scheduled__run/"
+                "taskInstances/collect_x_playwright_events/logs/1"
+            ): (
+                "Collector soft-blocked: x collection blocked: "
+                "temporarily limited"
+            ),
+            "/dags/user_behavior_lakehouse_no_row_checks/dagRuns": {
+                "dag_runs": []
+            },
+        }
+        client = MONITORING.AirflowClient(
+            config={
+                "base_url": "http://airflow",
+                "username": "admin",
+                "password": "admin",
+                "timeout": 10,
+            },
+            session=FakeSession(responses),
+        )
+
+        rows = client.load_recent_collector_runs(limit=1)
+
+        self.assertEqual(rows[0]["source"], "x")
+        self.assertEqual(rows[0]["collector_status"], "blocked")
+        self.assertIn("temporarily limited", rows[0]["message"])
 
     def test_crawler_configuration_allows_five_thousand_events_per_run(self):
         configuration_source = (

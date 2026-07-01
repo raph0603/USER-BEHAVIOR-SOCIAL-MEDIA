@@ -39,6 +39,20 @@ def docker_compose(command: str) -> str:
     )
 
 
+def normalize_spark_master_name_command() -> str:
+    return (
+        f"cd {PROJECT_DIR} && "
+        "spark_container_id=$(docker compose ps -q spark-master) && "
+        "spark_container_name=$(docker inspect \"$spark_container_id\" "
+        "| python -c 'import json,sys; print(json.load(sys.stdin)[0][\"Name\"])') && "
+        'if [[ -n "$spark_container_id" ]] '
+        '&& [[ "$spark_container_name" != "/spark-master" ]]; then '
+        'docker rm -f spark-master >/dev/null 2>&1 || true; '
+        'docker rename "$spark_container_id" spark-master; '
+        "fi"
+    )
+
+
 def timed_docker_compose(
     command: str,
     timeout_variable: str,
@@ -253,9 +267,13 @@ with DAG(
 ) as dag:
     start_stack = BashOperator(
         task_id="initialize_core_services",
-        bash_command=docker_compose(
-            "up -d --scale spark-worker=${SPARK_WORKER_COUNT:-4} "
-            "minio kafka schema-registry kafdrop spark-master spark-worker"
+        bash_command=(
+            docker_compose(
+                "up -d --scale spark-worker=${SPARK_WORKER_COUNT:-4} "
+                "minio kafka schema-registry kafdrop spark-master spark-worker"
+            )
+            + " && "
+            + normalize_spark_master_name_command()
         ),
     )
 
@@ -450,7 +468,7 @@ with DAG(
             "-e X_SEARCH_QUERIES_JSON "
             "-e X_SCROLL_ROUNDS={{ params.x_scroll_rounds }} "
             "-e X_HEADLESS={{ params.x_headless | lower }} "
-            "-e X_FAIL_ON_ERROR=true "
+            "-e X_FAIL_ON_ERROR "
             "x-collector"
         ),
     )
