@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.11.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.10.1...v1.11.0) (2026-07-01)
+
+
+### Features
+
+* collect follower, subscriber and subreddit member counts ([d5f76c9](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/d5f76c9325bbd49bc748cc8a9090b0cfde7edb30))
+* **reddit:** restore engagement metadata ([03d94bd](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/03d94bd86d7790ef3449310f27087e2ee7a6939c))
+
+
+### Bug Fixes
+
+* add defensive checks to count parsers ([fdb29e1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/fdb29e152f1ffae7b2ca9d8095ecbd46f4c46a0a))
+* correct lock typo and fix airflow dag test ([fe8f28d](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/fe8f28d5acb642b74d6fc5f4ee3f34c5486b2894))
+* **dashboard:** clarify missing engagement metrics ([ad5b5f1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/ad5b5f1d478231d42a3907f97e0765410abb7797))
+* **reddit:** backfill engagement counts from html ([379794b](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/379794ba4df00a97bc3b25c9af845e5f93258c40))
+
 ## [1.5.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.4.0...v1.5.0) (2026-06-26)
 
 ### Features
