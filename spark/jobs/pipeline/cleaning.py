@@ -1,5 +1,5 @@
 from pyspark.sql import Column
-from pyspark.sql.functions import regexp_replace, trim, length, when, lit
+from pyspark.sql.functions import regexp_replace, trim, length, when, lit, lower
 
 
 # Regex patterns------
@@ -40,6 +40,12 @@ def clean_text(c: Column) -> Column:
     c = regexp_replace(c, _WHITESPACE, " ")
     c = trim(c)
     return c
+
+
+def prepare_text_for_model(c: Column) -> Column:
+    # Model-ready processing: for example, lowercase the text.
+    return lower(c)
+
 
 
 # Validity rules ------

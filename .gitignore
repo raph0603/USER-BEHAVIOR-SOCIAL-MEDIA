@@ -11,6 +11,7 @@ Thumbs.db
 !.vscode/extensions.json
 !.vscode/settings.json
 .idea/
+.devcontainer/
 
 # =========================================
 # Python
@@ -143,6 +144,7 @@ temp/
 
 # Local project reading notes for Codex/user context
 PROJECT_CONTEXT_NOTES.md
+ORIGINAL_REQUEST.md
 
 # =========================================
 # Mac/Linux swap
@@ -186,3 +188,9 @@ TEST_READY.md
 # Ignore agent coordination and tracking files
 
 ml/DEV_LOG.md
+
+# Local verification helpers
+tests/scripts/run_python.bat
+tests/scripts/test_cleaning_empirical.py
+tests/scripts/test_issue_82_compat.py
+tests/scripts/verify_issue_82.py

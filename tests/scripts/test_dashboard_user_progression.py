@@ -83,6 +83,39 @@ class DashboardUserProgressionTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIn(value, source)
 
+    def test_dashboard_surfaces_model_pipeline_tables(self):
+        app_source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
+        loader_source = (ROOT / "dashboard" / "loaders.py").read_text(
+            encoding="utf-8"
+        )
+
+        expected_app_values = [
+            "MODEL_PIPELINE_TABLES",
+            "Model pipeline",
+            "silver.post_features",
+            "silver.engagement_snapshots",
+            "silver.context_features",
+            "gold.model_predictions",
+            "gold.training_examples",
+            "render_model_pipeline()",
+            "text_for_model",
+            "feature_version",
+            "predicted_class",
+            "label_horizon",
+        ]
+        for value in expected_app_values:
+            with self.subTest(value=value):
+                self.assertIn(value, app_source)
+
+        expected_loader_values = [
+            "DASHBOARD_ICEBERG_WAREHOUSE_PATH",
+            "load_optional_iceberg_table",
+            "iceberg_table_path",
+        ]
+        for value in expected_loader_values:
+            with self.subTest(value=value):
+                self.assertIn(value, loader_source)
+
 
 if __name__ == "__main__":
     unittest.main()
