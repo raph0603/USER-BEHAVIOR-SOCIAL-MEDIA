@@ -1,70 +1,79 @@
-# `ml/` — Dự đoán & giải thích viral (Stage 1)
+# `ml/` — Viral prediction & explanation (Stage 1)
 
-Mô hình dự đoán một bài post social (EV) có khả năng **viral** hay không, **kèm lý do** (explainable) — phục vụ gợi ý nội dung marketing. Đa nguồn: **YouTube · X · Reddit**.
+Predicts whether a social-media post (EV domain) is likely to go **viral**, and explains
+**why** — to power content/marketing recommendations. Multi-source: **YouTube · X · Reddit**.
 
-## Luồng pipeline
+## Pipeline
 
 ```
-filtered_events.csv (export từ Silver lakehouse)
+filtered_events.csv (exported from the Silver lakehouse)
         │
         ▼  preprocess/build_dataset.py
-  clean text → feature thống nhất (content) + nhãn viral PER-SOURCE + one-hot source
-        │                                   + role features (rhetorical)
+  clean text → unified content features + PER-SOURCE viral label + source one-hot
+        │                                 + rhetorical-role features + topic features
         ▼  train/train_viral.py
-  content_model (TF-IDF→content_score)  ─┐
-  + feature cấu trúc + src_* + role_*    ─┴─►  XGBoost fusion  →  P(viral)
+  content_model (TF-IDF → content_score)  ─┐
+  + structural features + src_* + role_* + topic_*  ─┴─►  XGBoost fusion  →  P(viral)
         │
         ▼  serve/explain_viral.py
-  SHAP per-prediction → JSON {viral_score, label, confidence, top_factors, explanation_text, suggestions}
+  per-prediction SHAP → JSON {viral_score, label, confidence, top_factors, explanation_text, suggestions}
 ```
 
-## Thiết kế chính
+## Key design decisions
 
-- **Feature nội dung THỐNG NHẤT** cho cả 3 nguồn (hàm thuần của text): `cognitive_friction` + `char/word/has_question/is_vietnamese`.
-- **Nhãn `viral` tính RIÊNG theo nguồn** (z-score `log1p` engagement của chính nền tảng đó → top `--quantile`, mặc định 0.75). Cột engagement chỉ tạo nhãn, **không** làm feature (tránh leakage).
-- **`content_score`** = TF-IDF + LogReg trên text, fuse như 1 feature (tạo bằng out-of-fold để không leakage). Interface `.predict_proba(list[str])` → sau này thay **BERT** không phải sửa chỗ khác.
-- **`role_*`** = vai trò rhetorical marketing (cta/hook/proof/…) từ nhánh `feature/annotation-roles-marketing`; chủ yếu phục vụ **giải thích**.
-- **Giải thích** = SHAP (`pred_contribs` của XGBoost) → map feature → lý do tiếng Việt + gợi ý.
+- **Unified content features** across all 3 sources (pure functions of the text): `cognitive_friction` + `char/word/has_question/is_vietnamese`.
+- **Per-source viral label**: within each source, z-score `log1p` of that platform's engagement metrics → the top `--quantile` (default 0.75) is labelled viral. Engagement columns build the label only — never features (avoids leakage).
+- **`content_score`** = TF-IDF + LogReg over the text, fused as a single feature (built out-of-fold to avoid leakage). Interface `.predict_proba(list[str])` → swapping in BERT later needs no other change.
+- **`role_*`** = rhetorical marketing roles (cta/hook/proof/…) from the `feature/annotation-roles-marketing` branch; mainly aid explainability.
+- **`topic_*`** = NMF topic distribution over TF-IDF (fills the "topic" component of the design; BERTopic is the heavier upgrade).
+- **Explanation** = SHAP (XGBoost `pred_contribs`) → maps features to readable reasons + suggestions.
 
-## Chạy (Python trong `ml/.venv`)
+## Run (use the `ml/.venv` Python)
 
 ```powershell
-$env:PYTHONIOENCODING='utf-8'            # Windows: tránh lỗi in tiếng Việt
-# 1) role classifier (cần silver_dataset.jsonl trong ml/data/)
-& ".\ml\.venv\Scripts\python.exe" ml/train/train_roles.py
-# 2) dựng dataset train (gọi role model)
-& ".\ml\.venv\Scripts\python.exe" ml/preprocess/build_dataset.py
-# 3) train model viral + SHAP importance
-& ".\ml\.venv\Scripts\python.exe" ml/train/train_viral.py
-# 4) giải thích 1 bài
+$env:PYTHONIOENCODING='utf-8'            # Windows: avoid console encoding issues
+# whole training chain in one command:
+& ".\ml\.venv\Scripts\python.exe" ml/run_pipeline.py            # role -> dataset -> train -> evaluate
+& ".\ml\.venv\Scripts\python.exe" ml/run_pipeline.py --report   # also build the report
+# explain a single post:
 & ".\ml\.venv\Scripts\python.exe" ml/serve/explain_viral.py
+# batch-score a CSV -> JSONL:
+& ".\ml\.venv\Scripts\python.exe" ml/serve/score_batch.py --input posts.csv --output out.jsonl
 ```
 
-Dùng trong code: `from serve.explain_viral import explain_post; explain_post(text, source)`.
+Reuse in code: `from serve.explain_viral import explain_post; explain_post(text, source)`.
 
-## Cấu trúc file
+## File structure
 
-| File | Vai trò |
+| File | Role |
 |---|---|
-| `preprocess/build_dataset.py` | thô → dataset train (clean, feature, nhãn per-source) |
-| `features/cognitive_friction.py` | feature độ khó đọc (EN+VI) |
-| `features/text_content.py` | content model TF-IDF+LogReg (`.predict_proba`) |
-| `features/rhetorical_roles.py` | segment → role features per-post |
-| `train/train_roles.py` | role classifier từ silver |
-| `train/train_viral.py` | XGBoost fusion + đánh giá + lưu model |
-| `serve/explain_viral.py` | dự đoán + SHAP → JSON giải thích |
-| `models/*.joblib`, `data/*` | artifact (gitignore, không commit) |
+| `preprocess/build_dataset.py` | raw → training dataset (clean, features, per-source label) |
+| `features/cognitive_friction.py` | reading-difficulty feature (EN + VI) |
+| `features/text_content.py` | TF-IDF + LogReg content model (`.predict_proba`) |
+| `features/rhetorical_roles.py` | segment → per-post role features |
+| `features/topics.py` | NMF topic-distribution features |
+| `features/bert_content.py` | optional BERT content backend (Kaggle-trained) |
+| `train/train_roles.py` | role classifier from the silver annotation set |
+| `train/train_viral.py` | XGBoost fusion + evaluation + save model |
+| `train/evaluate.py` | overall + per-source metrics |
+| `serve/explain_viral.py` | predict + SHAP → explanation JSON |
+| `serve/score_batch.py` | batch scoring CSV → JSONL |
+| `run_pipeline.py` | run the whole chain end-to-end |
+| `models/*.parquet`, `data/*` | artifacts (gitignored) |
 
-## Kết quả hiện tại (baseline)
+## Current results (baseline)
 
-- Viral model: **PR-AUC ~0.48 / ROC-AUC ~0.74** (content_score là tín hiệu mạnh nhất).
-- Role classifier: **macro-F1 ~0.80** trên 6 vai trò (cta/hook/proof/social_proof/pain_point/urgency).
+- Viral model (overall): **PR-AUC ~0.55 · ROC-AUC ~0.76** (`content_score` is the strongest signal; topics add a clear lift).
+- Role classifier: **macro-F1 ~0.50** over 12 roles.
+- Content model: **TF-IDF (0.499) > BERT (0.428)** at this data size → keep TF-IDF for now.
+- Per source: strong on **YouTube/Reddit**, near-random on **X** (only ~350 rows).
 
-## Giới hạn & hướng phát triển
+## Limitations & next steps
 
-- Content model là **TF-IDF** → tiếng Việt còn yếu; nâng **BERT đa ngữ** (train Kaggle GPU, giữ interface).
-- Role: nhãn heuristic, mới 6/12 vai trò, chưa có **gold người-kiểm** để đánh giá khái quát.
-- Chưa có **feature kênh/tác giả** (subscriber/follower) — cần crawl thêm; tầng "fresh/retrieve" có TTL.
-- Crawl thêm dữ liệu → cân bằng hơn, nâng `--quantile` 0.75 → 0.90 theo chuẩn paper.
+- Content model is **TF-IDF** → Vietnamese is still weak; upgrade to **multilingual BERT** (train on Kaggle GPU, same interface).
+- Roles use heuristic labels; no human-verified gold set for a clean evaluation.
+- No **channel/author features** (subscriber/follower) yet — needs a crawler; this is the "fresh/retrieve" layer with a TTL.
+- Collect more data (especially X/Reddit) to balance sources and raise `--quantile` toward the paper standard (0.75 → 0.90).
+- **Stage 2** (post-launch engagement time series → LSTM/GNN) not built — needs time-series engagement data.
 
-> Ghi chú dev chi tiết (không commit): `ml/DEV_LOG.md`.
+> Architecture diagram: `ml/ARCHITECTURE.md`. Handoff for the API/UI tasks: `ml/HANDOFF.md`.
