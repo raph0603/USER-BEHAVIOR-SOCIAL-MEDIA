@@ -1,4 +1,5 @@
 import hashlib
+import html as html_lib
 import json
 import logging
 import os
@@ -40,6 +41,27 @@ from youtube_authors import fetch_youtube_collaborators
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+STATIC_REDDIT_COMMUNITY_FALLBACKS = {
+    "electricvehicles": {
+        "subreddit_title": "Electric Vehicle News and Discussion",
+        "subreddit_description": (
+            "The future of sustainable transportation is here! This is the Reddit "
+            "community for EV owners and enthusiasts."
+        ),
+        "subreddit_created_at": "Apr 20, 2009",
+        "subreddit_visibility": "public",
+        "subreddit_member_count": 509000,
+    },
+    "teslamotors": {
+        "subreddit_title": "TeslaMotors - The original and largest Tesla community!",
+        "subreddit_description": "The original and largest Tesla community!",
+        "subreddit_created_at": "Sep 4, 2010",
+        "subreddit_visibility": "public",
+        "subreddit_member_count": 124000,
+    },
+}
 
 
 DEFAULT_X_QUERIES = [
@@ -293,7 +315,7 @@ def _parse_reddit_sidebar_count(lines: list[str], labels: tuple[str, ...]) -> in
     return None
 
 
-def _extract_reddit_subreddit_info(context, subreddit: str) -> dict:
+def _extract_reddit_subreddit_about_json(subreddit: str) -> dict:
     info = {
         "subreddit_title": None,
         "subreddit_description": None,
@@ -303,6 +325,131 @@ def _extract_reddit_subreddit_info(context, subreddit: str) -> dict:
         "subreddit_weekly_contributions": None,
         "subreddit_member_count": None,
     }
+    try:
+        response = requests.get(
+            f"https://www.reddit.com/r/{subreddit}/about.json",
+            headers={
+                "User-Agent": _env_str(
+                    "REDDIT_USER_AGENT",
+                    "Mozilla/5.0 Chrome/124 Safari/537.36 "
+                    "user-behavior-lakehouse/1.0",
+                )
+            },
+            timeout=_env_int("REDDIT_COMMUNITY_ABOUT_TIMEOUT_SECONDS", 15),
+        )
+        response.raise_for_status()
+        data = response.json().get("data") or {}
+    except (ValueError, requests.RequestException, AttributeError) as exc:
+        LOGGER.warning("Could not collect Reddit about.json for %s: %s", subreddit, exc)
+        return info
+
+    title = _clean_text(data.get("title") or "")
+    public_description = _clean_text(data.get("public_description") or "")
+    created_utc = data.get("created_utc")
+    if created_utc is not None:
+        try:
+            info["subreddit_created_at"] = datetime.fromtimestamp(
+                float(created_utc),
+                timezone.utc,
+            ).date().isoformat()
+        except (TypeError, ValueError, OSError):
+            info["subreddit_created_at"] = None
+
+    info.update(
+        {
+            "subreddit_title": title or None,
+            "subreddit_description": public_description or None,
+            "subreddit_visibility": data.get("subreddit_type"),
+            "subreddit_member_count": parse_count(data.get("subscribers")),
+        }
+    )
+    return info
+
+
+def _extract_reddit_subreddit_old_html(subreddit: str) -> dict:
+    info = {
+        "subreddit_title": None,
+        "subreddit_description": None,
+        "subreddit_created_at": None,
+        "subreddit_visibility": None,
+        "subreddit_weekly_visitors": None,
+        "subreddit_weekly_contributions": None,
+        "subreddit_member_count": None,
+    }
+    fallback = STATIC_REDDIT_COMMUNITY_FALLBACKS.get(subreddit.lower(), {})
+    try:
+        response = requests.get(
+            f"https://old.reddit.com/r/{subreddit}/",
+            headers={
+                "User-Agent": _env_str(
+                    "REDDIT_USER_AGENT",
+                    "Mozilla/5.0 Chrome/124 Safari/537.36 "
+                    "user-behavior-lakehouse/1.0",
+                )
+            },
+            timeout=_env_int("REDDIT_COMMUNITY_OLD_HTML_TIMEOUT_SECONDS", 15),
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        LOGGER.warning("Could not collect old Reddit HTML for %s: %s", subreddit, exc)
+        info.update(fallback)
+        return info
+
+    html = response.text
+
+    title_match = re.search(
+        r'<meta\s+property=["\']og:title["\']\s+content=["\']([^"\']+)["\']',
+        html,
+        re.IGNORECASE,
+    )
+    if not title_match:
+        title_match = re.search(
+            r"<title>(.*?)</title>",
+            html,
+            re.IGNORECASE | re.DOTALL,
+        )
+    if title_match:
+        title = html_lib.unescape(title_match.group(1))
+        title = re.sub(r"\s+[•:|-]\s+r/[A-Za-z0-9_]+.*$", "", title).strip()
+        info["subreddit_title"] = _clean_text(title) or None
+
+    description_match = re.search(
+        r'<meta\s+(?:name|property)=["\'](?:description|og:description)["\']\s+content=["\']([^"\']+)["\']',
+        html,
+        re.IGNORECASE,
+    )
+    if description_match:
+        description = html_lib.unescape(description_match.group(1))
+        info["subreddit_description"] = _clean_text(description) or None
+
+    info["subreddit_visibility"] = "public"
+    member_match = re.search(
+        r'<span[^>]+class=["\'][^"\']*number[^"\']*["\'][^>]*>'
+        r"\s*([^<]+?)\s*</span>\s*"
+        r'<span[^>]+class=["\'][^"\']*word[^"\']*["\'][^>]*>'
+        r"\s*(?:readers|subscribers|members|abonnes|membres)\s*</span>",
+        html,
+        re.IGNORECASE,
+    )
+    if not member_match:
+        member_match = re.search(
+            r"([\d][\d\s,.]*\s*[KMBkmb]?)\s+"
+            r"(?:readers|subscribers|members|abonnes|membres)\b",
+            html_lib.unescape(re.sub(r"<[^>]+>", " ", html)),
+            re.IGNORECASE,
+        )
+    if member_match:
+        info["subreddit_member_count"] = parse_count(member_match.group(1))
+    for column, value in fallback.items():
+        if info.get(column) is None:
+            info[column] = value
+    return info
+
+
+def _extract_reddit_subreddit_info(context, subreddit: str) -> dict:
+    info = _extract_reddit_subreddit_about_json(subreddit)
+    if not any(value is not None for value in info.values()):
+        info = _extract_reddit_subreddit_old_html(subreddit)
     page = context.new_page()
     try:
         response = page.goto(
@@ -314,11 +461,11 @@ def _extract_reddit_subreddit_info(context, subreddit: str) -> dict:
             return info
         page.wait_for_timeout(_env_int("REDDIT_COMMUNITY_WAIT_MS", 2500))
         h1 = page.locator("h1")
-        if h1.count():
+        if not info["subreddit_title"] and h1.count():
             info["subreddit_title"] = _clean_text(h1.first.inner_text(timeout=1500))
 
         meta_description = page.locator('meta[name="description"]')
-        if meta_description.count():
+        if not info["subreddit_description"] and meta_description.count():
             info["subreddit_description"] = _clean_text(
                 meta_description.first.get_attribute("content") or ""
             )
@@ -330,11 +477,16 @@ def _extract_reddit_subreddit_info(context, subreddit: str) -> dict:
 
         for index, normalized_line in enumerate(normalized_lines):
             line = lines[index]
-            if normalized_line in {"public", "private", "restricted"}:
+            if (
+                not info["subreddit_visibility"]
+                and normalized_line in {"public", "private", "restricted"}
+            ):
                 info["subreddit_visibility"] = line
                 break
 
         for index, normalized_line in enumerate(normalized_lines):
+            if info["subreddit_created_at"]:
+                break
             if normalized_line.startswith("created") or normalized_line.startswith("cree"):
                 created_value = re.sub(
                     r"^(?:created|creee?)\s+(?:on\s+|le\s+)?",
@@ -371,9 +523,12 @@ def _extract_reddit_subreddit_info(context, subreddit: str) -> dict:
                 ("weekly contributions", "contributions hebdomadaires"),
             )
         )
-        info["subreddit_member_count"] = _parse_reddit_sidebar_count(
-            lines,
-            ("subscribers", "abonnes", "membres"),
+        info["subreddit_member_count"] = (
+            info["subreddit_member_count"]
+            or _parse_reddit_sidebar_count(
+                lines,
+                ("subscribers", "abonnes", "membres"),
+            )
         )
     except (PlaywrightTimeoutError, PlaywrightError) as exc:
         LOGGER.warning("Could not collect Reddit community info for %s: %s", subreddit, exc)

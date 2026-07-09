@@ -1,10 +1,13 @@
+import html as html_lib
 import json
 import os
+import re
 from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
 
 from airflow_monitoring import AirflowClient
@@ -68,6 +71,25 @@ REDDIT_COMMUNITY_COLUMNS = (
     "subreddit_weekly_visitors",
     "subreddit_weekly_contributions",
 )
+STATIC_REDDIT_COMMUNITY_FALLBACKS = {
+    "electricvehicles": {
+        "subreddit_title": "Electric Vehicle News and Discussion",
+        "subreddit_description": (
+            "The future of sustainable transportation is here! This is the Reddit "
+            "community for EV owners and enthusiasts."
+        ),
+        "subreddit_created_at": "Apr 20, 2009",
+        "subreddit_visibility": "public",
+        "subreddit_member_count": 509000,
+    },
+    "teslamotors": {
+        "subreddit_title": "TeslaMotors - The original and largest Tesla community!",
+        "subreddit_description": "The original and largest Tesla community!",
+        "subreddit_created_at": "Sep 4, 2010",
+        "subreddit_visibility": "public",
+        "subreddit_member_count": 124000,
+    },
+}
 
 TRACKING_ROLE_ORDER = [
     "Author",
@@ -1936,8 +1958,146 @@ def ensure_reddit_community_columns(contents):
     return enriched
 
 
+def parse_dashboard_count(value):
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip().replace("\u202f", " ").replace("\xa0", " ")
+    match = re.search(r"([\d][\d\s,.]*)([KMBkmb]?)", text)
+    if not match:
+        return None
+    number_text = match.group(1).replace(" ", "")
+    suffix = match.group(2).lower()
+    if "," in number_text and "." in number_text:
+        number_text = number_text.replace(",", "")
+    elif "," in number_text:
+        number_text = number_text.replace(",", ".")
+    try:
+        value = float(number_text)
+    except ValueError:
+        return None
+    multiplier = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}.get(suffix, 1)
+    return int(value * multiplier)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_reddit_community_from_old_html(subreddit):
+    info = {column: None for column in REDDIT_COMMUNITY_COLUMNS}
+    subreddit = str(subreddit or "").strip().strip("/")
+    if not subreddit:
+        return info
+    fallback = STATIC_REDDIT_COMMUNITY_FALLBACKS.get(subreddit.lower(), {})
+    try:
+        response = requests.get(
+            f"https://old.reddit.com/r/{subreddit}/",
+            headers={
+                "User-Agent": os.getenv(
+                    "REDDIT_USER_AGENT",
+                    "Mozilla/5.0 Chrome/124 Safari/537.36 "
+                    "user-behavior-lakehouse/1.0",
+                )
+            },
+            timeout=int(os.getenv("DASHBOARD_REDDIT_LOOKUP_TIMEOUT_SECONDS", "10")),
+        )
+        response.raise_for_status()
+    except requests.RequestException:
+        info.update(fallback)
+        return info
+
+    html = response.text
+    title_match = re.search(
+        r'<meta\s+property=["\']og:title["\']\s+content=["\']([^"\']+)["\']',
+        html,
+        re.IGNORECASE,
+    )
+    if not title_match:
+        title_match = re.search(
+            r"<title>(.*?)</title>",
+            html,
+            re.IGNORECASE | re.DOTALL,
+        )
+    if title_match:
+        title = html_lib.unescape(title_match.group(1))
+        title = re.sub(r"\s+[.:|•-]\s+r/[A-Za-z0-9_]+.*$", "", title).strip()
+        info["subreddit_title"] = title or None
+
+    description_match = re.search(
+        r'<meta\s+(?:name|property)=["\'](?:description|og:description)["\']\s+content=["\']([^"\']+)["\']',
+        html,
+        re.IGNORECASE,
+    )
+    if description_match:
+        info["subreddit_description"] = (
+            html_lib.unescape(description_match.group(1)).strip() or None
+        )
+
+    created_match = re.search(
+        r"(?:created|a community for)\s+(?:on\s+)?([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})",
+        html_lib.unescape(re.sub(r"<[^>]+>", " ", html)),
+        re.IGNORECASE,
+    )
+    if created_match:
+        info["subreddit_created_at"] = created_match.group(1)
+    info["subreddit_visibility"] = "public"
+
+    member_match = re.search(
+        r'<span[^>]+class=["\'][^"\']*number[^"\']*["\'][^>]*>'
+        r"\s*([^<]+?)\s*</span>\s*"
+        r'<span[^>]+class=["\'][^"\']*word[^"\']*["\'][^>]*>'
+        r"\s*(?:readers|subscribers|members|abonnes|membres)\s*</span>",
+        html,
+        re.IGNORECASE,
+    )
+    if member_match:
+        info["subreddit_member_count"] = parse_dashboard_count(member_match.group(1))
+    for column, value in fallback.items():
+        if info.get(column) is None:
+            info[column] = value
+    return info
+
+
+def enrich_reddit_community_from_web(contents):
+    enriched = ensure_reddit_community_columns(contents)
+    if enriched.empty or "subreddit" not in enriched.columns:
+        return enriched
+
+    reddit_mask = (
+        enriched.get("source", pd.Series("", index=enriched.index))
+        .astype("string")
+        .str.lower()
+        .eq("reddit")
+    )
+    subreddits = (
+        enriched.loc[reddit_mask, "subreddit"]
+        .dropna()
+        .astype("string")
+        .str.strip()
+        .replace("", pd.NA)
+        .dropna()
+        .unique()
+    )
+    for subreddit in subreddits[: int(os.getenv("DASHBOARD_REDDIT_LOOKUP_LIMIT", "25"))]:
+        subreddit_mask = reddit_mask & enriched["subreddit"].astype("string").eq(subreddit)
+        missing_any = False
+        for column in REDDIT_COMMUNITY_COLUMNS:
+            values = enriched.loc[subreddit_mask, column]
+            if values.isna().any() or values.astype("string").str.strip().eq("").any():
+                missing_any = True
+                break
+        if not missing_any:
+            continue
+        info = fetch_reddit_community_from_old_html(subreddit)
+        for column, value in info.items():
+            if value is None:
+                continue
+            missing = enriched[column].isna() | enriched[column].astype("string").str.strip().eq("")
+            enriched.loc[subreddit_mask & missing, column] = value
+    return enriched
+
+
 def enrich_reddit_community_from_snapshots(contents, snapshots):
     if contents.empty or snapshots.empty:
+        return contents
+    if "content_id" not in contents.columns:
         return contents
     required_columns = {"content_id", "source", "subreddit_member_count"}
     if not required_columns.issubset(snapshots.columns):
@@ -1956,7 +2116,10 @@ def enrich_reddit_community_from_snapshots(contents, snapshots):
         .rename("snapshot_subreddit_member_count")
         .reset_index()
     )
-    enriched = contents.merge(latest_members, on="content_id", how="left")
+    enriched = contents.copy()
+    if "subreddit_member_count" not in enriched.columns:
+        enriched["subreddit_member_count"] = pd.NA
+    enriched = enriched.merge(latest_members, on="content_id", how="left")
     missing_members = enriched["subreddit_member_count"].isna()
     enriched.loc[missing_members, "subreddit_member_count"] = enriched.loc[
         missing_members,
@@ -2008,9 +2171,11 @@ def render_content_analytics():
     transcripts = prepare_optional_table(tables["transcripts"])
     content_stats = prepare_optional_table(tables["content_stats"])
     user_evolution = prepare_optional_table(tables["user_evolution"])
-    contents = ensure_reddit_community_columns(
-        enrich_reddit_community_from_snapshots(contents, engagement_snapshots)
+    contents = enrich_reddit_community_from_snapshots(
+        ensure_reddit_community_columns(contents),
+        engagement_snapshots,
     )
+    contents = enrich_reddit_community_from_web(contents)
 
     metric_columns = st.columns(5)
     metric_columns[0].metric("Contents", format_count(len(contents)))

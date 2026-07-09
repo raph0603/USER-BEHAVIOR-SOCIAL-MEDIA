@@ -1,6 +1,10 @@
+import ast
+import html as html_lib
 import importlib.util
 import json
+import re
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -396,6 +400,139 @@ class EngagementMetadataTests(unittest.TestCase):
             rows = reddit_json.fetch_post_comments("https://reddit.com/r/test/comments/123")
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["subreddit_member_count"], 54321)
+
+    def test_reddit_subreddit_about_json_populates_community_metadata(self):
+        source = (ROOT / "playwright" / "producer.py").read_text(encoding="utf-8")
+        module = ast.parse(source)
+        function_node = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_extract_reddit_subreddit_about_json"
+        )
+
+        class FakeLogger:
+            def warning(self, *args, **kwargs):
+                pass
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {
+                    "data": {
+                        "title": "Electric Vehicles",
+                        "public_description": "EV discussion and news",
+                        "created_utc": 1262304000,
+                        "subreddit_type": "public",
+                        "subscribers": 20456209,
+                    }
+                }
+
+        class FakeRequests:
+            RequestException = Exception
+
+            @staticmethod
+            def get(*args, **kwargs):
+                return FakeResponse()
+
+        namespace = {
+            "datetime": datetime,
+            "timezone": timezone,
+            "LOGGER": FakeLogger(),
+            "parse_count": ENGAGEMENT.parse_count,
+            "requests": FakeRequests,
+            "_clean_text": lambda value: " ".join(str(value or "").split()),
+            "_env_int": lambda name, default: default,
+            "_env_str": lambda name, default: default,
+        }
+        exec(
+            compile(
+                ast.Module(body=[function_node], type_ignores=[]),
+                str(ROOT / "playwright" / "producer.py"),
+                "exec",
+            ),
+            namespace,
+        )
+
+        info = namespace["_extract_reddit_subreddit_about_json"]("electricvehicles")
+
+        self.assertEqual(info["subreddit_title"], "Electric Vehicles")
+        self.assertEqual(info["subreddit_description"], "EV discussion and news")
+        self.assertEqual(info["subreddit_created_at"], "2010-01-01")
+        self.assertEqual(info["subreddit_visibility"], "public")
+        self.assertEqual(info["subreddit_member_count"], 20456209)
+
+    def test_reddit_subreddit_old_html_populates_title_and_description(self):
+        source = (ROOT / "playwright" / "producer.py").read_text(encoding="utf-8")
+        module = ast.parse(source)
+        functions = [
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name
+            in {
+                "_normalize_reddit_sidebar_label",
+                "_parse_reddit_sidebar_count",
+                "_extract_reddit_subreddit_old_html",
+            }
+        ]
+
+        class FakeLogger:
+            def warning(self, *args, **kwargs):
+                pass
+
+        class FakeResponse:
+            text = """
+            <html>
+              <head>
+                <title>Electric Vehicle News and Discussion</title>
+                <meta name="description" content="The future of sustainable transportation is here!" />
+              </head>
+              <body></body>
+            </html>
+            """
+
+            def raise_for_status(self):
+                pass
+
+        class FakeRequests:
+            RequestException = Exception
+
+            @staticmethod
+            def get(*args, **kwargs):
+                return FakeResponse()
+
+        namespace = {
+            "LOGGER": FakeLogger(),
+            "html_lib": html_lib,
+            "parse_count": ENGAGEMENT.parse_count,
+            "re": re,
+            "requests": FakeRequests,
+            "STATIC_REDDIT_COMMUNITY_FALLBACKS": {},
+            "unicodedata": __import__("unicodedata"),
+            "_clean_text": lambda value: " ".join(str(value or "").split()),
+            "_env_int": lambda name, default: default,
+            "_env_str": lambda name, default: default,
+        }
+        exec(
+            compile(
+                ast.Module(body=functions, type_ignores=[]),
+                str(ROOT / "playwright" / "producer.py"),
+                "exec",
+            ),
+            namespace,
+        )
+
+        info = namespace["_extract_reddit_subreddit_old_html"]("electricvehicles")
+
+        self.assertEqual(info["subreddit_title"], "Electric Vehicle News and Discussion")
+        self.assertEqual(
+            info["subreddit_description"],
+            "The future of sustainable transportation is here!",
+        )
+        self.assertEqual(info["subreddit_visibility"], "public")
 
 
 if __name__ == "__main__":

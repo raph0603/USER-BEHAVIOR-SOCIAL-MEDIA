@@ -1,6 +1,9 @@
+import ast
 import sys
 import unittest
 from pathlib import Path
+
+import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -169,6 +172,42 @@ class ContentAnalyticsIntegrationTextTests(unittest.TestCase):
         ):
             with self.subTest(value=value):
                 self.assertIn(value, source)
+
+    def test_dashboard_enriches_missing_reddit_member_column_from_snapshots(self):
+        source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
+        module = ast.parse(source)
+        function_node = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "enrich_reddit_community_from_snapshots"
+        )
+        namespace = {"pd": pd}
+        exec(
+            compile(
+                ast.Module(body=[function_node], type_ignores=[]),
+                str(ROOT / "dashboard" / "app.py"),
+                "exec",
+            ),
+            namespace,
+        )
+
+        contents = pd.DataFrame({"content_id": ["abc"], "source": ["reddit"]})
+        snapshots = pd.DataFrame(
+            {
+                "content_id": ["abc"],
+                "source": ["reddit"],
+                "subreddit_member_count": [123],
+            }
+        )
+
+        result = namespace["enrich_reddit_community_from_snapshots"](
+            contents,
+            snapshots,
+        )
+
+        self.assertEqual(result.loc[0, "subreddit_member_count"], 123)
+        self.assertNotIn("snapshot_subreddit_member_count", result.columns)
 
 
 if __name__ == "__main__":
