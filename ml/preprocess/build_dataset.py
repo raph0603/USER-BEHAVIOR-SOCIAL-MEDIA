@@ -130,21 +130,42 @@ def add_channel_features(df: pd.DataFrame) -> pd.DataFrame:
 def add_viral_label(df: pd.DataFrame, quantile: float = VIRAL_QUANTILE) -> pd.DataFrame:
     df = df.copy()
     df["engagement_score"] = np.nan
-    df["viral"] = 0
+    df["engagement_observed_metrics"] = 0
+    df["engagement_coverage"] = 0.0
+    df["viral"] = pd.Series(pd.NA, index=df.index, dtype="Int64")
 
     for source, metrics in ENGAGEMENT_METRICS.items():
         mask = df["source"] == source
         if not mask.any():
             continue
-        cols = [m for m in metrics if m in df.columns]
-        raw = df.loc[mask, cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).clip(lower=0)
+        source_rows = df.loc[mask]
+        raw = pd.DataFrame(index=source_rows.index)
+        for metric in metrics:
+            raw[metric] = (
+                pd.to_numeric(source_rows[metric], errors="coerce")
+                if metric in source_rows.columns
+                else np.nan
+            )
+        raw = raw.clip(lower=0)
+        observed = raw.notna().sum(axis=1)
+        coverage = observed / float(len(metrics))
+        valid = observed > 0
 
-        z = np.log1p(raw)
-        std = z.std(ddof=0).replace(0, 1.0)
-        score = ((z - z.mean()) / std).sum(axis=1)
+        df.loc[mask, "engagement_observed_metrics"] = observed
+        df.loc[mask, "engagement_coverage"] = coverage
+        if not valid.any():
+            continue
 
-        df.loc[mask, "engagement_score"] = score
-        df.loc[mask, "viral"] = (score >= score.quantile(quantile)).astype(int)
+        logged = np.log1p(raw)
+        std = logged.loc[valid].std(ddof=0).replace(0, 1.0).fillna(1.0)
+        standardized = (logged - logged.loc[valid].mean()) / std
+        score = standardized.sum(axis=1, min_count=1) / np.sqrt(observed.clip(lower=1))
+        threshold = score.loc[valid].quantile(quantile)
+
+        df.loc[score.loc[valid].index, "engagement_score"] = score.loc[valid]
+        df.loc[score.loc[valid].index, "viral"] = (
+            score.loc[valid] >= threshold
+        ).astype(int)
 
     return df
 
@@ -157,6 +178,14 @@ def build(input_path: Path, output_path: Path, quantile: float = VIRAL_QUANTILE)
     df = add_topic_features(df)
     df = add_channel_features(df)
     df = add_viral_label(df, quantile)
+    unlabeled = int(df["viral"].isna().sum())
+    if unlabeled:
+        print(
+            f"[label] dropping {unlabeled} rows without observed engagement; "
+            "missing counters remain unknown"
+        )
+        df = df[df["viral"].notna()].copy()
+    df["viral"] = df["viral"].astype(int)
     df = pd.concat([df, pd.get_dummies(df["source"], prefix="src")], axis=1)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
