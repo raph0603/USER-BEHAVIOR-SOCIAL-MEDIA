@@ -368,6 +368,67 @@ requested target is larger than the smallest source, the job lowers the
 effective target and records that constraint in the report instead of
 duplicating rows.
 
+### Content analytics layer
+
+`lakehouse.silver.events` remains the base monitoring table. The
+`content_analytics.py` batch job derives entity-level tables for analysis:
+
+- `lakehouse.silver.contents`: one row per main content item, such as a
+  Reddit post, X post, or YouTube video.
+- `lakehouse.silver.interactions`: comments and replies attached to a parent
+  content item.
+- `lakehouse.silver.engagement_snapshots`: append-only content engagement
+  observations over time.
+- `lakehouse.silver.transcripts`: YouTube transcript text and optional segment
+  metadata when available.
+- `lakehouse.gold.content_stats`: content-level aggregates such as interaction
+  counts, unique interacting users, average interaction length, and latest
+  engagement metrics.
+- `lakehouse.gold.user_evolution`: anonymized user activity by day and source.
+
+Collectors and manual imports now propagate entity relationship fields through
+bronze and silver so the analytics tables can group interactions under their
+root content. Reddit events populate `subreddit`, `conversation_id` from the
+post id, and `parent_interaction_id` for comment replies. X events populate
+`x_account` and use the status id as `conversation_id` when no reply root is
+available. YouTube events populate `conversation_id`, channel name, language,
+transcript text, segment JSON, and duration when those values are available.
+Existing YouTube rows can also be backfilled without using YouTube Data API
+search quota: `youtube_transcripts.py` reads `lakehouse.silver.events`, fetches
+captions with `youtube-transcript-api`, and merges rows into
+`lakehouse.silver.transcripts`.
+
+Run the job manually with:
+
+```bash
+docker compose exec -T spark-master /opt/spark/bin/spark-submit \
+  --master spark://spark-master:7077 \
+  --driver-memory 512m \
+  --executor-memory 512m \
+  --conf spark.cores.max=2 \
+  --conf spark.executor.cores=1 \
+  /opt/spark/jobs/batch/content_analytics.py
+```
+
+To backfill transcripts for videos already present in Silver:
+
+```bash
+docker compose exec -T spark-master /opt/spark/bin/spark-submit \
+  --master spark://spark-master:7077 \
+  --driver-memory 512m \
+  --executor-memory 512m \
+  --conf spark.cores.max=2 \
+  --conf spark.executor.cores=1 \
+  /opt/spark/jobs/batch/youtube_transcripts.py
+```
+
+The main `user_behavior_lakehouse` Airflow DAG also refreshes these analytical
+tables after `lakehouse.silver.events` has been updated. The Streamlit
+dashboard exposes them in `Content Explorer`, with Reddit, X, YouTube, and
+Users views. If an analytical table has not been created yet, the dashboard
+shows a non-blocking availability message and keeps the raw events view
+available for debugging.
+
 ### YouTube owners and collaborators
 
 YouTube events store the publishing channel in `owner_channel_id` and accepted

@@ -2,3 +2,4 @@ pyspark==3.5.1
 pandas
 numpy
 pyarrow
+youtube-transcript-api==1.2.4

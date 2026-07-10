@@ -58,6 +58,12 @@ REDDIT_SCHEMA = StructType([
     StructField("created_iso",        TimestampType(), nullable=False),
     StructField("score",              LongType(),      nullable=True),
     StructField("comment_permalink",  StringType(),    nullable=True),
+    StructField("subreddit_title",    StringType(),    nullable=True),
+    StructField("subreddit_description", StringType(), nullable=True),
+    StructField("subreddit_created_at", StringType(),  nullable=True),
+    StructField("subreddit_visibility", StringType(),  nullable=True),
+    StructField("subreddit_weekly_visitors", LongType(), nullable=True),
+    StructField("subreddit_weekly_contributions", LongType(), nullable=True),
     StructField("subreddit_member_count", LongType(),  nullable=True),
 ])
 

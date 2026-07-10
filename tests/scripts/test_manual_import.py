@@ -26,6 +26,7 @@ class ManualImportTests(unittest.TestCase):
         self.assertEqual(events[0]["platform_event_id"], "c1")
         self.assertEqual(events[0]["url"], "https://www.youtube.com/watch?v=abc123")
         self.assertEqual(events[0]["title"], "Great EV review")
+        self.assertEqual(events[0]["conversation_id"], "abc123")
         self.assertEqual(events[0]["like_count"], 7)
         self.assertEqual(events[0]["view_count"], 1000)
 
@@ -49,6 +50,8 @@ class ManualImportTests(unittest.TestCase):
 
         self.assertEqual(events[0]["source"], "x")
         self.assertEqual(events[0]["platform_event_id"], "42")
+        self.assertEqual(events[0]["conversation_id"], "42")
+        self.assertEqual(events[0]["x_account"], "driver")
         self.assertEqual(events[0]["like_count"], 1200)
         self.assertEqual(events[0]["view_count"], 10000)
 
@@ -61,6 +64,13 @@ class ManualImportTests(unittest.TestCase):
                     "author": "user",
                     "comment_text": "Battery range matters",
                     "created_utc": 1780308000,
+                    "subreddit_title": "EV community",
+                    "subreddit_description": "Electric vehicles discussion",
+                    "subreddit_created_at": "Jun 1, 2010",
+                    "subreddit_visibility": "Public",
+                    "subreddit_weekly_visitors": "4.9 M",
+                    "subreddit_weekly_contributions": "51 k",
+                    "subreddit_subscribers": "20,456,209",
                 }
             ]
         ).encode("utf-8")
@@ -73,8 +83,44 @@ class ManualImportTests(unittest.TestCase):
 
         self.assertEqual(events[0]["source"], "reddit")
         self.assertEqual(events[0]["platform_event_id"], "r1")
+        self.assertEqual(events[0]["conversation_id"], "post")
+        self.assertEqual(events[0]["subreddit"], "ev")
+        self.assertEqual(events[0]["subreddit_title"], "EV community")
+        self.assertEqual(
+            events[0]["subreddit_description"],
+            "Electric vehicles discussion",
+        )
+        self.assertEqual(events[0]["subreddit_created_at"], "Jun 1, 2010")
+        self.assertEqual(events[0]["subreddit_visibility"], "Public")
+        self.assertEqual(events[0]["subreddit_weekly_visitors"], 4900000)
+        self.assertEqual(events[0]["subreddit_weekly_contributions"], 51000)
+        self.assertEqual(events[0]["subreddit_member_count"], 20456209)
+        self.assertEqual(events[0]["title"], "Battery range matters")
         self.assertEqual(events[0]["like_count"], None)
         self.assertTrue(events[0]["timestamp"].startswith("2026-06-01"))
+
+    def test_reddit_import_prefers_comment_text_over_generic_title(self):
+        payload = json.dumps(
+            [
+                {
+                    "title": "electricvehicles",
+                    "comment_id": "r2",
+                    "post_url": "https://reddit.com/r/electricvehicles/comments/post/my_post",
+                    "author": "user",
+                    "comment_text": "The charging curve is the useful part",
+                    "created_iso": "2026-06-01T10:00:00Z",
+                }
+            ]
+        ).encode("utf-8")
+
+        events = MANUAL_IMPORT.load_import_events(
+            "comments.json",
+            payload,
+            source="reddit",
+        )
+
+        self.assertEqual(events[0]["title"], "The charging curve is the useful part")
+        self.assertEqual(events[0]["subreddit"], "electricvehicles")
 
     def test_manual_import_dag_consumes_json_manual_topics(self):
         source = (

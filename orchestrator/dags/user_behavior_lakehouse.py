@@ -151,6 +151,37 @@ def build_balancing_report_command() -> str:
     """
 
 
+def build_content_analytics_command() -> str:
+    return r"""
+    set -euo pipefail
+    docker exec \
+      spark-master /opt/spark/bin/spark-submit \
+      --master spark://spark-master:7077 \
+      --driver-memory 512m \
+      --executor-memory 512m \
+      --conf spark.cores.max=2 \
+      --conf spark.executor.cores=1 \
+      /opt/spark/jobs/batch/content_analytics.py
+    """
+
+
+def build_youtube_transcripts_command() -> str:
+    return r"""
+    set -euo pipefail
+    docker exec \
+      -e YOUTUBE_TRANSCRIPT_LANGUAGES="${YOUTUBE_TRANSCRIPT_LANGUAGES:-en,vi}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_LIMIT="${YOUTUBE_TRANSCRIPT_BACKFILL_LIMIT:-500}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_SLEEP_SECONDS="${YOUTUBE_TRANSCRIPT_BACKFILL_SLEEP_SECONDS:-0.25}" \
+      spark-master /opt/spark/bin/spark-submit \
+      --master spark://spark-master:7077 \
+      --driver-memory 512m \
+      --executor-memory 512m \
+      --conf spark.cores.max=2 \
+      --conf spark.executor.cores=1 \
+      /opt/spark/jobs/batch/youtube_transcripts.py
+    """
+
+
 CRAWLER_CONFIG = load_crawler_config()
 
 
@@ -558,6 +589,18 @@ with DAG(
         bash_command=build_balancing_report_command(),
     )
 
+    backfill_youtube_transcripts = BashOperator(
+        task_id="backfill_youtube_transcripts",
+        execution_timeout=timedelta(hours=1),
+        bash_command=build_youtube_transcripts_command(),
+    )
+
+    update_content_analytics = BashOperator(
+        task_id="update_content_analytics",
+        execution_timeout=timedelta(hours=1),
+        bash_command=build_content_analytics_command(),
+    )
+
     stop_realtime_streams = BashOperator(
         task_id="terminate_pipeline_spark_jobs",
         trigger_rule=TriggerRule.ALL_DONE,
@@ -602,7 +645,9 @@ with DAG(
     start_bronze_stream >> wait_bronze
     wait_bronze >> start_silver_stream
     start_silver_stream >> wait_silver
-    wait_silver >> update_balancing_report
+    wait_silver >> backfill_youtube_transcripts
+    backfill_youtube_transcripts >> update_content_analytics
+    update_content_analytics >> update_balancing_report
     [
         start_clean_youtube,
         start_clean_x,
@@ -614,6 +659,8 @@ with DAG(
         wait_bronze,
         start_silver_stream,
         wait_silver,
+        backfill_youtube_transcripts,
+        update_content_analytics,
         update_balancing_report,
     ] >> stop_realtime_streams
     stop_realtime_streams >> release_pipeline_lock
@@ -626,6 +673,8 @@ with DAG(
         wait_clean_reddit,
         wait_bronze,
         wait_silver,
+        backfill_youtube_transcripts,
+        update_content_analytics,
         update_balancing_report,
         stop_realtime_streams,
         acquire_pipeline_lock,
