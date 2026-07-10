@@ -172,6 +172,10 @@ def build_youtube_transcripts_command() -> str:
       -e YOUTUBE_TRANSCRIPT_LANGUAGES="${YOUTUBE_TRANSCRIPT_LANGUAGES:-en,vi}" \
       -e YOUTUBE_TRANSCRIPT_BACKFILL_LIMIT="${YOUTUBE_TRANSCRIPT_BACKFILL_LIMIT:-500}" \
       -e YOUTUBE_TRANSCRIPT_BACKFILL_SLEEP_SECONDS="${YOUTUBE_TRANSCRIPT_BACKFILL_SLEEP_SECONDS:-0.25}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS="${YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS:-5}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS="${YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS:-3600}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_STOP_ON_RATE_LIMIT="${YOUTUBE_TRANSCRIPT_BACKFILL_STOP_ON_RATE_LIMIT:-true}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE="${YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE:-true}" \
       spark-master /opt/spark/bin/spark-submit \
       --master spark://spark-master:7077 \
       --driver-memory 512m \
@@ -571,7 +575,7 @@ with DAG(
         task_id="verify_bronze_rows",
         bash_command=r"""
         set -euo pipefail
-        timeout 120s docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/tests/lakehouse/lakehouse_check.py lakehouse.bronze.events 1"
+        timeout 120s docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/tests/lakehouse/lakehouse_check.py lakehouse.bronze.events 1 '{{ dag_run.start_date.isoformat() }}'"
         """,
     )
 
@@ -579,7 +583,7 @@ with DAG(
         task_id="verify_silver_rows",
         bash_command=r"""
         set -euo pipefail
-        timeout 120s docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/tests/lakehouse/lakehouse_check.py lakehouse.silver.events 1"
+        timeout 120s docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/tests/lakehouse/lakehouse_check.py lakehouse.silver.events 1 '{{ dag_run.start_date.isoformat() }}'"
         """,
     )
 

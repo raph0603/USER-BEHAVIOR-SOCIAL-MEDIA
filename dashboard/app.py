@@ -118,6 +118,56 @@ CONTENT_ANALYTICS_TABLES = {
     "content_stats": ("gold", "content_stats"),
     "user_evolution": ("gold", "user_evolution"),
 }
+TRANSCRIPT_STATUS_PRESENTATION = {
+    "pending": (
+        "info",
+        "Transcript collection is pending for this video.",
+    ),
+    "partial": (
+        "warning",
+        "Only a partial transcript was collected; another attempt may complete it.",
+    ),
+    "not_available": (
+        "info",
+        "YouTube reports that no transcript is available for this video.",
+    ),
+    "disabled": (
+        "info",
+        "Transcripts are disabled for this video.",
+    ),
+    "rate_limited": (
+        "warning",
+        "Transcript collection was rate limited and can be retried after the cooldown.",
+    ),
+    "failed": (
+        "error",
+        "Transcript collection failed and can be retried while attempts remain.",
+    ),
+}
+
+
+def transcript_status_presentation(row):
+    raw_status = row.get("transcript_status")
+    status = "" if raw_status is None or pd.isna(raw_status) else str(raw_status)
+    status = status.strip().lower()
+    transcript = row.get("transcript_text")
+    has_transcript = transcript is not None and not pd.isna(transcript) and bool(
+        str(transcript).strip()
+    )
+    if not status:
+        status = "success" if has_transcript else "pending"
+    if status == "success":
+        return status, "success", "Transcript collected successfully."
+    level, message = TRANSCRIPT_STATUS_PRESENTATION.get(
+        status,
+        ("warning", "Transcript collection returned an unknown status."),
+    )
+    raw_error_code = row.get("error_code")
+    if raw_error_code is not None and not pd.isna(raw_error_code):
+        error_code = str(raw_error_code).strip()
+        if error_code:
+            message = f"{message} Error code: {error_code}."
+    return status, level, message
 
 
 def render_add_data_panel():
@@ -2180,7 +2230,16 @@ def render_content_analytics():
     metric_columns = st.columns(5)
     metric_columns[0].metric("Contents", format_count(len(contents)))
     metric_columns[1].metric("Interactions", format_count(len(interactions)))
-    metric_columns[2].metric("Transcripts", format_count(len(transcripts)))
+    transcript_count = len(transcripts)
+    if "transcript_status" in transcripts.columns:
+        transcript_count = int(
+            transcripts["transcript_status"]
+            .astype("string")
+            .str.lower()
+            .eq("success")
+            .sum()
+        )
+    metric_columns[2].metric("Transcripts", format_count(transcript_count))
     metric_columns[3].metric("Content stats", format_count(len(content_stats)))
     metric_columns[4].metric("User days", format_count(len(user_evolution)))
 
@@ -2335,20 +2394,31 @@ def render_content_analytics():
             else:
                 video_transcripts = pd.DataFrame()
             if video_transcripts.empty:
-                st.info("No transcript available for this video.")
+                st.info("Transcript collection has not been attempted for this video.")
             else:
-                transcript = video_transcripts.iloc[0].get("transcript_text")
-                keyword = st.text_input("Transcript keyword")
+                if "updated_at" in video_transcripts.columns:
+                    video_transcripts = video_transcripts.sort_values(
+                        "updated_at",
+                        ascending=False,
+                    )
+                transcript_row = video_transcripts.iloc[0]
+                status, level, message = transcript_status_presentation(transcript_row)
+                st.caption(f"Transcript status: {status.replace('_', ' ')}")
+                if status != "success":
+                    getattr(st, level)(message)
+                transcript = transcript_row.get("transcript_text")
                 transcript_text = "" if pd.isna(transcript) else str(transcript)
-                if keyword:
-                    lines = [
-                        line
-                        for line in transcript_text.splitlines()
-                        if keyword.lower() in line.lower()
-                    ]
-                    st.text_area("Transcript", "\n".join(lines), height=260)
-                else:
-                    st.text_area("Transcript", transcript_text, height=260)
+                if transcript_text.strip():
+                    keyword = st.text_input("Transcript keyword")
+                    if keyword:
+                        lines = [
+                            line
+                            for line in transcript_text.splitlines()
+                            if keyword.lower() in line.lower()
+                        ]
+                        st.text_area("Transcript", "\n".join(lines), height=260)
+                    else:
+                        st.text_area("Transcript", transcript_text, height=260)
 
     with users_tab:
         if user_evolution.empty:

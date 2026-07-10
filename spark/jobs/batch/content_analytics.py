@@ -7,30 +7,42 @@ over time: main contents, interactions, append-only engagement observations,
 YouTube transcripts, content-level aggregates, and user evolution.
 """
 
-import os
+from __future__ import annotations
 
-from pyspark.sql import DataFrame, SparkSession, Window
-from pyspark.sql.functions import (
-    avg,
-    col,
-    concat_ws,
-    coalesce,
-    count,
-    countDistinct,
-    first,
-    lit,
-    lower,
-    regexp_extract,
-    regexp_replace,
-    row_number,
-    sha2,
-    size,
-    split,
-    sum as spark_sum,
-    to_date,
-    trim,
-    when,
-)
+import os
+from typing import Any
+
+try:
+    from pyspark.sql import DataFrame, SparkSession, Window
+    from pyspark.sql.functions import (
+        avg,
+        col,
+        concat_ws,
+        coalesce,
+        count,
+        countDistinct,
+        first,
+        lit,
+        lower,
+        regexp_extract,
+        regexp_replace,
+        row_number,
+        sha2,
+        size,
+        split,
+        sum as spark_sum,
+        to_date,
+        to_json,
+        to_timestamp,
+        trim,
+        when,
+    )
+except ModuleNotFoundError as exc:
+    if not (exc.name or "").startswith("pyspark"):
+        raise
+    DataFrame = Any
+    SparkSession = Any
+    Window = None
 
 
 def _env(name: str, default: str) -> str:
@@ -73,6 +85,7 @@ USER_EVOLUTION_TABLE = "lakehouse.gold.user_evolution"
 CREATE_CONTENTS_SQL = """
 CREATE TABLE IF NOT EXISTS lakehouse.silver.contents (
   content_id STRING,
+  root_content_id STRING,
   source STRING,
   platform_content_id STRING,
   content_type STRING,
@@ -94,6 +107,13 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.contents (
   youtube_channel_id STRING,
   youtube_channel_name STRING,
   language STRING,
+  conversation_id STRING,
+  collection_status STRING,
+  metadata_status STRING,
+  transcript_status STRING,
+  comments_status STRING,
+  canonical_metadata STRING,
+  source_specific_metadata STRING,
   raw_text STRING,
   clean_text STRING,
   text_for_model STRING
@@ -109,9 +129,13 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.interactions (
   source STRING,
   platform_interaction_id STRING,
   parent_content_id STRING,
+  root_content_id STRING,
   parent_interaction_id STRING,
   conversation_id STRING,
   interaction_type STRING,
+  relation_type STRING,
+  depth INT,
+  position_in_thread BIGINT,
   author_id_hash STRING,
   text STRING,
   created_at TIMESTAMP,
@@ -119,6 +143,10 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.interactions (
   score BIGINT,
   like_count BIGINT,
   reply_count BIGINT,
+  collection_status STRING,
+  metadata_status STRING,
+  canonical_metadata STRING,
+  source_specific_metadata STRING,
   raw_text STRING,
   clean_text STRING,
   text_for_model STRING
@@ -164,13 +192,30 @@ CREATE_TRANSCRIPTS_SQL = """
 CREATE TABLE IF NOT EXISTS lakehouse.silver.transcripts (
   video_id STRING,
   content_id STRING,
+  transcript_status STRING,
   language STRING,
+  language_code STRING,
   transcript_text STRING,
   segments_json STRING,
   duration_seconds DOUBLE,
+  covered_duration_seconds DOUBLE,
   word_count BIGINT,
+  segment_count BIGINT,
+  available_languages_json STRING,
   has_auto_captions BOOLEAN,
+  is_generated BOOLEAN,
+  is_translated BOOLEAN,
+  source_language STRING,
+  source_language_code STRING,
+  transcript_source STRING,
+  selection_strategy STRING,
+  error_code STRING,
+  error_message STRING,
+  attempt_count BIGINT,
+  last_attempt_at TIMESTAMP,
+  collected_at TIMESTAMP,
   created_at TIMESTAMP,
+  updated_at TIMESTAMP,
   event_date DATE
 )
 USING iceberg
@@ -226,6 +271,7 @@ PARTITIONED BY (event_date)
 
 CONTENT_COLUMNS = [
     "content_id",
+    "root_content_id",
     "source",
     "platform_content_id",
     "content_type",
@@ -247,6 +293,13 @@ CONTENT_COLUMNS = [
     "youtube_channel_id",
     "youtube_channel_name",
     "language",
+    "conversation_id",
+    "collection_status",
+    "metadata_status",
+    "transcript_status",
+    "comments_status",
+    "canonical_metadata",
+    "source_specific_metadata",
     "raw_text",
     "clean_text",
     "text_for_model",
@@ -257,9 +310,13 @@ INTERACTION_COLUMNS = [
     "source",
     "platform_interaction_id",
     "parent_content_id",
+    "root_content_id",
     "parent_interaction_id",
     "conversation_id",
     "interaction_type",
+    "relation_type",
+    "depth",
+    "position_in_thread",
     "author_id_hash",
     "text",
     "created_at",
@@ -267,6 +324,10 @@ INTERACTION_COLUMNS = [
     "score",
     "like_count",
     "reply_count",
+    "collection_status",
+    "metadata_status",
+    "canonical_metadata",
+    "source_specific_metadata",
     "raw_text",
     "clean_text",
     "text_for_model",
@@ -293,13 +354,30 @@ SNAPSHOT_COLUMNS = [
 TRANSCRIPT_COLUMNS = [
     "video_id",
     "content_id",
+    "transcript_status",
     "language",
+    "language_code",
     "transcript_text",
     "segments_json",
     "duration_seconds",
+    "covered_duration_seconds",
     "word_count",
+    "segment_count",
+    "available_languages_json",
     "has_auto_captions",
+    "is_generated",
+    "is_translated",
+    "source_language",
+    "source_language_code",
+    "transcript_source",
+    "selection_strategy",
+    "error_code",
+    "error_message",
+    "attempt_count",
+    "last_attempt_at",
+    "collected_at",
     "created_at",
+    "updated_at",
     "event_date",
 ]
 
@@ -373,6 +451,41 @@ OPTIONAL_EVENT_COLUMNS = {
     "transcript_segments_json": "STRING",
     "duration_seconds": "DOUBLE",
     "has_auto_captions": "BOOLEAN",
+    "published_at": "STRING",
+    "collected_at": "STRING",
+    "updated_at": "STRING",
+    "last_attempt_at": "STRING",
+    "content_id": "STRING",
+    "parent_content_id": "STRING",
+    "root_content_id": "STRING",
+    "content_type": "STRING",
+    "relation_type": "STRING",
+    "depth": "INT",
+    "position_in_thread": "BIGINT",
+    "collection_status": "STRING",
+    "metadata_status": "STRING",
+    "transcript_status": "STRING",
+    "comments_status": "STRING",
+    "storage_status": "STRING",
+    "error_code": "STRING",
+    "error_message": "STRING",
+    "attempt_count": "INT",
+    "transcript_language": "STRING",
+    "transcript_language_code": "STRING",
+    "transcript_is_generated": "BOOLEAN",
+    "transcript_is_translated": "BOOLEAN",
+    "transcript_source": "STRING",
+    "transcript_selection_strategy": "STRING",
+    "transcript_segment_count": "BIGINT",
+    "transcript_available_languages": "ARRAY<STRING>",
+    "transcript_covered_duration_seconds": "DOUBLE",
+    "transcript_collected_at": "STRING",
+    "transcript_error_code": "STRING",
+    "transcript_error_message": "STRING",
+    "transcript_source_language": "STRING",
+    "transcript_source_language_code": "STRING",
+    "canonical_metadata": "STRING",
+    "source_specific_metadata": "STRING",
 }
 
 
@@ -392,8 +505,10 @@ def _with_optional_event_columns(events: DataFrame) -> DataFrame:
 
 
 def normalize_events(events: DataFrame) -> DataFrame:
+    """Normalize canonical and historical records without inventing interactions."""
+
     prepared = _with_optional_event_columns(events)
-    text = coalesce(col("clean_text"), col("title"), col("raw_text"))
+    text = coalesce(col("clean_text"), col("raw_text"), col("title"))
     reddit_subreddit = regexp_extract(col("url"), r"/r/([^/]+)", 1)
     reddit_post_id = regexp_extract(col("url"), r"/comments/([^/]+)", 1)
     reddit_post_slug = regexp_extract(col("url"), r"/comments/[^/]+/([^/]+)", 1)
@@ -403,37 +518,75 @@ def normalize_events(events: DataFrame) -> DataFrame:
     )
     x_status_id = regexp_extract(col("url"), r"/status/(\d+)", 1)
     youtube_video_id = regexp_extract(col("url"), r"[?&]v=([^&]+)", 1)
-    derived_root_id = (
+    derived_platform_id = (
         when((col("source") == "reddit") & (reddit_post_id != ""), reddit_post_id)
         .when((col("source") == "x") & (x_status_id != ""), x_status_id)
         .when((col("source") == "youtube") & (youtube_video_id != ""), youtube_video_id)
     )
-    platform_content_id = coalesce(
-        col("conversation_id"),
-        derived_root_id,
+    event_platform_id = coalesce(
         col("platform_event_id"),
+        derived_platform_id,
         col("url"),
+    )
+    root_platform_id = (
+        when(
+            col("source") == "reddit",
+            coalesce(col("conversation_id"), derived_platform_id, event_platform_id),
+        ).otherwise(event_platform_id)
+    )
+    derived_event_content_id = sha2(
+        concat_ws(":", col("source"), event_platform_id),
+        256,
+    )
+    derived_root_content_id = sha2(
+        concat_ws(":", col("source"), root_platform_id),
+        256,
+    )
+    event_content_id = coalesce(col("content_id"), derived_event_content_id)
+    root_content_id = coalesce(col("root_content_id"), derived_root_content_id)
+    immediate_parent_content_id = coalesce(
+        col("parent_content_id"),
+        when(col("source") == "reddit", root_content_id),
+    )
+    explicit_interaction = lower(coalesce(col("relation_type"), lit(""))).isin(
+        "comment",
+        "reply",
+        "interaction",
+    )
+    typed_interaction = lower(coalesce(col("content_type"), lit(""))).rlike(
+        "(comment|reply|interaction)$"
+    )
+    is_interaction = (
+        explicit_interaction
+        | typed_interaction
+        | (
+            (col("source") == "reddit")
+            & col("relation_type").isNull()
+        )
+    )
+    interaction_id = coalesce(
+        when(is_interaction, event_content_id),
+        sha2(
+            concat_ws(
+                ":",
+                col("source"),
+                event_platform_id,
+                coalesce(col("user_id"), lit("")),
+            ),
+            256,
+        ),
     )
     derived_subreddit = coalesce(
         col("subreddit"),
         when((col("source") == "reddit") & (reddit_subreddit != ""), reddit_subreddit),
     )
-    content_id = sha2(concat_ws(":", col("source"), platform_content_id), 256)
-    interaction_id = sha2(
-        concat_ws(
-            ":",
-            col("source"),
-            coalesce(col("platform_event_id"), lit("")),
-            coalesce(col("user_id"), lit("")),
-            coalesce(col("url"), lit("")),
-            coalesce(col("event_ts").cast("string"), lit("")),
-        ),
-        256,
-    )
 
     return (
-        prepared.withColumn("created_at", col("event_ts"))
-        .withColumn("event_date", to_date(col("event_ts")))
+        prepared.withColumn(
+            "created_at",
+            coalesce(to_timestamp(col("published_at")), col("event_ts")),
+        )
+        .withColumn("event_date", to_date(col("created_at")))
         .withColumn("text", text)
         .withColumn(
             "content_title",
@@ -461,25 +614,39 @@ def normalize_events(events: DataFrame) -> DataFrame:
                 col("text_for_model")
             ),
         )
-        .withColumn("platform_content_id", platform_content_id)
+        .withColumn("platform_content_id", root_platform_id)
         .withColumn("derived_subreddit", derived_subreddit)
-        .withColumn("content_id", content_id)
+        .withColumn("event_content_id", event_content_id)
+        .withColumn("root_content_id", root_content_id)
+        .withColumn("content_id", root_content_id)
+        .withColumn("parent_content_id", immediate_parent_content_id)
         .withColumn("interaction_id", interaction_id)
+        .withColumn("is_interaction", is_interaction)
+        .withColumn("event_content_type", col("content_type"))
         .withColumn(
             "content_type",
             when(col("source") == "reddit", lit("reddit_post"))
             .when(col("source") == "x", lit("x_post"))
             .when(col("source") == "youtube", lit("youtube_video"))
-            .otherwise(lit("unknown")),
+            .otherwise(coalesce(col("content_type"), lit("unknown"))),
         )
         .withColumn(
             "interaction_type",
             when(col("source") == "reddit", lit("reddit_comment"))
+            .when(
+                col("source") == "youtube",
+                coalesce(col("event_content_type"), lit("youtube_comment")),
+            )
             .when(col("source") == "x", lit("x_reply"))
-            .when(col("source") == "youtube", lit("youtube_comment"))
-            .otherwise(lit("interaction")),
+            .otherwise(coalesce(col("event_content_type"), lit("interaction"))),
         )
         .withColumn("author_id_hash", col("user_id"))
+        .withColumn(
+            "content_author_id_hash",
+            when(col("source") == "reddit", lit(None).cast("string")).otherwise(
+                col("user_id")
+            ),
+        )
         .withColumn("youtube_channel_id", col("owner_channel_id"))
     )
 
@@ -487,15 +654,17 @@ def normalize_events(events: DataFrame) -> DataFrame:
 def build_contents(events: DataFrame) -> DataFrame:
     normalized = normalize_events(events)
     return (
-        normalized.groupBy("content_id")
+        normalized.filter((~col("is_interaction")) | (col("source") == "reddit"))
+        .groupBy("content_id")
         .agg(
+            first("root_content_id", ignorenulls=True).alias("root_content_id"),
             first("source", ignorenulls=True).alias("source"),
             first("platform_content_id", ignorenulls=True).alias("platform_content_id"),
             first("content_type", ignorenulls=True).alias("content_type"),
             first("url", ignorenulls=True).alias("url"),
             first("content_title", ignorenulls=True).alias("title"),
             first("content_text", ignorenulls=True).alias("text"),
-            first("author_id_hash", ignorenulls=True).alias("author_id_hash"),
+            first("content_author_id_hash", ignorenulls=True).alias("author_id_hash"),
             first("created_at", ignorenulls=True).alias("created_at"),
             first("event_date", ignorenulls=True).alias("event_date"),
             first("derived_subreddit", ignorenulls=True).alias("subreddit"),
@@ -524,6 +693,15 @@ def build_contents(events: DataFrame) -> DataFrame:
                 "youtube_channel_name"
             ),
             first("language", ignorenulls=True).alias("language"),
+            first("conversation_id", ignorenulls=True).alias("conversation_id"),
+            first("collection_status", ignorenulls=True).alias("collection_status"),
+            first("metadata_status", ignorenulls=True).alias("metadata_status"),
+            first("transcript_status", ignorenulls=True).alias("transcript_status"),
+            first("comments_status", ignorenulls=True).alias("comments_status"),
+            first("canonical_metadata", ignorenulls=True).alias("canonical_metadata"),
+            first("source_specific_metadata", ignorenulls=True).alias(
+                "source_specific_metadata"
+            ),
             first("content_raw_text", ignorenulls=True).alias("raw_text"),
             first("content_clean_text", ignorenulls=True).alias("clean_text"),
             first("content_text_for_model", ignorenulls=True).alias("text_for_model"),
@@ -534,14 +712,18 @@ def build_contents(events: DataFrame) -> DataFrame:
 
 def build_interactions(events: DataFrame) -> DataFrame:
     normalized = normalize_events(events)
-    return normalized.select(
+    return normalized.filter(col("is_interaction")).select(
         "interaction_id",
         "source",
         col("platform_event_id").alias("platform_interaction_id"),
-        col("content_id").alias("parent_content_id"),
+        "parent_content_id",
+        "root_content_id",
         "parent_interaction_id",
         "conversation_id",
         "interaction_type",
+        "relation_type",
+        "depth",
+        "position_in_thread",
         "author_id_hash",
         "text",
         "created_at",
@@ -549,6 +731,10 @@ def build_interactions(events: DataFrame) -> DataFrame:
         "score",
         "like_count",
         "reply_count",
+        "collection_status",
+        "metadata_status",
+        "canonical_metadata",
+        "source_specific_metadata",
         "raw_text",
         "clean_text",
         "text_for_model",
@@ -558,7 +744,7 @@ def build_interactions(events: DataFrame) -> DataFrame:
 def build_snapshots(events: DataFrame) -> DataFrame:
     normalized = normalize_events(events)
     return (
-        normalized.withColumn(
+        normalized.filter(~col("is_interaction")).withColumn(
             "snapshot_at",
             coalesce(col("metadata_refreshed_at"), col("created_at")),
         )
@@ -569,7 +755,9 @@ def build_snapshots(events: DataFrame) -> DataFrame:
 
 
 def build_transcripts(events: DataFrame) -> DataFrame:
-    normalized = normalize_events(events).filter(col("source") == "youtube")
+    normalized = normalize_events(events).filter(
+        (col("source") == "youtube") & (~col("is_interaction"))
+    )
     return (
         normalized.withColumn(
             "transcript_text",
@@ -583,24 +771,44 @@ def build_transcripts(events: DataFrame) -> DataFrame:
             ).otherwise(lit(None).cast("bigint")),
         )
         .select(
-            col("platform_content_id").alias("video_id"),
+            col("platform_event_id").alias("video_id"),
             "content_id",
-            "language",
+            "transcript_status",
+            coalesce(col("transcript_language"), col("language")).alias("language"),
+            col("transcript_language_code").alias("language_code"),
             "transcript_text",
             col("transcript_segments_json").alias("segments_json"),
             "duration_seconds",
+            col("transcript_covered_duration_seconds").alias(
+                "covered_duration_seconds"
+            ),
             "word_count",
+            col("transcript_segment_count").alias("segment_count"),
+            to_json(col("transcript_available_languages")).alias(
+                "available_languages_json"
+            ),
             "has_auto_captions",
+            col("transcript_is_generated").alias("is_generated"),
+            col("transcript_is_translated").alias("is_translated"),
+            col("transcript_source_language").alias("source_language"),
+            col("transcript_source_language_code").alias("source_language_code"),
+            "transcript_source",
+            col("transcript_selection_strategy").alias("selection_strategy"),
+            col("transcript_error_code").alias("error_code"),
+            col("transcript_error_message").alias("error_message"),
+            "attempt_count",
+            to_timestamp(col("last_attempt_at")).alias("last_attempt_at"),
+            to_timestamp(col("transcript_collected_at")).alias("collected_at"),
             "created_at",
+            to_timestamp(col("updated_at")).alias("updated_at"),
             "event_date",
         )
-        .filter(col("transcript_text").isNotNull())
         .dropDuplicates(["video_id", "content_id"])
     )
 
 
 def build_content_stats(contents: DataFrame, interactions: DataFrame, snapshots: DataFrame):
-    interaction_stats = interactions.groupBy("parent_content_id").agg(
+    interaction_stats = interactions.groupBy("root_content_id").agg(
         count("*").cast("bigint").alias("interaction_count"),
         countDistinct("author_id_hash").cast("bigint").alias("unique_interacting_users"),
         avg(size(split(trim(coalesce(col("text"), lit(""))), r"\s+"))).alias(
@@ -621,7 +829,7 @@ def build_content_stats(contents: DataFrame, interactions: DataFrame, snapshots:
     return (
         contents.join(
             interaction_stats,
-            contents.content_id == interaction_stats.parent_content_id,
+            contents.content_id == interaction_stats.root_content_id,
             "left",
         )
         .join(
@@ -659,7 +867,7 @@ def build_user_evolution(contents: DataFrame, interactions: DataFrame) -> DataFr
         col("author_id_hash").alias("user_id_hash"),
         "source",
         "event_date",
-        col("parent_content_id").alias("content_id"),
+        col("root_content_id").alias("content_id"),
         lit(None).cast("string").alias("subreddit"),
         lit(None).cast("string").alias("youtube_channel_id"),
         "conversation_id",
@@ -716,6 +924,7 @@ def _create_tables(spark: SparkSession) -> None:
         spark,
         CONTENT_TABLE,
         {
+            "root_content_id": "STRING",
             "platform_content_id": "STRING",
             "subreddit": "STRING",
             "subreddit_title": "STRING",
@@ -729,6 +938,13 @@ def _create_tables(spark: SparkSession) -> None:
             "youtube_channel_id": "STRING",
             "youtube_channel_name": "STRING",
             "language": "STRING",
+            "conversation_id": "STRING",
+            "collection_status": "STRING",
+            "metadata_status": "STRING",
+            "transcript_status": "STRING",
+            "comments_status": "STRING",
+            "canonical_metadata": "STRING",
+            "source_specific_metadata": "STRING",
             "raw_text": "STRING",
             "clean_text": "STRING",
             "text_for_model": "STRING",
@@ -739,11 +955,19 @@ def _create_tables(spark: SparkSession) -> None:
         INTERACTION_TABLE,
         {
             "platform_interaction_id": "STRING",
+            "root_content_id": "STRING",
             "parent_interaction_id": "STRING",
             "conversation_id": "STRING",
+            "relation_type": "STRING",
+            "depth": "INT",
+            "position_in_thread": "BIGINT",
             "score": "BIGINT",
             "like_count": "BIGINT",
             "reply_count": "BIGINT",
+            "collection_status": "STRING",
+            "metadata_status": "STRING",
+            "canonical_metadata": "STRING",
+            "source_specific_metadata": "STRING",
             "raw_text": "STRING",
             "clean_text": "STRING",
             "text_for_model": "STRING",
@@ -765,9 +989,26 @@ def _create_tables(spark: SparkSession) -> None:
         spark,
         TRANSCRIPT_TABLE,
         {
+            "transcript_status": "STRING",
+            "language_code": "STRING",
             "segments_json": "STRING",
             "duration_seconds": "DOUBLE",
+            "covered_duration_seconds": "DOUBLE",
+            "segment_count": "BIGINT",
+            "available_languages_json": "STRING",
             "has_auto_captions": "BOOLEAN",
+            "is_generated": "BOOLEAN",
+            "is_translated": "BOOLEAN",
+            "source_language": "STRING",
+            "source_language_code": "STRING",
+            "transcript_source": "STRING",
+            "selection_strategy": "STRING",
+            "error_code": "STRING",
+            "error_message": "STRING",
+            "attempt_count": "BIGINT",
+            "last_attempt_at": "TIMESTAMP",
+            "collected_at": "TIMESTAMP",
+            "updated_at": "TIMESTAMP",
         },
     )
 
@@ -784,8 +1025,40 @@ def _merge_dataframe(
 
     view_name = table.replace(".", "_") + "_upsert"
     dataframe.select(*columns).createOrReplaceTempView(view_name)
+
+    def assignment(column: str) -> str:
+        if table != TRANSCRIPT_TABLE:
+            return f"t.{column} = COALESCE(s.{column}, t.{column})"
+        if column == "transcript_status":
+            return (
+                "t.transcript_status = CASE "
+                "WHEN s.transcript_status = 'success' THEN 'success' "
+                "WHEN t.transcript_status IN ('success', 'not_available', 'disabled') "
+                "THEN t.transcript_status "
+                "ELSE COALESCE(s.transcript_status, t.transcript_status) END"
+            )
+        if column in {"error_code", "error_message"}:
+            return (
+                f"t.{column} = CASE "
+                "WHEN s.transcript_status = 'success' THEN NULL "
+                f"WHEN t.transcript_status = 'success' THEN t.{column} "
+                f"ELSE COALESCE(s.{column}, t.{column}) END"
+            )
+        if column == "attempt_count":
+            return (
+                "t.attempt_count = GREATEST("
+                "COALESCE(s.attempt_count, 0), COALESCE(t.attempt_count, 0))"
+            )
+        if column in {"last_attempt_at", "updated_at"}:
+            return f"t.{column} = GREATEST(s.{column}, t.{column})"
+        if column in {"created_at", "event_date"}:
+            return f"t.{column} = COALESCE(t.{column}, s.{column})"
+        return f"t.{column} = COALESCE(s.{column}, t.{column})"
+
     assignments = ", ".join(
-        f"t.{column} = s.{column}" for column in columns if column not in key_columns
+        assignment(column)
+        for column in columns
+        if column not in key_columns
     )
     insert_columns = ", ".join(columns)
     insert_values = ", ".join(f"s.{column}" for column in columns)

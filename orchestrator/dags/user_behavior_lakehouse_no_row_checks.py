@@ -21,7 +21,7 @@ PROJECT_DIR = "/workspace"
 def schedule_interval() -> timedelta | None:
     raw_value = os.getenv(
         "LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES",
-        "60",
+        "0",
     ).strip()
     try:
         minutes = int(raw_value)
@@ -154,6 +154,20 @@ def build_balancing_report_command() -> str:
     """
 
 
+def build_content_analytics_command() -> str:
+    return r"""
+    set -euo pipefail
+    docker exec \
+      spark-master /opt/spark/bin/spark-submit \
+      --master spark://spark-master:7077 \
+      --driver-memory 512m \
+      --executor-memory 512m \
+      --conf spark.cores.max=2 \
+      --conf spark.executor.cores=1 \
+      /opt/spark/jobs/batch/content_analytics.py
+    """
+
+
 def build_youtube_transcripts_command() -> str:
     return r"""
     set -euo pipefail
@@ -161,6 +175,10 @@ def build_youtube_transcripts_command() -> str:
       -e YOUTUBE_TRANSCRIPT_LANGUAGES="${YOUTUBE_TRANSCRIPT_LANGUAGES:-en,vi}" \
       -e YOUTUBE_TRANSCRIPT_BACKFILL_LIMIT="${YOUTUBE_TRANSCRIPT_BACKFILL_LIMIT:-500}" \
       -e YOUTUBE_TRANSCRIPT_BACKFILL_SLEEP_SECONDS="${YOUTUBE_TRANSCRIPT_BACKFILL_SLEEP_SECONDS:-0.25}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS="${YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS:-5}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS="${YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS:-3600}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_STOP_ON_RATE_LIMIT="${YOUTUBE_TRANSCRIPT_BACKFILL_STOP_ON_RATE_LIMIT:-true}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE="${YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE:-true}" \
       spark-master /opt/spark/bin/spark-submit \
       --master spark://spark-master:7077 \
       --driver-memory 512m \
@@ -463,6 +481,12 @@ with DAG(
         bash_command=build_youtube_transcripts_command(),
     )
 
+    update_content_analytics = BashOperator(
+        task_id="update_content_analytics",
+        execution_timeout=timedelta(hours=1),
+        bash_command=build_content_analytics_command(),
+    )
+
     run_youtube_collection = BashOperator(
         task_id="collect_youtube_api_events",
         execution_timeout=timedelta(
@@ -619,7 +643,8 @@ with DAG(
     ] >> start_bronze_stream
     start_bronze_stream >> start_silver_stream
     start_silver_stream >> backfill_youtube_transcripts
-    backfill_youtube_transcripts >> update_balancing_report
+    backfill_youtube_transcripts >> update_content_analytics
+    update_content_analytics >> update_balancing_report
     [
         start_clean_youtube,
         start_clean_x,
@@ -630,6 +655,7 @@ with DAG(
         start_bronze_stream,
         start_silver_stream,
         backfill_youtube_transcripts,
+        update_content_analytics,
         update_balancing_report,
     ] >> stop_realtime_streams
     stop_realtime_streams >> release_pipeline_lock
@@ -643,6 +669,7 @@ with DAG(
         start_bronze_stream,
         start_silver_stream,
         backfill_youtube_transcripts,
+        update_content_analytics,
         update_balancing_report,
         stop_realtime_streams,
         acquire_pipeline_lock,

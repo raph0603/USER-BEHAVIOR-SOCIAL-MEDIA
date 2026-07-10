@@ -15,6 +15,7 @@ COPY .env.example /workspace/.env.example
 COPY dashboard/ /workspace/dashboard/
 COPY playwright/ /workspace/playwright/
 COPY spark/ /workspace/spark/
+COPY common/ /workspace/common/
 COPY schemas/ /workspace/schemas/
 COPY scripts/ /workspace/scripts/
 COPY tests/spark/ /workspace/tests/spark/

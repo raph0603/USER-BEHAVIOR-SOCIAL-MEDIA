@@ -100,7 +100,8 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertIn("YOUTUBE_COMMENT_MAX_PAGES", producer)
         self.assertIn("YOUTUBE_TRANSCRIPT_MAX_FAILURES", producer)
         self.assertIn("transcripts_disabled", producer)
-        self.assertIn('transcript_error == "IpBlocked"', producer)
+        self.assertIn("transcript_result.error_code", producer)
+        self.assertIn('"ip_blocked"', producer)
 
 
 if __name__ == "__main__":
