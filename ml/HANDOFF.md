@@ -108,9 +108,10 @@ You do **not** need to retrain for Task A/B — just call `explain_post`.
 
 **Comparison criteria (fill these in when you choose):** output quality · Vietnamese support · model size / VRAM · latency · license.
 
-**Suggested approach (not mandatory):** put the JSON in the prompt and ask the model to write a fixed-structure report. Example prompt:
+**Suggested approach (not mandatory):** pass the JSON as input context and
+request a fixed-structure report. Example request:
 ```
-You are a marketing assistant. Below is the analysis of one social post (JSON).
+Create a marketing performance report from this social-post analysis (JSON).
 Write a short report: (1) viral likelihood, (2) the main reasons, (3) 2-3 improvement tips.
 JSON: {...}
 ```
