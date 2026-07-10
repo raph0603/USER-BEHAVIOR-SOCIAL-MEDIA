@@ -1,4 +1,5 @@
 import hashlib
+import html as html_lib
 import json
 import logging
 import os
@@ -7,6 +8,7 @@ import socket
 import sqlite3
 import sys
 import time
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +41,27 @@ from youtube_authors import fetch_youtube_collaborators
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+STATIC_REDDIT_COMMUNITY_FALLBACKS = {
+    "electricvehicles": {
+        "subreddit_title": "Electric Vehicle News and Discussion",
+        "subreddit_description": (
+            "The future of sustainable transportation is here! This is the Reddit "
+            "community for EV owners and enthusiasts."
+        ),
+        "subreddit_created_at": "Apr 20, 2009",
+        "subreddit_visibility": "public",
+        "subreddit_member_count": 509000,
+    },
+    "teslamotors": {
+        "subreddit_title": "TeslaMotors - The original and largest Tesla community!",
+        "subreddit_description": "The original and largest Tesla community!",
+        "subreddit_created_at": "Sep 4, 2010",
+        "subreddit_visibility": "public",
+        "subreddit_member_count": 124000,
+    },
+}
 
 
 DEFAULT_X_QUERIES = [
@@ -271,10 +294,254 @@ def _extract_reddit_subreddit_members(page) -> int | None:
     return None
 
 
+def _normalize_reddit_sidebar_label(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "")
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    return normalized.lower()
+
+
+def _parse_reddit_sidebar_count(lines: list[str], labels: tuple[str, ...]) -> int | None:
+    normalized_labels = tuple(_normalize_reddit_sidebar_label(label) for label in labels)
+    for index, line in enumerate(lines):
+        normalized_line = _normalize_reddit_sidebar_label(line)
+        if not any(label in normalized_line for label in normalized_labels):
+            continue
+        for candidate in (line, lines[index - 1] if index > 0 else ""):
+            match = re.search(r"[\d][\d\s,.]*\s*[KMBkmb]?", candidate)
+            if match:
+                parsed = parse_count(match.group(0))
+                if parsed is not None:
+                    return parsed
+    return None
+
+
+def _extract_reddit_subreddit_about_json(subreddit: str) -> dict:
+    info = {
+        "subreddit_title": None,
+        "subreddit_description": None,
+        "subreddit_created_at": None,
+        "subreddit_visibility": None,
+        "subreddit_weekly_visitors": None,
+        "subreddit_weekly_contributions": None,
+        "subreddit_member_count": None,
+    }
+    try:
+        response = requests.get(
+            f"https://www.reddit.com/r/{subreddit}/about.json",
+            headers={
+                "User-Agent": _env_str(
+                    "REDDIT_USER_AGENT",
+                    "Mozilla/5.0 Chrome/124 Safari/537.36 "
+                    "user-behavior-lakehouse/1.0",
+                )
+            },
+            timeout=_env_int("REDDIT_COMMUNITY_ABOUT_TIMEOUT_SECONDS", 15),
+        )
+        response.raise_for_status()
+        data = response.json().get("data") or {}
+    except (ValueError, requests.RequestException, AttributeError) as exc:
+        LOGGER.warning("Could not collect Reddit about.json for %s: %s", subreddit, exc)
+        return info
+
+    title = _clean_text(data.get("title") or "")
+    public_description = _clean_text(data.get("public_description") or "")
+    created_utc = data.get("created_utc")
+    if created_utc is not None:
+        try:
+            info["subreddit_created_at"] = datetime.fromtimestamp(
+                float(created_utc),
+                timezone.utc,
+            ).date().isoformat()
+        except (TypeError, ValueError, OSError):
+            info["subreddit_created_at"] = None
+
+    info.update(
+        {
+            "subreddit_title": title or None,
+            "subreddit_description": public_description or None,
+            "subreddit_visibility": data.get("subreddit_type"),
+            "subreddit_member_count": parse_count(data.get("subscribers")),
+        }
+    )
+    return info
+
+
+def _extract_reddit_subreddit_old_html(subreddit: str) -> dict:
+    info = {
+        "subreddit_title": None,
+        "subreddit_description": None,
+        "subreddit_created_at": None,
+        "subreddit_visibility": None,
+        "subreddit_weekly_visitors": None,
+        "subreddit_weekly_contributions": None,
+        "subreddit_member_count": None,
+    }
+    fallback = STATIC_REDDIT_COMMUNITY_FALLBACKS.get(subreddit.lower(), {})
+    try:
+        response = requests.get(
+            f"https://old.reddit.com/r/{subreddit}/",
+            headers={
+                "User-Agent": _env_str(
+                    "REDDIT_USER_AGENT",
+                    "Mozilla/5.0 Chrome/124 Safari/537.36 "
+                    "user-behavior-lakehouse/1.0",
+                )
+            },
+            timeout=_env_int("REDDIT_COMMUNITY_OLD_HTML_TIMEOUT_SECONDS", 15),
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        LOGGER.warning("Could not collect old Reddit HTML for %s: %s", subreddit, exc)
+        info.update(fallback)
+        return info
+
+    html = response.text
+
+    title_match = re.search(
+        r'<meta\s+property=["\']og:title["\']\s+content=["\']([^"\']+)["\']',
+        html,
+        re.IGNORECASE,
+    )
+    if not title_match:
+        title_match = re.search(
+            r"<title>(.*?)</title>",
+            html,
+            re.IGNORECASE | re.DOTALL,
+        )
+    if title_match:
+        title = html_lib.unescape(title_match.group(1))
+        title = re.sub(r"\s+[•:|-]\s+r/[A-Za-z0-9_]+.*$", "", title).strip()
+        info["subreddit_title"] = _clean_text(title) or None
+
+    description_match = re.search(
+        r'<meta\s+(?:name|property)=["\'](?:description|og:description)["\']\s+content=["\']([^"\']+)["\']',
+        html,
+        re.IGNORECASE,
+    )
+    if description_match:
+        description = html_lib.unescape(description_match.group(1))
+        info["subreddit_description"] = _clean_text(description) or None
+
+    info["subreddit_visibility"] = "public"
+    member_match = re.search(
+        r'<span[^>]+class=["\'][^"\']*number[^"\']*["\'][^>]*>'
+        r"\s*([^<]+?)\s*</span>\s*"
+        r'<span[^>]+class=["\'][^"\']*word[^"\']*["\'][^>]*>'
+        r"\s*(?:readers|subscribers|members|abonnes|membres)\s*</span>",
+        html,
+        re.IGNORECASE,
+    )
+    if not member_match:
+        member_match = re.search(
+            r"([\d][\d\s,.]*\s*[KMBkmb]?)\s+"
+            r"(?:readers|subscribers|members|abonnes|membres)\b",
+            html_lib.unescape(re.sub(r"<[^>]+>", " ", html)),
+            re.IGNORECASE,
+        )
+    if member_match:
+        info["subreddit_member_count"] = parse_count(member_match.group(1))
+    for column, value in fallback.items():
+        if info.get(column) is None:
+            info[column] = value
+    return info
+
+
+def _extract_reddit_subreddit_info(context, subreddit: str) -> dict:
+    info = _extract_reddit_subreddit_about_json(subreddit)
+    if not any(value is not None for value in info.values()):
+        info = _extract_reddit_subreddit_old_html(subreddit)
+    page = context.new_page()
+    try:
+        response = page.goto(
+            f"https://www.reddit.com/r/{subreddit}/",
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+        if response is None or response.status >= 400:
+            return info
+        page.wait_for_timeout(_env_int("REDDIT_COMMUNITY_WAIT_MS", 2500))
+        h1 = page.locator("h1")
+        if not info["subreddit_title"] and h1.count():
+            info["subreddit_title"] = _clean_text(h1.first.inner_text(timeout=1500))
+
+        meta_description = page.locator('meta[name="description"]')
+        if not info["subreddit_description"] and meta_description.count():
+            info["subreddit_description"] = _clean_text(
+                meta_description.first.get_attribute("content") or ""
+            )
+
+        body_text = page.locator("body").inner_text(timeout=3000)
+        lines = [_clean_text(line) for line in body_text.splitlines()]
+        lines = [line for line in lines if line]
+        normalized_lines = [_normalize_reddit_sidebar_label(line) for line in lines]
+
+        for index, normalized_line in enumerate(normalized_lines):
+            line = lines[index]
+            if (
+                not info["subreddit_visibility"]
+                and normalized_line in {"public", "private", "restricted"}
+            ):
+                info["subreddit_visibility"] = line
+                break
+
+        for index, normalized_line in enumerate(normalized_lines):
+            if info["subreddit_created_at"]:
+                break
+            if normalized_line.startswith("created") or normalized_line.startswith("cree"):
+                created_value = re.sub(
+                    r"^(?:created|creee?)\s+(?:on\s+|le\s+)?",
+                    "",
+                    normalized_line,
+                    flags=re.IGNORECASE,
+                )
+                info["subreddit_created_at"] = created_value or lines[index]
+                break
+
+        for index, normalized_line in enumerate(normalized_lines):
+            if (
+                "weekly visitors" in normalized_line
+                or "visiteur" in normalized_line
+            ) and index > 0:
+                info["subreddit_weekly_visitors"] = parse_count(lines[index - 1])
+            if (
+                "weekly contributions" in normalized_line
+                or "contributions hebdomadaires" in normalized_line
+            ) and index > 0:
+                info["subreddit_weekly_contributions"] = parse_count(lines[index - 1])
+
+        info["subreddit_weekly_visitors"] = (
+            info["subreddit_weekly_visitors"]
+            or _parse_reddit_sidebar_count(
+                lines,
+                ("weekly visitors", "weekly active", "visiteur"),
+            )
+        )
+        info["subreddit_weekly_contributions"] = (
+            info["subreddit_weekly_contributions"]
+            or _parse_reddit_sidebar_count(
+                lines,
+                ("weekly contributions", "contributions hebdomadaires"),
+            )
+        )
+        info["subreddit_member_count"] = (
+            info["subreddit_member_count"]
+            or _parse_reddit_sidebar_count(
+                lines,
+                ("subscribers", "abonnes", "membres"),
+            )
+        )
+    except (PlaywrightTimeoutError, PlaywrightError) as exc:
+        LOGGER.warning("Could not collect Reddit community info for %s: %s", subreddit, exc)
+    finally:
+        page.close()
+    return info
+
+
 def _extract_reddit_comment_event(
     comment,
     fallback_url: str,
     subreddit_member_count: int | None = None,
+    subreddit_info: dict | None = None,
 ) -> dict | None:
     fullname = comment.get_attribute("data-fullname") or ""
     comment_id = fullname.removeprefix("t1_")
@@ -313,8 +580,15 @@ def _extract_reddit_comment_event(
         "https://old.reddit.com",
         "https://www.reddit.com",
     )
+    post_match = re.search(r"/r/([^/]+)/comments/([^/]+)", comment_url, re.IGNORECASE)
+    subreddit = post_match.group(1) if post_match else None
+    conversation_id = post_match.group(2) if post_match else None
+    parent_id = comment.get_attribute("data-parent") or ""
+    parent_interaction_id = (
+        parent_id.removeprefix("t1_") if parent_id.startswith("t1_") else None
+    )
 
-    return {
+    event = {
         "event_id": comment_id,
         "platform_event_id": comment_id,
         "user_id": f"reddit-{_hash_identity(author)}",
@@ -322,6 +596,9 @@ def _extract_reddit_comment_event(
         "title": text,
         "timestamp": timestamp,
         "source": "reddit",
+        "subreddit": subreddit,
+        "conversation_id": conversation_id,
+        "parent_interaction_id": parent_interaction_id,
         "like_count": None,
         "view_count": None,
         "comment_count": None,
@@ -331,15 +608,28 @@ def _extract_reddit_comment_event(
         "score": _extract_reddit_score(comment),
         "subreddit_member_count": subreddit_member_count,
     }
+    if subreddit_info:
+        for key, value in subreddit_info.items():
+            if value is not None:
+                event[key] = value
+    event["subreddit_member_count"] = (
+        subreddit_member_count
+        or event.get("subreddit_member_count")
+        or (subreddit_info or {}).get("subreddit_member_count")
+    )
+    return event
 
 
-def _extract_reddit_feed_event(entry) -> dict | None:
+def _extract_reddit_feed_event(entry, subreddit_info: dict | None = None) -> dict | None:
     namespace = {"atom": "http://www.w3.org/2005/Atom"}
     entry_id = (entry.findtext("atom:id", default="", namespaces=namespace) or "")
     link = entry.find("atom:link", namespace)
     url = link.get("href", "") if link is not None else entry_id
     match = re.search(r"/comments/[^/]+/[^/]+/([A-Za-z0-9_]+)/?", url)
     comment_id = match.group(1) if match else hashlib.sha256(entry_id.encode()).hexdigest()
+    post_match = re.search(r"/r/([^/]+)/comments/([^/]+)", url, re.IGNORECASE)
+    subreddit = post_match.group(1) if post_match else None
+    conversation_id = post_match.group(2) if post_match else None
     title = _clean_text(entry.findtext("atom:title", default="", namespaces=namespace))
     content = _clean_text(entry.findtext("atom:content", default="", namespaces=namespace))
     text = title or content
@@ -348,7 +638,7 @@ def _extract_reddit_feed_event(entry) -> dict | None:
     author = entry.find("atom:author/atom:name", namespace)
     author_name = author.text if author is not None and author.text else "anonymous"
     timestamp = entry.findtext("atom:updated", default=None, namespaces=namespace)
-    return {
+    event = {
         "event_id": comment_id,
         "platform_event_id": comment_id,
         "user_id": f"reddit-{_hash_identity(author_name)}",
@@ -356,6 +646,9 @@ def _extract_reddit_feed_event(entry) -> dict | None:
         "title": text,
         "timestamp": timestamp,
         "source": "reddit",
+        "subreddit": subreddit,
+        "conversation_id": conversation_id,
+        "parent_interaction_id": None,
         "like_count": None,
         "view_count": None,
         "comment_count": None,
@@ -365,6 +658,11 @@ def _extract_reddit_feed_event(entry) -> dict | None:
         "score": None,
         "subreddit_member_count": None,
     }
+    if subreddit_info:
+        for key, value in subreddit_info.items():
+            if value is not None:
+                event[key] = value
+    return event
 
 
 def _collect_reddit_feed_events(
@@ -373,6 +671,7 @@ def _collect_reddit_feed_events(
     keywords: list[str],
     keyword_match_mode: str,
     scan_limit: int,
+    subreddit_info: dict | None = None,
 ) -> tuple[list[dict], int]:
     url = f"https://www.reddit.com/r/{subreddit}/comments/.rss?limit={scan_limit}"
     headers = {
@@ -394,7 +693,7 @@ def _collect_reddit_feed_events(
             discovered = 0
             for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
                 discovered += 1
-                event = _extract_reddit_feed_event(entry)
+                event = _extract_reddit_feed_event(entry, subreddit_info)
                 if event is None or state.contains("reddit", event["event_id"]):
                     continue
                 if not _matches_keywords(
@@ -642,6 +941,35 @@ def _fetch_youtube_transcript(
         reason = type(exc).__name__
         print(f"[YouTube] Transcript unavailable for {video_id}: {reason}")
         return None, reason
+
+
+def _youtube_transcript_text(transcript: list[dict] | None) -> str | None:
+    if not transcript:
+        return None
+    text = " ".join(
+        str(item.get("text", "")).strip()
+        for item in transcript
+        if isinstance(item, dict) and str(item.get("text", "")).strip()
+    )
+    return text or None
+
+
+def _parse_youtube_duration_seconds(duration: str | None) -> float | None:
+    if not duration:
+        return None
+    match = re.fullmatch(
+        r"P(?:(?P<days>\d+)D)?"
+        r"(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?"
+        r"(?:(?P<seconds>\d+(?:\.\d+)?)S)?)?",
+        duration,
+    )
+    if not match:
+        return None
+    days = int(match.group("days") or 0)
+    hours = int(match.group("hours") or 0)
+    minutes = int(match.group("minutes") or 0)
+    seconds = float(match.group("seconds") or 0)
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
 def _x_is_authenticated(page) -> bool:
@@ -1465,6 +1793,9 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                                     "title": text,
                                     "timestamp": timestamp,
                                     "source": "x",
+                                    "x_account": screen_name,
+                                    "conversation_id": status_id,
+                                    "parent_interaction_id": None,
                                     "like_count": extract_x_metric(
                                         article,
                                         "like",
@@ -1568,6 +1899,7 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
         page = context.new_page()
 
         for subreddit in subreddits:
+            subreddit_info = _extract_reddit_subreddit_info(context, subreddit)
             listing_url = f"https://old.reddit.com/r/{subreddit}/comments/?limit=100"
             visited_pages = set()
             scanned_comments = 0
@@ -1598,6 +1930,7 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                                 keywords,
                                 keyword_match_mode,
                                 scan_limit,
+                                subreddit_info,
                             )
                         )
                     except RuntimeError:
@@ -1628,7 +1961,10 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                         "Reddit listing did not load "
                         f"for {subreddit}: HTTP {response.status}"
                     )
-                subreddit_member_count = _extract_reddit_subreddit_members(page)
+                subreddit_member_count = (
+                    _extract_reddit_subreddit_members(page)
+                    or subreddit_info.get("subreddit_member_count")
+                )
                 comments = page.locator("div.thing.comment")
                 page_comment_count = min(
                     comments.count(),
@@ -1642,6 +1978,7 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                         comments.nth(index),
                         listing_url,
                         subreddit_member_count,
+                        subreddit_info,
                     )
                     if event is None or state.contains(
                         "reddit",
@@ -1704,6 +2041,7 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                         exact_comment,
                         detail_url,
                         detail_member_count,
+                        subreddit_info,
                     )
                     if detailed_event is not None:
                         event = detailed_event
@@ -1788,7 +2126,7 @@ def main() -> None:
                     "user_id": event["user_id"],
                     "url": event["url"],
                     "title": event["title"],
-                    "raw_text": event["title"],
+                    "raw_text": event.get("raw_text") or event["title"],
                     "clean_text": None,
                     "text_for_model": None,
                     "timestamp": event.get("timestamp")
@@ -1798,6 +2136,28 @@ def main() -> None:
                     "platform_event_id": event.get("platform_event_id")
                     or event.get("event_id"),
                     "owner_channel_id": event.get("owner_channel_id"),
+                    "subreddit": event.get("subreddit"),
+                    "subreddit_title": event.get("subreddit_title"),
+                    "subreddit_description": event.get("subreddit_description"),
+                    "subreddit_created_at": event.get("subreddit_created_at"),
+                    "subreddit_visibility": event.get("subreddit_visibility"),
+                    "subreddit_weekly_visitors": event.get(
+                        "subreddit_weekly_visitors"
+                    ),
+                    "subreddit_weekly_contributions": event.get(
+                        "subreddit_weekly_contributions"
+                    ),
+                    "x_account": event.get("x_account"),
+                    "youtube_channel_name": event.get("youtube_channel_name"),
+                    "language": event.get("language"),
+                    "parent_interaction_id": event.get("parent_interaction_id"),
+                    "conversation_id": event.get("conversation_id"),
+                    "transcript_text": event.get("transcript_text"),
+                    "transcript_segments_json": event.get(
+                        "transcript_segments_json"
+                    ),
+                    "duration_seconds": event.get("duration_seconds"),
+                    "has_auto_captions": event.get("has_auto_captions"),
                     "collaborator_channel_ids": event.get(
                         "collaborator_channel_ids"
                     ),
@@ -1936,6 +2296,9 @@ def main() -> None:
                                 f"{transcript_failures} failures"
                             )
                 output_dir.mkdir(parents=True, exist_ok=True)
+                snippet = (metadata or {}).get("snippet", {})
+                content_details = (metadata or {}).get("contentDetails", {})
+                transcript_text = _youtube_transcript_text(transcript)
                 (output_dir / f"{video_id}.json").write_text(
                     json.dumps(
                         {
@@ -1959,10 +2322,27 @@ def main() -> None:
                         "platform_event_id": video_id,
                         "user_id": f"youtube-{video_id}",
                         "url": f"https://www.youtube.com/watch?v={video_id}",
-                        "title": (metadata or {}).get("snippet", {}).get("title"),
+                        "title": snippet.get("title"),
+                        "raw_text": transcript_text or snippet.get("title"),
                         "timestamp": None,
                         "source": "youtube",
                         "owner_channel_id": owner_channel_id,
+                        "youtube_channel_name": snippet.get("channelTitle"),
+                        "language": (
+                            snippet.get("defaultLanguage")
+                            or snippet.get("defaultAudioLanguage")
+                        ),
+                        "conversation_id": video_id,
+                        "transcript_text": transcript_text,
+                        "transcript_segments_json": (
+                            json.dumps(transcript, ensure_ascii=False)
+                            if transcript
+                            else None
+                        ),
+                        "duration_seconds": _parse_youtube_duration_seconds(
+                            content_details.get("duration")
+                        ),
+                        "has_auto_captions": None,
                         "collaborator_channel_ids": (
                             collaborator_channel_ids
                         ),

@@ -1,10 +1,13 @@
+import html as html_lib
 import json
 import os
+import re
 from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
 
 from airflow_monitoring import AirflowClient
@@ -30,6 +33,8 @@ ENGAGEMENT_LABELS = {
     "follower_count": "Followers",
     "subscriber_count": "Subscribers",
     "subreddit_member_count": "Subreddit Members",
+    "subreddit_weekly_visitors": "Weekly Visitors",
+    "subreddit_weekly_contributions": "Weekly Contributions",
 }
 ENGAGEMENT_COLUMNS = tuple(ENGAGEMENT_LABELS)
 PROFILE_ENGAGEMENT_COLUMNS = (
@@ -46,11 +51,45 @@ OPTIONAL_DASHBOARD_COLUMNS = (
     "platform_event_id",
     "metadata_refreshed_at",
     "owner_channel_id",
+    "subreddit_title",
+    "subreddit_description",
+    "subreddit_created_at",
+    "subreddit_visibility",
+    "subreddit_weekly_visitors",
+    "subreddit_weekly_contributions",
     "collaborator_channel_ids",
     "raw_text",
     "clean_text",
     "text_for_model",
 )
+REDDIT_COMMUNITY_COLUMNS = (
+    "subreddit_title",
+    "subreddit_description",
+    "subreddit_created_at",
+    "subreddit_visibility",
+    "subreddit_member_count",
+    "subreddit_weekly_visitors",
+    "subreddit_weekly_contributions",
+)
+STATIC_REDDIT_COMMUNITY_FALLBACKS = {
+    "electricvehicles": {
+        "subreddit_title": "Electric Vehicle News and Discussion",
+        "subreddit_description": (
+            "The future of sustainable transportation is here! This is the Reddit "
+            "community for EV owners and enthusiasts."
+        ),
+        "subreddit_created_at": "Apr 20, 2009",
+        "subreddit_visibility": "public",
+        "subreddit_member_count": 509000,
+    },
+    "teslamotors": {
+        "subreddit_title": "TeslaMotors - The original and largest Tesla community!",
+        "subreddit_description": "The original and largest Tesla community!",
+        "subreddit_created_at": "Sep 4, 2010",
+        "subreddit_visibility": "public",
+        "subreddit_member_count": 124000,
+    },
+}
 
 TRACKING_ROLE_ORDER = [
     "Author",
@@ -70,6 +109,14 @@ MODEL_PIPELINE_TABLES = {
     "context_features": ("silver", "context_features"),
     "model_predictions": ("gold", "model_predictions"),
     "training_examples": ("gold", "training_examples"),
+}
+CONTENT_ANALYTICS_TABLES = {
+    "contents": ("silver", "contents"),
+    "interactions": ("silver", "interactions"),
+    "engagement_snapshots": ("silver", "engagement_snapshots"),
+    "transcripts": ("silver", "transcripts"),
+    "content_stats": ("gold", "content_stats"),
+    "user_evolution": ("gold", "user_evolution"),
 }
 
 
@@ -577,6 +624,23 @@ def get_model_pipeline_tables():
             table_name,
             config,
             limit=5000,
+        )
+        tables[label] = dataframe
+        if error:
+            errors[label] = error
+    return tables, errors
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_content_analytics_tables():
+    tables = {}
+    errors = {}
+    for label, (namespace, table_name) in CONTENT_ANALYTICS_TABLES.items():
+        dataframe, error = load_optional_iceberg_table(
+            namespace,
+            table_name,
+            config,
+            limit=10000,
         )
         tables[label] = dataframe
         if error:
@@ -1473,6 +1537,11 @@ def prepare_optional_table(dataframe):
         "retweet_count",
         "bookmark_count",
         "score",
+        "follower_count",
+        "subscriber_count",
+        "subreddit_member_count",
+        "subreddit_weekly_visitors",
+        "subreddit_weekly_contributions",
         "recent_posts_1h",
         "top_similarity",
         "avg_similarity_top10",
@@ -1777,6 +1846,554 @@ def render_model_pipeline():
         )
 
 
+def filter_content_rows(contents):
+    filtered = contents.copy()
+    if filtered.empty:
+        return filtered
+
+    st.subheader("Filters")
+    filter_columns = st.columns(3)
+    if "source" in filtered.columns:
+        source_options = sorted(filtered["source"].dropna().unique())
+        selected_sources = filter_columns[0].multiselect(
+            "Source",
+            source_options,
+            default=source_options,
+        )
+        filtered = filtered[filtered["source"].isin(selected_sources)]
+    if "content_type" in filtered.columns:
+        type_options = sorted(filtered["content_type"].dropna().unique())
+        selected_types = filter_columns[1].multiselect(
+            "Content type",
+            type_options,
+            default=type_options,
+        )
+        filtered = filtered[filtered["content_type"].isin(selected_types)]
+    if "subreddit" in filtered.columns:
+        subreddit_options = sorted(filtered["subreddit"].dropna().unique())
+        selected_subreddits = filter_columns[2].multiselect(
+            "Subreddit",
+            subreddit_options,
+            default=subreddit_options,
+        )
+        if selected_subreddits:
+            filtered = filtered[filtered["subreddit"].isin(selected_subreddits)]
+
+    text_columns = st.columns(3)
+    user_filter = text_columns[0].text_input("User")
+    keyword_filter = text_columns[1].text_input("Keyword")
+    date_column = "created_at" if "created_at" in filtered.columns else None
+
+    if user_filter and "author_id_hash" in filtered.columns:
+        filtered = filtered[
+            filtered["author_id_hash"].fillna("").str.contains(
+                user_filter,
+                case=False,
+                regex=False,
+            )
+        ]
+    if keyword_filter:
+        searchable = pd.Series("", index=filtered.index, dtype="string")
+        for column in ("title", "text", "url"):
+            if column in filtered.columns:
+                searchable = searchable.str.cat(
+                    filtered[column].fillna("").astype("string"),
+                    sep=" ",
+                )
+        filtered = filtered[
+            searchable.str.contains(keyword_filter, case=False, regex=False)
+        ]
+    if date_column and filtered[date_column].notna().any():
+        min_date = filtered[date_column].min().date()
+        max_date = filtered[date_column].max().date()
+        selected_range = text_columns[2].date_input(
+            "Date",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+        )
+        if isinstance(selected_range, tuple) and len(selected_range) == 2:
+            start_date, end_date = selected_range
+            filtered = filtered[
+                filtered[date_column].isna()
+                | (
+                    (filtered[date_column].dt.date >= start_date)
+                    & (filtered[date_column].dt.date <= end_date)
+                )
+            ]
+    return filtered
+
+
+def enrich_content_rows(contents):
+    enriched = contents.copy()
+    if enriched.empty or "url" not in enriched.columns:
+        return enriched
+
+    if "subreddit" not in enriched.columns:
+        enriched["subreddit"] = pd.NA
+
+    reddit_mask = (
+        enriched.get("source", pd.Series("", index=enriched.index))
+        .astype("string")
+        .str.lower()
+        .eq("reddit")
+    )
+    missing_subreddit = enriched["subreddit"].isna() | (
+        enriched["subreddit"].astype("string").str.strip() == ""
+    )
+    derived_subreddits = (
+        enriched.loc[reddit_mask & missing_subreddit, "url"]
+        .astype("string")
+        .str.extract(r"/r/([^/]+)", expand=False)
+    )
+    enriched.loc[reddit_mask & missing_subreddit, "subreddit"] = derived_subreddits
+    return enriched
+
+
+def ensure_reddit_community_columns(contents):
+    enriched = contents.copy()
+    for column in REDDIT_COMMUNITY_COLUMNS:
+        if column not in enriched.columns:
+            enriched[column] = pd.NA
+    return enriched
+
+
+def parse_dashboard_count(value):
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip().replace("\u202f", " ").replace("\xa0", " ")
+    match = re.search(r"([\d][\d\s,.]*)([KMBkmb]?)", text)
+    if not match:
+        return None
+    number_text = match.group(1).replace(" ", "")
+    suffix = match.group(2).lower()
+    if "," in number_text and "." in number_text:
+        number_text = number_text.replace(",", "")
+    elif "," in number_text:
+        number_text = number_text.replace(",", ".")
+    try:
+        value = float(number_text)
+    except ValueError:
+        return None
+    multiplier = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}.get(suffix, 1)
+    return int(value * multiplier)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_reddit_community_from_old_html(subreddit):
+    info = {column: None for column in REDDIT_COMMUNITY_COLUMNS}
+    subreddit = str(subreddit or "").strip().strip("/")
+    if not subreddit:
+        return info
+    fallback = STATIC_REDDIT_COMMUNITY_FALLBACKS.get(subreddit.lower(), {})
+    try:
+        response = requests.get(
+            f"https://old.reddit.com/r/{subreddit}/",
+            headers={
+                "User-Agent": os.getenv(
+                    "REDDIT_USER_AGENT",
+                    "Mozilla/5.0 Chrome/124 Safari/537.36 "
+                    "user-behavior-lakehouse/1.0",
+                )
+            },
+            timeout=int(os.getenv("DASHBOARD_REDDIT_LOOKUP_TIMEOUT_SECONDS", "10")),
+        )
+        response.raise_for_status()
+    except requests.RequestException:
+        info.update(fallback)
+        return info
+
+    html = response.text
+    title_match = re.search(
+        r'<meta\s+property=["\']og:title["\']\s+content=["\']([^"\']+)["\']',
+        html,
+        re.IGNORECASE,
+    )
+    if not title_match:
+        title_match = re.search(
+            r"<title>(.*?)</title>",
+            html,
+            re.IGNORECASE | re.DOTALL,
+        )
+    if title_match:
+        title = html_lib.unescape(title_match.group(1))
+        title = re.sub(r"\s+[.:|•-]\s+r/[A-Za-z0-9_]+.*$", "", title).strip()
+        info["subreddit_title"] = title or None
+
+    description_match = re.search(
+        r'<meta\s+(?:name|property)=["\'](?:description|og:description)["\']\s+content=["\']([^"\']+)["\']',
+        html,
+        re.IGNORECASE,
+    )
+    if description_match:
+        info["subreddit_description"] = (
+            html_lib.unescape(description_match.group(1)).strip() or None
+        )
+
+    created_match = re.search(
+        r"(?:created|a community for)\s+(?:on\s+)?([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})",
+        html_lib.unescape(re.sub(r"<[^>]+>", " ", html)),
+        re.IGNORECASE,
+    )
+    if created_match:
+        info["subreddit_created_at"] = created_match.group(1)
+    info["subreddit_visibility"] = "public"
+
+    member_match = re.search(
+        r'<span[^>]+class=["\'][^"\']*number[^"\']*["\'][^>]*>'
+        r"\s*([^<]+?)\s*</span>\s*"
+        r'<span[^>]+class=["\'][^"\']*word[^"\']*["\'][^>]*>'
+        r"\s*(?:readers|subscribers|members|abonnes|membres)\s*</span>",
+        html,
+        re.IGNORECASE,
+    )
+    if member_match:
+        info["subreddit_member_count"] = parse_dashboard_count(member_match.group(1))
+    for column, value in fallback.items():
+        if info.get(column) is None:
+            info[column] = value
+    return info
+
+
+def enrich_reddit_community_from_web(contents):
+    enriched = ensure_reddit_community_columns(contents)
+    if enriched.empty or "subreddit" not in enriched.columns:
+        return enriched
+
+    reddit_mask = (
+        enriched.get("source", pd.Series("", index=enriched.index))
+        .astype("string")
+        .str.lower()
+        .eq("reddit")
+    )
+    subreddits = (
+        enriched.loc[reddit_mask, "subreddit"]
+        .dropna()
+        .astype("string")
+        .str.strip()
+        .replace("", pd.NA)
+        .dropna()
+        .unique()
+    )
+    for subreddit in subreddits[: int(os.getenv("DASHBOARD_REDDIT_LOOKUP_LIMIT", "25"))]:
+        subreddit_mask = reddit_mask & enriched["subreddit"].astype("string").eq(subreddit)
+        missing_any = False
+        for column in REDDIT_COMMUNITY_COLUMNS:
+            values = enriched.loc[subreddit_mask, column]
+            if values.isna().any() or values.astype("string").str.strip().eq("").any():
+                missing_any = True
+                break
+        if not missing_any:
+            continue
+        info = fetch_reddit_community_from_old_html(subreddit)
+        for column, value in info.items():
+            if value is None:
+                continue
+            missing = enriched[column].isna() | enriched[column].astype("string").str.strip().eq("")
+            enriched.loc[subreddit_mask & missing, column] = value
+    return enriched
+
+
+def enrich_reddit_community_from_snapshots(contents, snapshots):
+    if contents.empty or snapshots.empty:
+        return contents
+    if "content_id" not in contents.columns:
+        return contents
+    required_columns = {"content_id", "source", "subreddit_member_count"}
+    if not required_columns.issubset(snapshots.columns):
+        return contents
+
+    reddit_snapshots = snapshots[snapshots["source"] == "reddit"].copy()
+    reddit_snapshots = reddit_snapshots.dropna(subset=["content_id"])
+    if reddit_snapshots.empty:
+        return contents
+    if "snapshot_at" in reddit_snapshots.columns:
+        reddit_snapshots = reddit_snapshots.sort_values("snapshot_at")
+
+    latest_members = (
+        reddit_snapshots.groupby("content_id", dropna=False)["subreddit_member_count"]
+        .last()
+        .rename("snapshot_subreddit_member_count")
+        .reset_index()
+    )
+    enriched = contents.copy()
+    if "subreddit_member_count" not in enriched.columns:
+        enriched["subreddit_member_count"] = pd.NA
+    enriched = enriched.merge(latest_members, on="content_id", how="left")
+    missing_members = enriched["subreddit_member_count"].isna()
+    enriched.loc[missing_members, "subreddit_member_count"] = enriched.loc[
+        missing_members,
+        "snapshot_subreddit_member_count",
+    ]
+    return enriched.drop(columns=["snapshot_subreddit_member_count"])
+
+
+def content_label(row):
+    title = format_optional_text(row.get("title"))
+    if title == "N/A":
+        title = format_optional_text(row.get("url"))
+    return f"{row.get('source', 'unknown')} | {title[:90]}"
+
+
+def render_content_interactions(content_row, interactions):
+    content_id = content_row.get("content_id")
+    if interactions.empty or "parent_content_id" not in interactions.columns:
+        st.info("No interaction table available for this content.")
+        return
+    related = interactions[interactions["parent_content_id"] == content_id].copy()
+    if related.empty:
+        st.info("No comments or replies found for this content.")
+        return
+    columns = [
+        column
+        for column in (
+            "created_at",
+            "interaction_type",
+            "author_id_hash",
+            "text",
+            "score",
+            "like_count",
+            "reply_count",
+        )
+        if column in related.columns
+    ]
+    if "created_at" in related.columns:
+        related = related.sort_values("created_at", ascending=False)
+    st.dataframe(related[columns].head(200), width="stretch", hide_index=True)
+
+
+def render_content_analytics():
+    st.subheader("Content analytics")
+    tables, errors = get_content_analytics_tables()
+    contents = enrich_content_rows(prepare_optional_table(tables["contents"]))
+    interactions = prepare_optional_table(tables["interactions"])
+    engagement_snapshots = prepare_optional_table(tables["engagement_snapshots"])
+    transcripts = prepare_optional_table(tables["transcripts"])
+    content_stats = prepare_optional_table(tables["content_stats"])
+    user_evolution = prepare_optional_table(tables["user_evolution"])
+    contents = enrich_reddit_community_from_snapshots(
+        ensure_reddit_community_columns(contents),
+        engagement_snapshots,
+    )
+    contents = enrich_reddit_community_from_web(contents)
+
+    metric_columns = st.columns(5)
+    metric_columns[0].metric("Contents", format_count(len(contents)))
+    metric_columns[1].metric("Interactions", format_count(len(interactions)))
+    metric_columns[2].metric("Transcripts", format_count(len(transcripts)))
+    metric_columns[3].metric("Content stats", format_count(len(content_stats)))
+    metric_columns[4].metric("User days", format_count(len(user_evolution)))
+
+    if contents.empty:
+        render_optional_table_status("silver.contents", contents, errors.get("contents"))
+        return
+
+    explorer_tab, reddit_tab, x_tab, youtube_tab, users_tab = st.tabs(
+        ["Content Explorer", "Reddit", "X", "YouTube", "Users"]
+    )
+
+    with explorer_tab:
+        filtered_contents = filter_content_rows(contents)
+        stat_columns = [
+            "content_id",
+            "interaction_count",
+            "unique_interacting_users",
+            "avg_interaction_length",
+            "latest_view_count",
+            "latest_like_count",
+            "latest_comment_count",
+            "latest_reply_count",
+        ]
+        available_stats = [
+            column for column in stat_columns if column in content_stats.columns
+        ]
+        display_rows = filtered_contents.copy()
+        if not content_stats.empty and available_stats:
+            display_rows = display_rows.merge(
+                content_stats[available_stats],
+                on="content_id",
+                how="left",
+            )
+        table_columns = [
+            column
+            for column in (
+                "source",
+                "content_type",
+                "created_at",
+                "subreddit",
+                "subreddit_title",
+                "subreddit_description",
+                "subreddit_member_count",
+                "subreddit_weekly_visitors",
+                "subreddit_weekly_contributions",
+                "youtube_channel_id",
+                "title",
+                "interaction_count",
+                "unique_interacting_users",
+                "latest_view_count",
+                "latest_like_count",
+                "url",
+            )
+            if column in display_rows.columns
+        ]
+        st.dataframe(
+            display_rows[table_columns].head(250),
+            width="stretch",
+            hide_index=True,
+            column_config={"url": st.column_config.LinkColumn("URL")},
+        )
+        if not filtered_contents.empty:
+            selected_index = st.selectbox(
+                "Content",
+                options=filtered_contents.index.tolist(),
+                format_func=lambda index: content_label(filtered_contents.loc[index]),
+            )
+            render_content_interactions(filtered_contents.loc[selected_index], interactions)
+
+    with reddit_tab:
+        reddit_contents = contents[contents["source"] == "reddit"].copy()
+        if reddit_contents.empty:
+            st.info("No Reddit content available.")
+        else:
+            subreddit_summary = (
+                reddit_contents.groupby("subreddit", dropna=False)
+                .agg(
+                    posts=("content_id", "count"),
+                    **{
+                        column: (column, "first")
+                        for column in REDDIT_COMMUNITY_COLUMNS
+                    },
+                )
+                .reset_index()
+                .sort_values("posts", ascending=False)
+            )
+            empty_community_columns = [
+                column
+                for column in REDDIT_COMMUNITY_COLUMNS
+                if subreddit_summary[column].isna().all()
+            ]
+            if empty_community_columns:
+                st.caption(
+                    "Some Reddit community columns are empty until the Reddit "
+                    "collector runs again and content analytics is refreshed."
+                )
+            st.dataframe(
+                subreddit_summary,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "subreddit_member_count": st.column_config.NumberColumn(
+                        "Subscribers",
+                        format="%d",
+                    ),
+                    "subreddit_weekly_visitors": st.column_config.NumberColumn(
+                        "Weekly visitors",
+                        format="%d",
+                    ),
+                    "subreddit_weekly_contributions": st.column_config.NumberColumn(
+                        "Weekly contributions",
+                        format="%d",
+                    ),
+                },
+            )
+            selected_index = st.selectbox(
+                "Reddit post",
+                options=reddit_contents.index.tolist(),
+                format_func=lambda index: content_label(reddit_contents.loc[index]),
+            )
+            render_content_interactions(reddit_contents.loc[selected_index], interactions)
+
+    with x_tab:
+        x_contents = contents[contents["source"] == "x"].copy()
+        if x_contents.empty:
+            st.info("No X content available.")
+        else:
+            selected_index = st.selectbox(
+                "X post",
+                options=x_contents.index.tolist(),
+                format_func=lambda index: content_label(x_contents.loc[index]),
+            )
+            selected = x_contents.loc[selected_index]
+            render_content_interactions(selected, interactions)
+
+    with youtube_tab:
+        youtube_contents = contents[contents["source"] == "youtube"].copy()
+        if youtube_contents.empty:
+            st.info("No YouTube content available.")
+        else:
+            selected_index = st.selectbox(
+                "YouTube video",
+                options=youtube_contents.index.tolist(),
+                format_func=lambda index: content_label(youtube_contents.loc[index]),
+            )
+            selected = youtube_contents.loc[selected_index]
+            render_content_interactions(selected, interactions)
+            if "content_id" in transcripts.columns:
+                video_transcripts = transcripts[
+                    transcripts["content_id"] == selected.get("content_id")
+                ].copy()
+            else:
+                video_transcripts = pd.DataFrame()
+            if video_transcripts.empty:
+                st.info("No transcript available for this video.")
+            else:
+                transcript = video_transcripts.iloc[0].get("transcript_text")
+                keyword = st.text_input("Transcript keyword")
+                transcript_text = "" if pd.isna(transcript) else str(transcript)
+                if keyword:
+                    lines = [
+                        line
+                        for line in transcript_text.splitlines()
+                        if keyword.lower() in line.lower()
+                    ]
+                    st.text_area("Transcript", "\n".join(lines), height=260)
+                else:
+                    st.text_area("Transcript", transcript_text, height=260)
+
+    with users_tab:
+        if user_evolution.empty:
+            render_optional_table_status(
+                "gold.user_evolution",
+                user_evolution,
+                errors.get("user_evolution"),
+            )
+        else:
+            users = sorted(user_evolution["user_id_hash"].dropna().unique())
+            if not users:
+                st.info("No user identifier available in user evolution yet.")
+                return
+            selected_user = st.selectbox("User", users)
+            user_rows = user_evolution[
+                user_evolution["user_id_hash"] == selected_user
+            ].copy()
+            st.dataframe(user_rows, width="stretch", hide_index=True)
+            if "event_date" in user_rows.columns and not user_rows.empty:
+                chart_rows = user_rows.melt(
+                    id_vars=["event_date", "source"],
+                    value_vars=[
+                        column
+                        for column in (
+                            "contents_created",
+                            "interactions_created",
+                            "distinct_contents_touched",
+                            "question_count",
+                        )
+                        if column in user_rows.columns
+                    ],
+                    var_name="metric",
+                    value_name="value",
+                )
+                fig_user = px.line(
+                    chart_rows,
+                    x="event_date",
+                    y="value",
+                    color="metric",
+                    line_dash="source",
+                    markers=True,
+                )
+                st.plotly_chart(fig_user, width="stretch")
+
+
 def render_quality_overview():
     col1, col2 = st.columns(2)
 
@@ -1914,12 +2531,13 @@ def render_recent_events():
         },
     )
 
-overview_tab, engagement_tab, authors_tab, tracking_tab, model_tab, quality_tab, events_tab = st.tabs(
+overview_tab, engagement_tab, authors_tab, tracking_tab, content_tab, model_tab, quality_tab, events_tab = st.tabs(
     [
         "Overview",
         "Engagement",
         "YouTube authors",
         "Identifier tracking",
+        "Content Explorer",
         "Model pipeline",
         "Quality",
         "Events",
@@ -1941,6 +2559,9 @@ with authors_tab:
 
 with tracking_tab:
     render_identifier_tracking()
+
+with content_tab:
+    render_content_analytics()
 
 with model_tab:
     render_model_pipeline()
