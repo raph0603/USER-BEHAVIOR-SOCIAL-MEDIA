@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.14.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.13.0...v1.14.0) (2026-07-10)
+
+
+### Features
+
+* **analytics:** add content entity layer ([6c54fb8](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/6c54fb877f63fd71c3c3844e74451aac84ca0561))
+* **analytics:** add content entity layer ([ac77bde](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/ac77bde0a1035310343aca2bed2f74bcd164f93b)), closes [#93](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/issues/93)
+* **analytics:** backfill youtube transcripts ([4d48bf6](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/4d48bf6861b58dac5e160f5dadb7f9cf6e20830b))
+* **analytics:** populate content entity relationships ([9f9fbe7](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/9f9fbe7ad8d5d072e90220ecc7370d840147fecb))
+* **reddit:** collect subreddit community metadata ([e8237c7](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/e8237c72e09b0d072bec22728f8e45f2df0b5790))
+
+
+### Bug Fixes
+
+* **analytics:** keep reddit comments out of content text ([c9858b4](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/c9858b4a40a2ecddae6767c9b7e5ef7bc43e47fc))
+* **dashboard:** derive reddit subreddit filters from urls ([7286119](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/72861192d2a4bf50d976bd83f232e05a93866d9d))
+* **dashboard:** show reddit community metadata ([6810e31](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/6810e31fc5b85a938a214278bc8ca1bb829a35f3))
+* **reddit:** enrich community metadata fallbacks ([1741d45](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/1741d45833283b92a775881a1ebc26d2206814df))
+
 ## [1.13.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.12.0...v1.13.0) (2026-07-01)
 
 
