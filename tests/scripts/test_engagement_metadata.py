@@ -360,6 +360,8 @@ class EngagementMetadataTests(unittest.TestCase):
         r_spec.loader.exec_module(reddit_json)
 
         class FakeResponse:
+            status_code = 200
+
             def raise_for_status(self):
                 pass
             def json(self):
