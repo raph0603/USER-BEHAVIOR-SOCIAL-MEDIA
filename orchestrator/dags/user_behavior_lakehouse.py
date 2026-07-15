@@ -19,7 +19,7 @@ PROJECT_DIR = "/workspace"
 
 
 def schedule_interval() -> timedelta | None:
-    raw_value = os.getenv("LAKEHOUSE_SCHEDULE_MINUTES", "60").strip()
+    raw_value = os.getenv("LAKEHOUSE_SCHEDULE_MINUTES", "0").strip()
     try:
         minutes = int(raw_value)
     except ValueError as exc:

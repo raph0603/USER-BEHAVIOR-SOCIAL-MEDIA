@@ -56,8 +56,8 @@ docker compose exec -T spark-master /opt/spark/bin/spark-submit \
 ```
 
 Both online DAGs run this materialization/backfill step before content
-analytics. The no-row-checks DAG is manual by default through
-`LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=0`.
+analytics. The no-row-checks DAG is scheduled by default; set
+`LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=0` to keep it manual.
 
 ## Avro decode failures
 

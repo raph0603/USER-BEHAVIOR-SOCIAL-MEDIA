@@ -85,25 +85,25 @@ routing. This pipeline does not currently run a NER model.
 The separate `social_clean_pipeline` DAG is retained for replaying the legacy
 sample CSV files. It is not required for the online lakehouse flow.
 
-The online DAG runs automatically every 60 minutes by default. Configure the
-interval in `.env`:
+The `user_behavior_lakehouse_no_row_checks` online DAG runs automatically every
+60 minutes by default. It succeeds when collectors and Spark jobs finish
+without an execution error, even when a run produces no new Bronze or Silver
+row. Configure its interval in `.env`:
 
 ```env
-LAKEHOUSE_SCHEDULE_MINUTES=30
+LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=30
 ```
 
-Use `LAKEHOUSE_SCHEDULE_MINUTES=0` to disable automatic runs. Airflow keeps at
-most one active run, so intervals shorter than the pipeline duration do not
-execute concurrently.
+Use `LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=0` to disable automatic runs.
+Airflow keeps at most one active run, so intervals shorter than the pipeline
+duration do not execute concurrently.
 
-The `user_behavior_lakehouse_no_row_checks` DAG runs the same online pipeline
-without `wait_bronze_rows` or `wait_silver_rows`. It succeeds when collectors
-and Spark jobs finish without an execution error, even when a run produces no
-new Bronze or Silver row. It is a diagnostic/manual DAG by default. Give it a
-positive interval only when a separate scheduled diagnostic run is required:
+The `user_behavior_lakehouse` DAG retains `wait_bronze_rows` and
+`wait_silver_rows`. It is a strict diagnostic/manual DAG by default; schedule
+it only when a run must fail if it produces no new Bronze or Silver row:
 
 ```env
-LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=0
+LAKEHOUSE_SCHEDULE_MINUTES=0
 ```
 
 Both online DAGs use a shared pipeline lock. If their scheduled or manual runs

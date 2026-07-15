@@ -21,7 +21,7 @@ PROJECT_DIR = "/workspace"
 def schedule_interval() -> timedelta | None:
     raw_value = os.getenv(
         "LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES",
-        "0",
+        "60",
     ).strip()
     try:
         minutes = int(raw_value)

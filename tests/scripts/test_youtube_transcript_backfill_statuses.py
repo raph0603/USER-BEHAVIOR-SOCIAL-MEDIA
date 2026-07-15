@@ -269,14 +269,14 @@ class YouTubeTranscriptBackfillIntegrationContractTests(unittest.TestCase):
                 self.assertIn(f"{name}={default}", env_example)
                 self.assertIn(f"{name}: ${{{name}:-{default}}}", compose)
 
-    def test_no_row_checks_dag_is_manual_and_refreshes_content_analytics(self):
+    def test_no_row_checks_dag_is_scheduled_and_refreshes_content_analytics(self):
         source = (
             ROOT
             / "orchestrator"
             / "dags"
             / "user_behavior_lakehouse_no_row_checks.py"
         ).read_text(encoding="utf-8")
-        self.assertIn('"LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES",\n        "0"', source)
+        self.assertIn('"LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES",\n        "60"', source)
         self.assertIn(
             "backfill_youtube_transcripts >> backfill_youtube_thumbnails",
             source,
@@ -288,10 +288,10 @@ class YouTubeTranscriptBackfillIntegrationContractTests(unittest.TestCase):
         self.assertIn("update_content_analytics >> update_balancing_report", source)
         env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-        self.assertIn("LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=0", env_example)
+        self.assertIn("LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=60", env_example)
         self.assertIn(
             "LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES: "
-            "${LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES:-0}",
+            "${LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES:-60}",
             compose,
         )
 
