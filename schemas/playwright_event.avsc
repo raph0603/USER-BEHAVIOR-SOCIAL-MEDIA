@@ -9,6 +9,7 @@
     { "name": "raw_text", "type": ["null", "string"], "default": null },
     { "name": "clean_text", "type": ["null", "string"], "default": null },
     { "name": "text_for_model", "type": ["null", "string"], "default": null },
+    { "name": "thumbnail_url", "type": ["null", "string"], "default": null },
     { "name": "timestamp", "type": "string" },
     { "name": "source", "type": "string" },
     { "name": "error", "type": ["null", "string"], "default": null },

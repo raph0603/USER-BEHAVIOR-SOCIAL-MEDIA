@@ -262,7 +262,7 @@ class YouTubeTranscriptBackfillIntegrationContractTests(unittest.TestCase):
             "YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS": "5",
             "YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS": "3600",
             "YOUTUBE_TRANSCRIPT_BACKFILL_STOP_ON_RATE_LIMIT": "true",
-            "YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE": "true",
+            "YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE": "false",
         }
         for name, default in settings.items():
             with self.subTest(name=name):
@@ -277,7 +277,14 @@ class YouTubeTranscriptBackfillIntegrationContractTests(unittest.TestCase):
             / "user_behavior_lakehouse_no_row_checks.py"
         ).read_text(encoding="utf-8")
         self.assertIn('"LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES",\n        "0"', source)
-        self.assertIn("backfill_youtube_transcripts >> update_content_analytics", source)
+        self.assertIn(
+            "backfill_youtube_transcripts >> backfill_youtube_thumbnails",
+            source,
+        )
+        self.assertIn(
+            "backfill_youtube_thumbnails >> update_content_analytics",
+            source,
+        )
         self.assertIn("update_content_analytics >> update_balancing_report", source)
         env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
@@ -295,6 +302,8 @@ class YouTubeTranscriptBackfillIntegrationContractTests(unittest.TestCase):
             "rate_limited",
             "not_available",
             "Transcript collection has not been attempted",
+            "Data completeness",
+            "thumbnail_url",
         ):
             with self.subTest(value=value):
                 self.assertIn(value, source)

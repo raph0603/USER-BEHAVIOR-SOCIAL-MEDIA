@@ -90,37 +90,43 @@ def _decode_confluent_avro(metadata, registry_url: str, subject: str):
     )
     registered_schemas = _registered_avro_schemas(registry_url, subject)
     known_schema_ids = [schema_id for schema_id, _ in registered_schemas]
-    decoded = None
-    for schema_id, writer_schema in registered_schemas:
-        branch = (
-            framed.filter(col("_schema_id") == lit(schema_id))
-            .select(
-                "_kafka_topic",
-                "_kafka_partition",
-                "_kafka_offset",
+    decoded_json = lit(None).cast("string")
+    for schema_id, writer_schema in reversed(registered_schemas):
+        decoded_json = when(
+            col("_schema_id") == lit(schema_id),
+            to_json(
                 from_avro(
                     col("_avro_value"),
                     writer_schema,
                     {"mode": "PERMISSIVE"},
-                ).alias("data"),
-            )
-            .select("_kafka_topic", "_kafka_partition", "_kafka_offset", "data.*")
-            .withColumn("_decode_error", lit(None).cast("string"))
+                )
+            ),
+        ).otherwise(decoded_json)
+
+    return (
+        framed.withColumn("_decoded_json", decoded_json)
+        .withColumn(
+            "data",
+            from_json(col("_decoded_json"), spark_struct_type()),
         )
-        decoded = branch if decoded is None else decoded.unionByName(
-            branch,
-            allowMissingColumns=True,
+        .select(
+            "_kafka_topic",
+            "_kafka_partition",
+            "_kafka_offset",
+            "_schema_id",
+            "data.*",
         )
-    unknown = framed.filter(~col("_schema_id").isin(known_schema_ids)).select(
-        "_kafka_topic",
-        "_kafka_partition",
-        "_kafka_offset",
-        *[lit(None).alias(name) for name in EVENT_COLUMNS],
-        expr(
-            "concat('unregistered_schema_id:', cast(_schema_id as string))"
-        ).alias("_decode_error"),
+        .withColumn(
+            "_decode_error",
+            when(
+                ~col("_schema_id").isin(known_schema_ids),
+                expr(
+                    "concat('unregistered_schema_id:', "
+                    "cast(_schema_id as string))"
+                ),
+            ).otherwise(lit(None).cast("string")),
+        )
     )
-    return decoded.unionByName(unknown, allowMissingColumns=True)
 
 
 def main() -> None:
@@ -148,7 +154,7 @@ def main() -> None:
     starting_offsets = _env("CLEAN_STARTING_OFFSETS", "earliest")
     trigger_interval = _env("CLEAN_TRIGGER", "10 seconds")
     trigger_mode = _env("CLEAN_TRIGGER_MODE", "processing_time").lower()
-    checkpoint_version = _env("CLEAN_CHECKPOINT_VERSION", "pre_bronze_v3")
+    checkpoint_version = _env("CLEAN_CHECKPOINT_VERSION", "pre_bronze_v4")
     checkpoint_key = re.sub(r"[^a-zA-Z0-9._-]+", "_", source_topic)
 
     spark = _build_spark(f"collector-event-cleaning-{platform}")

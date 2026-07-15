@@ -83,6 +83,12 @@ Common fields include `like_count`, `view_count`, `comment_count`,
 `follower_count`, `subscriber_count`, and `subreddit_member_count`. Do not map
 unrelated source metrics into a common counter merely to avoid nulls.
 
+YouTube video rows also carry `thumbnail_url` when available. Historical rows
+can be backfilled without YouTube Data API quota by deriving the public
+`https://img.youtube.com/vi/<video_id>/default.jpg` URL from the existing video
+id. Dashboards use it as a visual identifier only; the source URL remains the
+durable video reference.
+
 ## Caption fields
 
 Caption collection preserves both content and provenance:

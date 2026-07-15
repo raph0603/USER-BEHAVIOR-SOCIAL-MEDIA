@@ -24,7 +24,7 @@ DEFAULT_CRAWLER_CONFIG = {
         "EV charging",
         "battery range",
     ],
-    "youtube_event_count": 1000,
+    "youtube_event_count": 50,
     "youtube_search_queries": [
         '"electric vehicle" | EV | "electric car" | Tesla | '
         '"EV charging" | "battery range"'

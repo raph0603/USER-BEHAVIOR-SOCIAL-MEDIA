@@ -884,7 +884,7 @@ def main() -> None:
     )
     fail_on_retryable = _env_bool(
         "YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE",
-        True,
+        False,
     )
 
     spark = _build_spark("youtube-transcript-backfill", warehouse)

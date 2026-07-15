@@ -202,6 +202,7 @@ class EngagementMetadataTests(unittest.TestCase):
             "subreddit_weekly_contributions",
             "x_account",
             "youtube_channel_name",
+            "thumbnail_url",
             "language",
             "parent_interaction_id",
             "conversation_id",
@@ -268,7 +269,7 @@ class EngagementMetadataTests(unittest.TestCase):
         )
 
         self.assertIn("LOGGER = logging.getLogger(__name__)", producer)
-        self.assertIn('_env_int("PRODUCER_MAX_EVENTS", 1000)', producer)
+        self.assertIn('_env_int("PRODUCER_MAX_EVENTS", 50)', producer)
         self.assertIn('_env_int("REDDIT_COMMENT_SCAN_LIMIT", 1000)', producer)
         self.assertIn('f"https://old.reddit.com/r/{subreddit}/comments/', producer)
         self.assertIn("REDDIT_COMMENT_SCAN_LIMIT", producer)

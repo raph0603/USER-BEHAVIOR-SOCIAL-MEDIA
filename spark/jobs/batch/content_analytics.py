@@ -22,6 +22,7 @@ try:
         count,
         countDistinct,
         first,
+        get_json_object,
         lit,
         lower,
         regexp_extract,
@@ -116,7 +117,8 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.contents (
   source_specific_metadata STRING,
   raw_text STRING,
   clean_text STRING,
-  text_for_model STRING
+  text_for_model STRING,
+  thumbnail_url STRING
 )
 USING iceberg
 PARTITIONED BY (event_date)
@@ -303,6 +305,7 @@ CONTENT_COLUMNS = [
     "raw_text",
     "clean_text",
     "text_for_model",
+    "thumbnail_url",
 ]
 
 INTERACTION_COLUMNS = [
@@ -435,6 +438,7 @@ OPTIONAL_EVENT_COLUMNS = {
     "raw_text": "STRING",
     "clean_text": "STRING",
     "text_for_model": "STRING",
+    "thumbnail_url": "STRING",
     "score": "BIGINT",
     "like_count": "BIGINT",
     "view_count": "BIGINT",
@@ -508,6 +512,13 @@ def normalize_events(events: DataFrame) -> DataFrame:
     """Normalize canonical and historical records without inventing interactions."""
 
     prepared = _with_optional_event_columns(events)
+    thumbnail_url = coalesce(
+        col("thumbnail_url"),
+        get_json_object(
+            col("source_specific_metadata"),
+            "$.snippet.thumbnails.default.url",
+        ),
+    )
     text = coalesce(col("clean_text"), col("raw_text"), col("title"))
     reddit_subreddit = regexp_extract(col("url"), r"/r/([^/]+)", 1)
     reddit_post_id = regexp_extract(col("url"), r"/comments/([^/]+)", 1)
@@ -614,6 +625,7 @@ def normalize_events(events: DataFrame) -> DataFrame:
                 col("text_for_model")
             ),
         )
+        .withColumn("content_thumbnail_url", thumbnail_url)
         .withColumn("platform_content_id", root_platform_id)
         .withColumn("derived_subreddit", derived_subreddit)
         .withColumn("event_content_id", event_content_id)
@@ -705,6 +717,7 @@ def build_contents(events: DataFrame) -> DataFrame:
             first("content_raw_text", ignorenulls=True).alias("raw_text"),
             first("content_clean_text", ignorenulls=True).alias("clean_text"),
             first("content_text_for_model", ignorenulls=True).alias("text_for_model"),
+            first("content_thumbnail_url", ignorenulls=True).alias("thumbnail_url"),
         )
         .select(*CONTENT_COLUMNS)
     )
@@ -948,6 +961,7 @@ def _create_tables(spark: SparkSession) -> None:
             "raw_text": "STRING",
             "clean_text": "STRING",
             "text_for_model": "STRING",
+            "thumbnail_url": "STRING",
         },
     )
     _ensure_columns(

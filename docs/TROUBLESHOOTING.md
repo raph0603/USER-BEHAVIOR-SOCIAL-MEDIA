@@ -45,7 +45,7 @@ making an external request. This avoids fetching the same track twice.
 | `YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS` | `5` | Retry ceiling per content ID |
 | `YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS` | `3600` | Minimum delay before retrying |
 | `YOUTUBE_TRANSCRIPT_BACKFILL_STOP_ON_RATE_LIMIT` | `true` | Stop requesting after a rate limit |
-| `YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE` | `true` | Return a failing task when retriable outcomes remain |
+| `YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE` | `false` | Persist retriable outcomes without blocking downstream jobs |
 
 Run a manual backfill with:
 
@@ -70,6 +70,16 @@ If a cleaner reports an unknown schema ID:
 
 Do not replace writer-schema decoding with the latest local schema. Old Kafka
 records may have a different Avro field order.
+
+If Spark reports that the number of sources in a cleaning checkpoint differs
+from the current query, inspect the logical plan for duplicated streaming
+branches. Writer-schema selection must remain a conditional projection over a
+single Kafka source. Do not delete or version-bump the checkpoint before this
+topology check, because a new checkpoint can replay retained Kafka records.
+If the checkpoint offsets belong to a deleted or recreated Kafka topic and are
+beyond the current partition offsets, increment the checkpoint version after
+fixing the topology. Start the replacement checkpoint from retained Kafka
+data; downstream MERGE stages deduplicate the replay by canonical identifier.
 
 ## Bronze-to-Silver lag
 

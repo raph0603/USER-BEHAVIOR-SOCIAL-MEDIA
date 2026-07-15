@@ -8,6 +8,7 @@ import socket
 import sqlite3
 import sys
 import time
+import traceback
 import unicodedata
 import uuid
 from datetime import datetime, timezone
@@ -231,6 +232,17 @@ def _clean_text(value: str | None) -> str:
 
 
 def _env_json_list(name: str, fallback: list[str]) -> list[str]:
+    def normalize_item(value) -> str:
+        if isinstance(value, dict):
+            value = (
+                value.get("name")
+                or value.get("subreddit")
+                or value.get("keyword")
+                or value.get("value")
+                or ""
+            )
+        return str(value).strip()
+
     raw_value = os.getenv(name)
     if not raw_value:
         return fallback
@@ -238,13 +250,14 @@ def _env_json_list(name: str, fallback: list[str]) -> list[str]:
         values = json.loads(raw_value)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"{name} must contain a JSON array") from exc
+    if isinstance(values, str):
+        try:
+            values = json.loads(values)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{name} must contain a JSON array") from exc
     if not isinstance(values, list):
         raise RuntimeError(f"{name} must contain a JSON array")
-    return [
-        str(value).strip()
-        for value in values
-        if str(value).strip()
-    ]
+    return [item for item in (normalize_item(value) for value in values) if item]
 
 
 def _matches_keywords(text: str, keywords: list[str], match_mode: str) -> bool:
@@ -565,20 +578,30 @@ def _extract_reddit_comment_event(
         return None
 
     body_locator = comment.locator(".usertext-body .md")
-    text = (
-        _clean_text(body_locator.first.inner_text(timeout=1500))
-        if body_locator.count()
-        else ""
-    )
+    try:
+        text = (
+            _clean_text(body_locator.first.inner_text(timeout=1500))
+            if body_locator.count()
+            else ""
+        )
+    except (PlaywrightTimeoutError, PlaywrightError) as exc:
+        LOGGER.debug("Skipping Reddit comment %s without readable text: %s", comment_id, exc)
+        return None
     if not text:
         return None
 
     author_locator = comment.locator("a.author")
-    author = (
-        author_locator.first.inner_text(timeout=1500)
-        if author_locator.count()
-        else "anonymous"
-    )
+    try:
+        author = (
+            author_locator.first.inner_text(timeout=1500)
+            if author_locator.count()
+            else "anonymous"
+        )
+    except (PlaywrightTimeoutError, PlaywrightError) as exc:
+        LOGGER.debug(
+            "Using anonymous author for Reddit comment %s: %s", comment_id, exc
+        )
+        author = "anonymous"
     time_locator = comment.locator("time")
     timestamp = (
         time_locator.first.get_attribute("datetime")
@@ -981,6 +1004,17 @@ def _search_youtube_video_ids(
     video_ids = []
     page_token = None
 
+    def video_id_from_item(item) -> str | None:
+        if not isinstance(item, dict):
+            return None
+        item_id = item.get("id")
+        if isinstance(item_id, dict):
+            video_id = item_id.get("videoId")
+            return str(video_id).strip() if video_id else None
+        if isinstance(item_id, str):
+            return item_id.strip() or None
+        return None
+
     while len(video_ids) < max_results:
         try:
             response = youtube.search().list(
@@ -997,9 +1031,12 @@ def _search_youtube_video_ids(
                 raise _soft_block("youtube", str(exc)) from exc
             raise
         video_ids.extend(
-            item["id"]["videoId"]
-            for item in response.get("items", [])
-            if item.get("id", {}).get("videoId")
+            video_id
+            for video_id in (
+                video_id_from_item(item)
+                for item in response.get("items", [])
+            )
+            if video_id
         )
         page_token = response.get("nextPageToken")
         if not page_token:
@@ -1182,6 +1219,9 @@ def _youtube_video_event(
     status = metadata.get("status") or {}
     topic_details = metadata.get("topicDetails") or {}
     transcript = transcript_result.payload
+    thumbnails = snippet.get("thumbnails") or {}
+    low_thumbnail = thumbnails.get("default") or {}
+    thumbnail_url = low_thumbnail.get("url")
     relationship = ContentRelationship.root(
         source="youtube",
         platform_content_id=video_id,
@@ -1200,6 +1240,7 @@ def _youtube_video_event(
         "category_id": snippet.get("categoryId"),
         "default_language": snippet.get("defaultLanguage"),
         "default_audio_language": snippet.get("defaultAudioLanguage"),
+        "thumbnail_url": thumbnail_url,
         "channel_id": snippet.get("channelId"),
         "channel_title": snippet.get("channelTitle"),
         "privacy_status": status.get("privacyStatus"),
@@ -1232,6 +1273,7 @@ def _youtube_video_event(
         "url": f"https://www.youtube.com/watch?v={video_id}",
         "title": snippet.get("title") or f"YouTube video {video_id}",
         "raw_text": snippet.get("description") or snippet.get("title"),
+        "thumbnail_url": thumbnail_url,
         "timestamp": snippet.get("publishedAt") or collected_at,
         "published_at": snippet.get("publishedAt"),
         "collected_at": collected_at,
@@ -1436,6 +1478,7 @@ def _prepare_event(event: dict) -> dict:
     prepared["event_id"] = platform_event_id
     prepared["platform_event_id"] = platform_event_id
     prepared.setdefault("raw_text", prepared.get("title"))
+    prepared.setdefault("thumbnail_url", None)
     prepared.setdefault("published_at", prepared.get("timestamp"))
     prepared["timestamp"] = prepared.get("timestamp") or now
     prepared.setdefault("collected_at", now)
@@ -2664,7 +2707,15 @@ def main() -> None:
     )
     schema_path = _env_str("SCHEMA_PATH", "/app/schemas/playwright_event.avsc")
     schema = _load_schema(schema_path)
-    max_events = _env_int("PRODUCER_MAX_EVENTS", 1000)
+    try:
+        schema_definition = json.loads(schema)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid Avro schema JSON: {schema_path}") from exc
+    if not isinstance(schema_definition, dict) or not isinstance(
+        schema_definition.get("fields"), list
+    ):
+        raise RuntimeError(f"Invalid Avro schema fields: {schema_path}")
+    max_events = _env_int("PRODUCER_MAX_EVENTS", 50)
     state = ProcessedState(
         _env_str("COLLECTOR_STATE_DB", "/app/state/processed.sqlite")
     )
@@ -2712,7 +2763,13 @@ def main() -> None:
         }
     )
 
-    schema_fields = tuple(field["name"] for field in schema["fields"])
+    schema_fields = tuple(
+        field["name"]
+        for field in schema_definition["fields"]
+        if isinstance(field, dict) and isinstance(field.get("name"), str)
+    )
+    if not schema_fields:
+        raise RuntimeError(f"Avro schema has no named fields: {schema_path}")
 
     def publish(events: list[dict]) -> None:
         events[:] = [_prepare_event(event) for event in events]
@@ -2747,6 +2804,7 @@ def main() -> None:
             )
         state.mark_many(mode, events)
 
+    produced_event_count = 0
     try:
         print(f"Producer mode: {mode} (online)")
         if mode == "youtube":
@@ -2754,7 +2812,7 @@ def main() -> None:
             if not api_key:
                 raise _soft_block("youtube", "YOUTUBE_API_KEY is required")
             youtube = _get_youtube_service(api_key)
-            search_limit = _env_int("YOUTUBE_SEARCH_MAX_RESULTS", 10)
+            search_limit = _env_int("YOUTUBE_SEARCH_MAX_RESULTS", 50)
             search_languages = _env_list(
                 "YOUTUBE_SEARCH_LANGUAGES",
                 [_env_str("YOUTUBE_SEARCH_LANGUAGE", "en")],
@@ -2797,6 +2855,10 @@ def main() -> None:
                     "YouTube search completed without any video IDs; refusing a green empty run"
                 )
             events = []
+            youtube_processing_deadline = time.monotonic() + max(
+                1,
+                _env_int("YOUTUBE_COLLECTION_TIMEOUT_SECONDS", 900) - 120,
+            )
             output_dir = Path(
                 _env_str("YOUTUBE_OUTPUT_DIR", "/app/api/yt_raw_json")
             )
@@ -2822,21 +2884,31 @@ def main() -> None:
                     )
                 )
             }
-            collaborators_by_id = fetch_youtube_collaborators(
-                owner_by_id,
-                timeout_seconds=_env_float(
-                    "YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS",
-                    20,
-                ),
-                max_workers=_env_int(
-                    "YOUTUBE_AUTHOR_FETCH_WORKERS",
-                    8,
-                ),
-            )
+            if _env_bool("YOUTUBE_COLLABORATOR_COLLECTION_ENABLED", False):
+                collaborators_by_id = fetch_youtube_collaborators(
+                    owner_by_id,
+                    timeout_seconds=_env_float(
+                        "YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS",
+                        20,
+                    ),
+                    max_workers=_env_int(
+                        "YOUTUBE_AUTHOR_FETCH_WORKERS",
+                        8,
+                    ),
+                )
+            else:
+                print("YouTube collaborator page collection is disabled")
+                collaborators_by_id = {}
             transcript_failures = 0
             transcripts_disabled = transcript_max_failures == 0
             transcript_circuit_retryable = False
             for video_id in candidate_ids:
+                if time.monotonic() >= youtube_processing_deadline:
+                    print(
+                        "YouTube processing budget reached; ending the batch "
+                        "before the Airflow timeout"
+                    )
+                    break
                 attempt_count = state.next_attempt_count("youtube", video_id)
                 metadata_result = metadata_by_id[video_id]
                 owner_channel_id = owner_by_id.get(video_id)
@@ -2899,7 +2971,7 @@ def main() -> None:
                     ),
                     encoding="utf-8",
                 )
-                events.append(
+                video_events = [
                     _youtube_video_event(
                         video_id,
                         metadata_result,
@@ -2909,21 +2981,25 @@ def main() -> None:
                         collaborator_channel_ids,
                         attempt_count,
                     )
-                )
-                events.extend(
+                ]
+                video_events.extend(
                     _youtube_comment_events(
                         video_id,
                         comments_result,
                         attempt_count,
                     )
                 )
+                publish(video_events)
+                produced_event_count += len(video_events)
         elif mode == "x":
             events = _collect_x_events(state, max_events)
         else:
             events = _collect_reddit_events(state, max_events)
 
-        publish(events)
-        print(f"Produced {len(events)} new {mode} events")
+        if mode != "youtube":
+            publish(events)
+            produced_event_count = len(events)
+        print(f"Produced {produced_event_count} new {mode} events")
     except CollectorSoftBlock as exc:
         print(f"Collector soft-blocked: {exc}", file=sys.stderr, flush=True)
         raise RuntimeError(str(exc)) from exc
@@ -2936,4 +3012,5 @@ if __name__ == "__main__":
         main()
     except Exception as exc:
         print(f"Collector failed: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         raise SystemExit(1) from None

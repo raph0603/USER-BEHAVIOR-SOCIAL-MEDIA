@@ -142,7 +142,7 @@ class AirflowMonitoringTests(unittest.TestCase):
         self.assertEqual(rows[0]["collector_status"], "blocked")
         self.assertIn("temporarily limited", rows[0]["message"])
 
-    def test_crawler_configuration_allows_five_thousand_events_per_run(self):
+    def test_crawler_configuration_caps_youtube_at_fifty_events_per_run(self):
         configuration_source = (
             ROOT / "dashboard" / "pages" / "1_Configuration.py"
         ).read_text(encoding="utf-8")
@@ -155,7 +155,7 @@ class AirflowMonitoringTests(unittest.TestCase):
 
         for source in (configuration_source, crawler_source):
             with self.subTest():
-                self.assertIn('"youtube_event_count": 1000', source)
+                self.assertIn('"youtube_event_count": 50', source)
                 self.assertIn('"x_event_count": 1000', source)
                 self.assertIn('"reddit_event_count": 1000', source)
 
@@ -163,6 +163,8 @@ class AirflowMonitoringTests(unittest.TestCase):
         self.assertIn('"max_events_per_source": 1000', crawler_source)
         self.assertIn('"reddit_comment_scan_limit": 1000', configuration_source)
         self.assertIn('"reddit_comment_scan_limit": 1000', crawler_source)
+        self.assertIn('"Maximum videos",\n            min_value=1,\n            max_value=50', configuration_source)
+        self.assertIn("maximum=50", dag_source)
         self.assertIn("max_value=5000", configuration_source)
         self.assertIn("maximum=5000", dag_source)
 

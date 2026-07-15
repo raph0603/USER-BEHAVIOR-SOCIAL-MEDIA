@@ -170,6 +170,90 @@ def transcript_status_presentation(row):
     return status, level, message
 
 
+def has_dashboard_value(value):
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return bool(str(value).strip())
+
+
+def normalized_status(value, default="pending"):
+    if not has_dashboard_value(value):
+        return default
+    return str(value).strip().lower()
+
+
+def latest_rows_by_content(dataframe):
+    if dataframe.empty or "content_id" not in dataframe.columns:
+        return pd.DataFrame()
+    latest = dataframe.copy()
+    if "updated_at" in latest.columns:
+        latest = latest.sort_values("updated_at", ascending=False)
+    return latest.drop_duplicates("content_id")
+
+
+def build_youtube_display_rows(youtube_contents, transcripts, content_stats):
+    display_rows = youtube_contents.copy()
+    stat_columns = [
+        column
+        for column in (
+            "content_id",
+            "latest_view_count",
+            "latest_like_count",
+            "latest_comment_count",
+            "latest_reply_count",
+        )
+        if column in content_stats.columns
+    ]
+    if not content_stats.empty and "content_id" in display_rows.columns and stat_columns:
+        display_rows = display_rows.merge(
+            content_stats[stat_columns],
+            on="content_id",
+            how="left",
+        )
+
+    latest_transcripts = latest_rows_by_content(transcripts)
+    if not latest_transcripts.empty:
+        transcript_columns = [
+            column
+            for column in ("content_id", "transcript_status", "transcript_text")
+            if column in latest_transcripts.columns
+        ]
+        latest_transcripts = latest_transcripts[transcript_columns].rename(
+            columns={
+                "transcript_status": "latest_transcript_status",
+                "transcript_text": "latest_transcript_text",
+            }
+        )
+        display_rows = display_rows.merge(
+            latest_transcripts,
+            on="content_id",
+            how="left",
+        )
+
+    if "created_at" in display_rows.columns:
+        display_rows = display_rows.sort_values("created_at", ascending=False)
+    return display_rows
+
+
+def youtube_data_completeness(row):
+    transcript_status = normalized_status(
+        row.get("latest_transcript_status", row.get("transcript_status"))
+    )
+    checks = {
+        "thumbnail": has_dashboard_value(row.get("thumbnail_url")),
+        "metadata": normalized_status(row.get("metadata_status")) == "success",
+        "transcript": transcript_status == "success",
+        "views": has_dashboard_value(row.get("latest_view_count")),
+        "comments": normalized_status(row.get("comments_status")) == "success",
+    }
+    return sum(checks.values()), len(checks), checks
+
+
 def render_add_data_panel():
     with st.expander("Add data", expanded=False):
         with st.form("dashboard_import_data"):
@@ -2380,12 +2464,65 @@ def render_content_analytics():
         if youtube_contents.empty:
             st.info("No YouTube content available.")
         else:
+            youtube_display = build_youtube_display_rows(
+                youtube_contents,
+                transcripts,
+                content_stats,
+            )
+            st.caption("YouTube videos")
+            card_columns = st.columns(3)
+            for position, (_, video_row) in enumerate(youtube_display.head(30).iterrows()):
+                with card_columns[position % 3]:
+                    with st.container(border=True):
+                        thumbnail_url = video_row.get("thumbnail_url")
+                        if has_dashboard_value(thumbnail_url):
+                            st.image(str(thumbnail_url), width=120)
+                        else:
+                            st.caption("No thumbnail")
+                        st.markdown(f"**{format_optional_text(video_row.get('title'))}**")
+                        channel = format_optional_text(
+                            video_row.get("youtube_channel_name")
+                        )
+                        if channel != "N/A":
+                            st.caption(channel)
+                        complete_count, complete_total, checks = (
+                            youtube_data_completeness(video_row)
+                        )
+                        st.progress(
+                            complete_count / complete_total,
+                            text=f"Data completeness {complete_count}/{complete_total}",
+                        )
+                        transcript_status = normalized_status(
+                            video_row.get(
+                                "latest_transcript_status",
+                                video_row.get("transcript_status"),
+                            )
+                        )
+                        st.caption(
+                            " | ".join(
+                                [
+                                    f"Views: {format_count(video_row.get('latest_view_count'))}",
+                                    f"Comments: {format_count(video_row.get('latest_comment_count'))}",
+                                    f"Transcript: {transcript_status.replace('_', ' ')}",
+                                ]
+                            )
+                        )
+                        missing = [
+                            label
+                            for label, available in checks.items()
+                            if not available
+                        ]
+                        if missing:
+                            st.caption("Missing: " + ", ".join(missing))
+                        else:
+                            st.success("Complete data available.")
+
             selected_index = st.selectbox(
                 "YouTube video",
-                options=youtube_contents.index.tolist(),
-                format_func=lambda index: content_label(youtube_contents.loc[index]),
+                options=youtube_display.index.tolist(),
+                format_func=lambda index: content_label(youtube_display.loc[index]),
             )
-            selected = youtube_contents.loc[selected_index]
+            selected = youtube_display.loc[selected_index]
             render_content_interactions(selected, interactions)
             if "content_id" in transcripts.columns:
                 video_transcripts = transcripts[

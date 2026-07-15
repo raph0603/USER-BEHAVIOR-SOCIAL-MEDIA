@@ -10,6 +10,7 @@ EVENT_FIELD_TYPES = {
     "raw_text": "string",
     "clean_text": "string",
     "text_for_model": "string",
+    "thumbnail_url": "string",
     "timestamp": "string",
     "source": "string",
     "error": "string",

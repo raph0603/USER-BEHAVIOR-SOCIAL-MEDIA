@@ -44,6 +44,141 @@ def _producer_functions(*names):
     ]
 
 
+class ProducerEnvironmentParsingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        nodes = _producer_functions("_env_json_list")
+        namespace = {"json": json, "os": os}
+        exec(
+            compile(ast.Module(body=nodes, type_ignores=[]), str(PRODUCER_PATH), "exec"),
+            namespace,
+        )
+        cls.env_json_list = staticmethod(namespace["_env_json_list"])
+
+    def test_env_json_list_accepts_double_encoded_arrays(self):
+        previous = os.environ.get("TEST_JSON_LIST")
+        os.environ["TEST_JSON_LIST"] = json.dumps(json.dumps(["electricvehicles"]))
+        try:
+            self.assertEqual(
+                self.env_json_list("TEST_JSON_LIST", []),
+                ["electricvehicles"],
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("TEST_JSON_LIST", None)
+            else:
+                os.environ["TEST_JSON_LIST"] = previous
+
+    def test_env_json_list_covers_youtube_and_x_query_names(self):
+        previous_youtube = os.environ.get("YOUTUBE_SEARCH_QUERIES_JSON")
+        previous_x = os.environ.get("X_SEARCH_QUERIES_JSON")
+        os.environ["YOUTUBE_SEARCH_QUERIES_JSON"] = json.dumps(
+            json.dumps(["electric vehicle review"])
+        )
+        os.environ["X_SEARCH_QUERIES_JSON"] = json.dumps(
+            [{"value": '(Tesla OR "EV charging") lang:en'}]
+        )
+        try:
+            self.assertEqual(
+                self.env_json_list("YOUTUBE_SEARCH_QUERIES_JSON", []),
+                ["electric vehicle review"],
+            )
+            self.assertEqual(
+                self.env_json_list("X_SEARCH_QUERIES_JSON", []),
+                ['(Tesla OR "EV charging") lang:en'],
+            )
+        finally:
+            if previous_youtube is None:
+                os.environ.pop("YOUTUBE_SEARCH_QUERIES_JSON", None)
+            else:
+                os.environ["YOUTUBE_SEARCH_QUERIES_JSON"] = previous_youtube
+            if previous_x is None:
+                os.environ.pop("X_SEARCH_QUERIES_JSON", None)
+            else:
+                os.environ["X_SEARCH_QUERIES_JSON"] = previous_x
+
+    def test_env_json_list_accepts_named_objects(self):
+        previous = os.environ.get("TEST_JSON_LIST")
+        os.environ["TEST_JSON_LIST"] = json.dumps(
+            [{"subreddit": "teslamotors"}, {"keyword": "EV charging"}]
+        )
+        try:
+            self.assertEqual(
+                self.env_json_list("TEST_JSON_LIST", []),
+                ["teslamotors", "EV charging"],
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("TEST_JSON_LIST", None)
+            else:
+                os.environ["TEST_JSON_LIST"] = previous
+
+
+class RedditCommentExtractionTests(unittest.TestCase):
+    def test_author_timeout_keeps_the_comment_with_anonymous_author(self):
+        import re
+        from urllib.parse import urljoin
+
+        function = _producer_functions("_extract_reddit_comment_event")[0]
+
+        class FakeTimeoutError(Exception):
+            pass
+
+        class FakeLogger:
+            def debug(self, *args, **kwargs):
+                pass
+
+        class FakeLocator:
+            def __init__(self, value="", timeout=False):
+                self.value = value
+                self.timeout = timeout
+                self.first = self
+
+            def count(self):
+                return 1
+
+            def inner_text(self, timeout):
+                if self.timeout:
+                    raise FakeTimeoutError("author disappeared")
+                return self.value
+
+            def get_attribute(self, name):
+                return None
+
+        class FakeComment:
+            def get_attribute(self, name):
+                return {"data-fullname": "t1_comment-1", "data-depth": "0"}.get(name)
+
+            def locator(self, selector):
+                if selector == ".usertext-body .md":
+                    return FakeLocator("Useful comment")
+                if selector == "a.author":
+                    return FakeLocator(timeout=True)
+                return FakeLocator()
+
+        namespace = {
+            "LOGGER": FakeLogger(),
+            "PlaywrightTimeoutError": FakeTimeoutError,
+            "PlaywrightError": FakeTimeoutError,
+            "_clean_text": lambda value: value.strip(),
+            "_hash_identity": lambda author, comment_id: f"{author}-{comment_id}",
+            "_extract_reddit_score": lambda comment: None,
+            "re": re,
+            "urljoin": urljoin,
+        }
+        exec(
+            compile(ast.Module(body=[function], type_ignores=[]), str(PRODUCER_PATH), "exec"),
+            namespace,
+        )
+
+        event = namespace["_extract_reddit_comment_event"](
+            FakeComment(), "https://www.reddit.com/r/ev/comments/post-1/title/"
+        )
+
+        self.assertEqual(event["user_id"], "reddit-anonymous-comment-1")
+        self.assertEqual(event["title"], "Useful comment")
+
+
 @unittest.skipUnless(parse_schema is not None, "fastavro is not installed")
 class AvroCompatibilityTests(unittest.TestCase):
     def setUp(self):
@@ -112,9 +247,30 @@ class AvroCompatibilityTests(unittest.TestCase):
         self.assertIn("_registered_avro_schemas", source)
         self.assertIn('withColumn("_schema_id"', source)
         self.assertIn("for schema_id, writer_schema", source)
-        self.assertIn("allowMissingColumns=True", source)
+        decoder = source[
+            source.index("def _decode_confluent_avro") : source.index("def main")
+        ]
+        self.assertIn('withColumn("_decoded_json", decoded_json)', decoder)
+        self.assertIn('from_json(col("_decoded_json"), spark_struct_type())', decoder)
+        self.assertNotIn("unionByName", decoder)
         self.assertIn("unregistered_writer_schema", source)
         self.assertIn("_decode_error", source)
+
+    def test_online_cleaning_uses_the_post_migration_checkpoint(self):
+        paths = (
+            ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py",
+            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py",
+            ROOT
+            / "orchestrator"
+            / "dags"
+            / "user_behavior_lakehouse_no_row_checks.py",
+        )
+
+        for path in paths:
+            with self.subTest(path=path):
+                source = path.read_text(encoding="utf-8")
+                self.assertIn("pre_bronze_v4", source)
+                self.assertNotIn("pre_bronze_v3", source)
 
 
 class ProcessedStateTests(unittest.TestCase):
@@ -278,6 +434,7 @@ class YouTubeMetadataMappingTests(unittest.TestCase):
             "_terminal_collection_status",
             "_first_operation_error",
             "_parse_youtube_duration_seconds",
+            "_search_youtube_video_ids",
             "_youtube_video_event",
         }
         nodes = _producer_functions(*names)
@@ -300,6 +457,46 @@ class YouTubeMetadataMappingTests(unittest.TestCase):
             namespace,
         )
         cls.map_video = staticmethod(namespace["_youtube_video_event"])
+        cls.search_video_ids = staticmethod(namespace["_search_youtube_video_ids"])
+
+    def test_youtube_search_skips_malformed_items(self):
+        class FakeList:
+            def execute(self):
+                return {
+                    "items": [
+                        {"id": {"videoId": "video-1"}},
+                        {"id": "video-2"},
+                        {"id": None},
+                        "malformed",
+                    ]
+                }
+
+        class FakeSearch:
+            def list(self, **_kwargs):
+                return FakeList()
+
+        fake_youtube = types.SimpleNamespace(search=lambda: FakeSearch())
+
+        self.assertEqual(
+            self.search_video_ids(fake_youtube, "ev", 10, "en", "date"),
+            ["video-1", "video-2"],
+        )
+
+    def test_youtube_collaborator_page_collection_is_opt_in(self):
+        source = PRODUCER_PATH.read_text(encoding="utf-8")
+
+        self.assertIn(
+            '_env_bool("YOUTUBE_COLLABORATOR_COLLECTION_ENABLED", False)',
+            source,
+        )
+        self.assertIn("YouTube collaborator page collection is disabled", source)
+
+    def test_youtube_events_are_published_incrementally_with_a_deadline(self):
+        source = PRODUCER_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("youtube_processing_deadline = time.monotonic()", source)
+        self.assertIn("publish(video_events)", source)
+        self.assertIn('if mode != "youtube":\n            publish(events)', source)
 
     def test_video_metadata_and_transcript_provenance_are_preserved(self):
         now = datetime(2026, 1, 2, tzinfo=timezone.utc)
@@ -312,6 +509,11 @@ class YouTubeMetadataMappingTests(unittest.TestCase):
                     "channelId": "channel-1",
                     "channelTitle": "Channel",
                     "tags": ["ev"],
+                    "thumbnails": {
+                        "default": {
+                            "url": "https://img.youtube.com/vi/video-1/default.jpg"
+                        }
+                    },
                 },
                 "statistics": {
                     "viewCount": "100",
@@ -361,6 +563,10 @@ class YouTubeMetadataMappingTests(unittest.TestCase):
         self.assertEqual(event["raw_text"], "Video description")
         self.assertEqual(event["user_id"], "youtube-channel-channel-1")
         self.assertEqual(event["comment_count"], 2)
+        self.assertEqual(
+            event["thumbnail_url"],
+            "https://img.youtube.com/vi/video-1/default.jpg",
+        )
         self.assertEqual(event["transcript_language_code"], "en")
         self.assertEqual(event["transcript_selection_strategy"], "manual_preferred")
         self.assertEqual(event["duration_seconds"], 90.0)

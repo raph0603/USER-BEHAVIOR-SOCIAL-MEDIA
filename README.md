@@ -186,7 +186,8 @@ an elevated PowerShell:
 When manually triggering `user_behavior_lakehouse` from the Airflow interface,
 the trigger form exposes three limits:
 
-- `youtube_event_count`: maximum number of new YouTube videos, from 1 to 5000;
+- `youtube_event_count`: maximum number of new YouTube videos, from 1 to 5000
+  (default: 50 per Airflow run);
 - `x_event_count`: maximum number of new X posts, from 1 to 5000;
 - `reddit_event_count`: maximum number of new Reddit comments, from 1 to 5000.
 
@@ -350,6 +351,10 @@ Reddit score remains `score` and is not mapped to likes. Independent
 `storage_status` values explain why an enrichment is missing. Source
 publication time remains separate from collection and retry timestamps.
 Existing Bronze and Silver tables add missing nullable columns before a MERGE.
+YouTube video rows include a low-resolution `thumbnail_url` when available.
+For older rows, the pipeline derives the public
+`https://img.youtube.com/vi/<video_id>/default.jpg` URL from the existing video
+id, so thumbnail backfill does not consume YouTube Data API quota.
 
 ### Balanced dataset
 
@@ -428,8 +433,21 @@ docker compose exec -T spark-master /opt/spark/bin/spark-submit \
   /opt/spark/jobs/batch/youtube_transcripts.py
 ```
 
-Both online Airflow DAGs materialize or backfill captions before refreshing
-content analytics after `lakehouse.silver.events` has been updated. The
+To backfill missing low-resolution thumbnails without YouTube API quota:
+
+```bash
+docker compose exec -T spark-master /opt/spark/bin/spark-submit \
+  --master spark://spark-master:7077 \
+  --driver-memory 512m \
+  --executor-memory 512m \
+  --conf spark.cores.max=2 \
+  --conf spark.executor.cores=1 \
+  /opt/spark/jobs/batch/youtube_thumbnail_backfill.py
+```
+
+Both online Airflow DAGs materialize or backfill captions and low-resolution
+thumbnail URLs before refreshing content analytics after
+`lakehouse.silver.events` has been updated. The
 Streamlit dashboard exposes the derived tables in `Content Explorer`, with
 Reddit, X, YouTube, and Users views. If an analytical table has not been
 created yet, the dashboard shows a non-blocking availability message and keeps
@@ -468,9 +486,12 @@ DAG retries this enrichment for recent YouTube events.
 
 `YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS` controls the public page request timeout
 and defaults to 20 seconds. `YOUTUBE_AUTHOR_FETCH_WORKERS` limits concurrent
-watch-page requests and defaults to 8. Because collaborator extraction depends
-on undocumented page data, it should be monitored when YouTube changes its
-watch page.
+watch-page requests and defaults to 8. `YOUTUBE_COLLABORATOR_COLLECTION_ENABLED`
+defaults to `false` so normal collection does not depend on an undocumented
+YouTube watch-page endpoint that may return 429. Set it to `true` only when
+collaborator enrichment is required and the endpoint is available. Because it
+depends on undocumented page data, it should be monitored when YouTube changes
+its watch page.
 
 YouTube collection is bounded for scheduled DAG runs.
 `YOUTUBE_COLLECTION_TIMEOUT_SECONDS` defaults to 900 seconds and stops
