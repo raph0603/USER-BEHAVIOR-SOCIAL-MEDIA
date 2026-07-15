@@ -52,7 +52,10 @@ jobs:
               print(f"validated {schema}")
 
       - name: Validate Compose configuration
-        run: docker compose --env-file .env.example config --quiet
+        run: |
+          docker compose --env-file .env.example config --quiet
+          docker compose --env-file .env.example \
+            -f docker-compose.yml -f deployment/compose.bundle.yaml config --quiet
 
       - name: Run non-Spark test suite
         run: >-

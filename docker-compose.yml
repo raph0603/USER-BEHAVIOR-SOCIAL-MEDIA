@@ -25,6 +25,10 @@ x-airflow-common: &airflow-common
     AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT: ${AIRFLOW_WEBSERVER_MASTER_TIMEOUT:-3600}
     AIRFLOW_UID: "0"
     DOCKER_HOST_PROJECT_DIR: ${DOCKER_HOST_PROJECT_DIR:-.}
+    DOCKERHUB_NAMESPACE: ${DOCKERHUB_NAMESPACE:-raph0603}
+    PROJECT_IMAGE_TAG: ${PROJECT_IMAGE_TAG:-latest}
+    MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+    MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     LAKEHOUSE_SCHEDULE_MINUTES: ${LAKEHOUSE_SCHEDULE_MINUTES:-60}
     LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES: ${LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES:-0}
     INSIGHT_REFRESH_SCHEDULE_MINUTES: ${INSIGHT_REFRESH_SCHEDULE_MINUTES:-1440}
@@ -124,8 +128,8 @@ services:
     container_name: minio
 
     environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
 
     command: server /data --console-address ":9001"
 
@@ -145,7 +149,7 @@ services:
 
     entrypoint: >
       /bin/sh -c "
-      /usr/bin/mc alias set lakehouse http://minio:9000 minioadmin minioadmin &&
+      /usr/bin/mc alias set lakehouse http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin} &&
       /usr/bin/mc mb -p lakehouse/lakehouse || true
       "
 
@@ -238,8 +242,8 @@ services:
     environment:
       - DASHBOARD_ICEBERG_TABLE_PATH=${DASHBOARD_ICEBERG_TABLE_PATH:-s3://lakehouse/warehouse/silver/events}
       - DASHBOARD_MINIO_ENDPOINT=http://minio:9000
-      - DASHBOARD_MINIO_ACCESS_KEY=${DASHBOARD_MINIO_ACCESS_KEY:-minioadmin}
-      - DASHBOARD_MINIO_SECRET_KEY=${DASHBOARD_MINIO_SECRET_KEY:-minioadmin}
+      - DASHBOARD_MINIO_ACCESS_KEY=${DASHBOARD_MINIO_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      - DASHBOARD_MINIO_SECRET_KEY=${DASHBOARD_MINIO_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
       - DASHBOARD_MINIO_REGION=${DASHBOARD_MINIO_REGION:-us-east-1}
       - DASHBOARD_AIRFLOW_URL=http://airflow-webserver:8080
       - DASHBOARD_AIRFLOW_USERNAME=${DASHBOARD_AIRFLOW_USERNAME:-admin}
@@ -399,8 +403,8 @@ services:
 
     environment:
       - MINIO_ENDPOINT=http://minio:9000
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
       - MINIO_BUCKET=lakehouse
       - PRIVACY_HASH_SALT=dev-privacy-salt
       - KAFKA_TOPIC=${YOUTUBE_KAFKA_TOPIC:-youtube.raw.events},${X_KAFKA_TOPIC:-x.raw.events},${REDDIT_KAFKA_TOPIC:-reddit.raw.events}
@@ -433,8 +437,8 @@ services:
 
     environment:
       - MINIO_ENDPOINT=http://minio:9000
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
       - MINIO_BUCKET=lakehouse
       - PRIVACY_HASH_SALT=dev-privacy-salt
       # Tunables for scaling
@@ -513,11 +517,12 @@ services:
     command: scheduler
 
   ai-trainer:
-    image: ${DOCKERHUB_NAMESPACE:-raph0603}/user-behavior-ai-trainer:${PROJECT_IMAGE_TAG:-latest}
+    image: ${DOCKERHUB_NAMESPACE:-raph0603}/user-behavior-social-media-ai-trainer:${PROJECT_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ml/Dockerfile
     logging: *default-logging
+    profiles: ["ml"]
     working_dir: /workspace
     volumes:
       - ${HOST_PROJECT_DIR:-.}:/workspace

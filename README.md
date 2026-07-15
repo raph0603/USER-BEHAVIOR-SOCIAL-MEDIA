@@ -271,6 +271,26 @@ namespace differs from `DOCKERHUB_USERNAME`. Each release is pushed with the
 Release Please tag, `production`, and `latest`. The workflow creates the Docker
 Hub repositories automatically when they do not already exist.
 
+### Docker Compose bundle (without cloning the repository)
+
+Every published production release also attaches a versioned
+`user-behavior-social-media-compose-<tag>.zip` asset. It contains the Compose
+configuration, a no-build override, an environment template and a short
+deployment guide. The bundle pulls the matching immutable images from Docker
+Hub; it never falls back to building source code locally.
+
+After downloading and extracting the asset, copy `.env.example` to `.env`, set
+strong Airflow and MinIO credentials, add `YOUTUBE_API_KEY` when YouTube
+collection is required, then run:
+
+```bash
+docker compose --env-file .env -f compose.yaml -f compose.bundle.yaml up -d --pull always
+```
+
+The image tag in the bundled `.env.example` is already pinned to the release.
+The `ml` profile remains opt-in because model training writes data and model
+artifacts to a host-mounted workspace.
+
 ### Run the local dashboard
 
 The Streamlit dashboard is containerized by default. For local dashboard

@@ -1,0 +1,26 @@
+# Docker Compose override for the release bundle.
+#
+# Apply this file after compose.yaml. !reset is supported by Docker Compose
+# v2.24.4 and later; it removes local build contexts so a bundle can only pull
+# the release images from Docker Hub.
+services:
+  dashboard:
+    build: !reset null
+  youtube-collector:
+    build: !reset null
+  x-collector:
+    build: !reset null
+  reddit-collector:
+    build: !reset null
+  spark-master:
+    build: !reset null
+  spark-worker:
+    build: !reset null
+  airflow-init:
+    build: !reset null
+  airflow-webserver:
+    build: !reset null
+  airflow-scheduler:
+    build: !reset null
+  ai-trainer:
+    build: !reset null
