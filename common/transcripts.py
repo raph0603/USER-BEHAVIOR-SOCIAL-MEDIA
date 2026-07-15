@@ -245,7 +245,12 @@ def _fallback_key(track: Any) -> tuple[str, str, int]:
     )
 
 
-def _select_track(tracks: Sequence[Any], preferred_languages: Sequence[str]) -> _TrackChoice | None:
+def _select_track(
+    tracks: Sequence[Any],
+    preferred_languages: Sequence[str],
+    *,
+    require_preferred_language: bool = False,
+) -> _TrackChoice | None:
     manual = [track for track in tracks if not bool(getattr(track, "is_generated", False))]
     generated = [track for track in tracks if bool(getattr(track, "is_generated", False))]
 
@@ -261,6 +266,24 @@ def _select_track(tracks: Sequence[Any], preferred_languages: Sequence[str]) -> 
         if preferred_candidates:
             _, selected = min(preferred_candidates, key=lambda item: item[0])
             return _TrackChoice(selected, strategy, False)
+
+    if require_preferred_language:
+        for candidates, strategy in (
+            (manual, "manual_translation_preferred"),
+            (generated, "generated_translation_preferred"),
+        ):
+            translatable_candidates = [
+                track
+                for track in candidates
+                if any(_can_translate(track, language) for language in preferred_languages)
+            ]
+            if translatable_candidates:
+                return _TrackChoice(
+                    min(translatable_candidates, key=_fallback_key),
+                    strategy,
+                    True,
+                )
+        return None
 
     if manual:
         return _TrackChoice(min(manual, key=_fallback_key), "manual_fallback", True)
@@ -345,6 +368,16 @@ def _translation_target(track: Any, requested_language: str) -> str:
         if quality is not None:
             candidates.append((quality, language_code))
     return min(candidates)[1] if candidates else requested
+
+
+def _preferred_translation_target(
+    track: Any,
+    preferred_languages: Sequence[str],
+) -> str | None:
+    for language in preferred_languages:
+        if _can_translate(track, language):
+            return _translation_target(track, language)
+    return None
 
 
 def _float_or_zero(value: Any) -> float:
@@ -446,6 +479,7 @@ def fetch_transcript(
     api_factory: Callable[[], Any] | None = None,
     allow_translation: bool = True,
     translation_language: str | None = None,
+    require_preferred_language: bool = False,
     attempt_count: int = 1,
     clock: Callable[[], datetime] | None = None,
 ) -> OperationResult[TranscriptPayload]:
@@ -477,12 +511,24 @@ def fetch_transcript(
             completed_at=_completed(now),
         )
 
-    choice = _select_track(tracks, languages)
+    choice = _select_track(
+        tracks,
+        languages,
+        require_preferred_language=require_preferred_language,
+    )
     if choice is None:
         completed_at = _completed(now)
         return OperationResult.unavailable(
-            error_code="no_transcript_found",
-            error_message=f"No transcript tracks were returned for {normalized_video_id}",
+            error_code=(
+                "preferred_language_not_available"
+                if require_preferred_language
+                else "no_transcript_found"
+            ),
+            error_message=(
+                f"No transcript in the preferred languages was available for {normalized_video_id}"
+                if require_preferred_language
+                else f"No transcript tracks were returned for {normalized_video_id}"
+            ),
             attempt_count=attempt_count,
             started_at=started_at,
             completed_at=completed_at,
@@ -497,7 +543,32 @@ def fetch_transcript(
         translation_language or (languages[0] if languages else "")
     )
 
-    if (
+    if choice.is_fallback and require_preferred_language:
+        target_language = _preferred_translation_target(source_track, languages)
+        if not allow_translation or not target_language:
+            completed_at = _completed(now)
+            return OperationResult.unavailable(
+                error_code="preferred_language_not_available",
+                error_message=(
+                    f"No transcript in the preferred languages was available for "
+                    f"{normalized_video_id}"
+                ),
+                attempt_count=attempt_count,
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+        try:
+            selected_track = source_track.translate(target_language)
+            is_translated = True
+            selection_strategy = f"translated_{choice.strategy}"
+        except Exception as error:
+            return _result_from_error(
+                error,
+                attempt_count=attempt_count,
+                started_at=started_at,
+                completed_at=_completed(now),
+            )
+    elif (
         choice.is_fallback
         and allow_translation
         and target_language
@@ -516,6 +587,13 @@ def fetch_transcript(
         fetched = selected_track.fetch()
     except Exception as error:
         if is_translated:
+            if require_preferred_language:
+                return _result_from_error(
+                    error,
+                    attempt_count=attempt_count,
+                    started_at=started_at,
+                    completed_at=_completed(now),
+                )
             translation_error = error
             selected_track = source_track
             is_translated = False

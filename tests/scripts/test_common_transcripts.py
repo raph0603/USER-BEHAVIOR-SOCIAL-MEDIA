@@ -237,6 +237,38 @@ class TranscriptSelectionTests(unittest.TestCase):
         self.assertFalse(result.payload.is_translated)
         self.assertTrue(result.payload.has_auto_captions)
 
+    def test_strict_preference_rejects_an_untranslatable_foreign_track(self):
+        hindi = FakeTrack("Hindi", "hi")
+
+        result = fetch_transcript(
+            "video-strict-1",
+            ["en"],
+            api=FakeApi([hindi]),
+            require_preferred_language=True,
+            clock=lambda: FIXED_TIME,
+        )
+
+        self.assertEqual(result.status, STATUS_NOT_AVAILABLE)
+        self.assertEqual(result.error_code, "preferred_language_not_available")
+        self.assertEqual(hindi.fetch_calls, 0)
+
+    def test_strict_preference_translates_only_to_the_requested_language(self):
+        translated = FakeTrack("English", "en")
+        hindi = FakeTrack("Hindi", "hi", translations={"en": translated})
+
+        result = fetch_transcript(
+            "video-strict-2",
+            ["en"],
+            api=FakeApi([hindi]),
+            require_preferred_language=True,
+            clock=lambda: FIXED_TIME,
+        )
+
+        self.assertEqual(result.status, STATUS_SUCCESS)
+        self.assertEqual(result.payload.language_code, "en")
+        self.assertTrue(result.payload.is_translated)
+        self.assertEqual(hindi.translate_calls, ["en"])
+
     def test_fallback_selection_is_deterministic_across_api_order(self):
         manual_zh = FakeTrack("Chinese", "zh")
         manual_fr = FakeTrack("French", "fr")

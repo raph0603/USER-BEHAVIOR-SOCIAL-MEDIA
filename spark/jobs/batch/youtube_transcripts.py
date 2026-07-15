@@ -374,8 +374,18 @@ def _fetch_common_transcript(
     return fetch_transcript(
         video_id,
         preferred_languages=preferred_languages,
+        require_preferred_language=True,
         attempt_count=attempt_count,
     )
+
+
+def _preferred_languages_for_candidate(candidate: Mapping[str, Any]) -> tuple[str, ...]:
+    """Select Vietnamese only for Vietnamese videos, English for every other video."""
+
+    language = str(candidate.get("language") or "").strip().casefold().replace("_", "-")
+    if language == "vi" or language.startswith("vi-") or "vietnam" in language:
+        return ("vi",)
+    return ("en",)
 
 
 def _classify_unexpected_exception(exc: Exception) -> tuple[str, str, str]:
@@ -860,11 +870,6 @@ def _external_candidates(
 def main() -> None:
     bucket = _env("MINIO_BUCKET", "lakehouse")
     warehouse = f"s3a://{bucket}/warehouse"
-    languages = tuple(
-        value.strip()
-        for value in _env("YOUTUBE_TRANSCRIPT_LANGUAGES", "en,vi").split(",")
-        if value.strip()
-    ) or ("en",)
     limit = max(1, int(_env("YOUTUBE_TRANSCRIPT_BACKFILL_LIMIT", "500")))
     sleep_seconds = max(
         0.0,
@@ -911,7 +916,7 @@ def main() -> None:
         for candidate in candidates:
             row = _attempt_transcript_row(
                 candidate.asDict(recursive=True),
-                languages,
+                _preferred_languages_for_candidate(candidate.asDict(recursive=True)),
                 sleep_seconds,
             )
             rows.append(row)

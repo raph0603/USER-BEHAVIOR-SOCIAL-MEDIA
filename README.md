@@ -352,10 +352,11 @@ The collector emits YouTube events with canonical metadata, a source-specific
 metadata envelope, and a sanitized source payload. These fields travel through
 Kafka and the lakehouse, so durable metadata does not depend on a temporary
 collector-container directory.
-By default, YouTube search and transcript fetching target English and
-Vietnamese (`YOUTUBE_SEARCH_LANGUAGES=en,vi`,
-`YOUTUBE_TRANSCRIPT_LANGUAGES=en,vi`). Use `YOUTUBE_SEARCH_QUERIES` with
-`||` separators to override the English and Vietnamese search terms.
+By default, YouTube search targets English and Vietnamese
+(`YOUTUBE_SEARCH_LANGUAGES=en,vi`). Transcript selection is strict: videos
+marked Vietnamese use Vietnamese captions; all other videos use English
+captions. A caption in another language is not stored. Use
+`YOUTUBE_SEARCH_QUERIES` with `||` separators to override the search terms.
 
 ### Engagement metadata
 

@@ -37,9 +37,12 @@ count remains below the configured maximum.
 The job materializes caption data already present on Silver events before
 making an external request. This avoids fetching the same track twice.
 
+Transcript language selection is strict: a video marked Vietnamese uses `vi`;
+every other video uses `en`. Captions in another language are recorded as
+unavailable rather than stored as a fallback.
+
 | Setting | Default | Purpose |
 |---|---:|---|
-| `YOUTUBE_TRANSCRIPT_LANGUAGES` | `en,vi` | Preferred language order |
 | `YOUTUBE_TRANSCRIPT_BACKFILL_LIMIT` | `500` | Maximum candidates per run |
 | `YOUTUBE_TRANSCRIPT_BACKFILL_SLEEP_SECONDS` | `0.25` | Delay after every external attempt |
 | `YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS` | `5` | Retry ceiling per content ID |

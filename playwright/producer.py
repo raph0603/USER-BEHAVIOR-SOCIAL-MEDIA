@@ -1164,8 +1164,21 @@ def _fetch_youtube_transcript(
     return fetch_transcript(
         video_id,
         preferred_languages=languages,
+        require_preferred_language=True,
         attempt_count=attempt_count,
     )
+
+
+def _preferred_youtube_transcript_languages(metadata: dict) -> list[str]:
+    """Use Vietnamese captions for Vietnamese videos and English otherwise."""
+
+    snippet = metadata.get("snippet") or {}
+    language = str(
+        snippet.get("defaultLanguage") or snippet.get("defaultAudioLanguage") or ""
+    ).strip().casefold().replace("_", "-")
+    if language == "vi" or language.startswith("vi-") or "vietnam" in language:
+        return ["vi"]
+    return ["en"]
 
 
 def _youtube_transcript_text(transcript: list[dict] | None) -> str | None:
@@ -2817,10 +2830,6 @@ def main() -> None:
                 "YOUTUBE_SEARCH_LANGUAGES",
                 [_env_str("YOUTUBE_SEARCH_LANGUAGE", "en")],
             )
-            transcript_languages = _env_list(
-                "YOUTUBE_TRANSCRIPT_LANGUAGES",
-                ["en", "vi"],
-            )
             comment_max_pages = _env_int("YOUTUBE_COMMENT_MAX_PAGES", 3)
             transcript_max_failures = _env_int(
                 "YOUTUBE_TRANSCRIPT_MAX_FAILURES",
@@ -2934,7 +2943,9 @@ def main() -> None:
                 else:
                     transcript_result = _fetch_youtube_transcript(
                         video_id,
-                        transcript_languages,
+                        _preferred_youtube_transcript_languages(
+                            metadata_result.payload or {}
+                        ),
                         attempt_count,
                     )
                     if transcript_result.status in {
