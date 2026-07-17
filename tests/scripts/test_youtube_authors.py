@@ -175,8 +175,20 @@ class YouTubeAuthorTests(unittest.TestCase):
             / "maintenance"
             / "apply_insight_updates.py",
         ]
+        shared_contract = (
+            ROOT / "spark" / "jobs" / "event_contract.py"
+        ).read_text(encoding="utf-8")
+        shared_stages = {
+            "collector_stream_pipeline.py",
+            "kafka_to_iceberg_bronze.py",
+            "bronze_to_silver.py",
+            "bronze_to_silver_from_kafka.py",
+        }
         for path in paths:
             source = path.read_text(encoding="utf-8")
+            if path.name in shared_stages:
+                self.assertIn("event_contract", source)
+                source += shared_contract
             with self.subTest(path=path):
                 self.assertIn("owner_channel_id", source)
                 self.assertIn("collaborator_channel_ids", source)

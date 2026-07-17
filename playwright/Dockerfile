@@ -9,6 +9,7 @@ COPY playwright/producer.py /app/producer.py
 COPY playwright/engagement.py /app/engagement.py
 COPY playwright/insight_refresh.py /app/insight_refresh.py
 COPY playwright/youtube_authors.py /app/youtube_authors.py
+COPY common/ /app/common/
 COPY schemas/ /app/schemas/
 COPY API/ /app/api/
 

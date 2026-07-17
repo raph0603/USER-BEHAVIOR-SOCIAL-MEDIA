@@ -1,22 +1,32 @@
-# Préparation du dataset d'annotation des rôles marketing — rapport
+# Marketing role dataset preparation report
 
-Date : 24/06/2026
+Date: 2026-06-24
 
-## Objectif
+## Objective
 
-Préparer un dataset équilibré (par réseau et par langue) de posts originaux issus de YouTube, X et Reddit, segmentés en unités courtes prêtes pour l'annotation des rôles rhétoriques marketing (hook, pain_point, solution, benefit, proof, social_proof, urgency, scarcity, objection_handling, cta, educational, storytelling, uncertain). L'annotation LLM elle-même (silver/gold dataset) est reportée à une phase ultérieure ; cette livraison couvre la sélection équilibrée et la segmentation.
+Build a post-balanced English and Vietnamese dataset from YouTube, X, and
+Reddit, then split each post into short units for rhetorical marketing-role
+labeling. The taxonomy includes `hook`, `pain_point`, `solution`, `benefit`,
+`proof`, `social_proof`, `urgency`, `scarcity`, `objection_handling`, `cta`,
+`educational`, `storytelling`, and `uncertain`.
 
-## Pipeline
+## Preparation pipeline
 
-1. **Scraping Reddit manquant** (`reddit_post_scraper.py`) : le texte des posts originaux Reddit n'avait jamais été scrappé (seulement les commentaires). Script Playwright connecté en CDP à un Chrome déjà ouvert/authentifié (contournement du blocage anti-bot Akamai), avec gestion du rate-limit 429 (file d'attente + pause croissante) et reprise automatique. Résultat : 732 posts EN, 211 posts VI récupérés.
-2. **Extraction commune** (`extract_posts.py`) : normalisation des 3 réseaux vers `{post_id, platform, language, text}`.
-3. **Filtre qualité et équilibrage** (`build_balanced_sample.py`) : texte entre 20 et 3000 caractères (les posts > 3000 caractères, essentiellement de longs essais Reddit vietnamiens hors-sujet marketing, ont été exclus pour ne pas fausser la segmentation). Pour chaque langue, le réseau le moins fourni fixe le quota, les deux autres sont sous-échantillonnés au même nombre (seed fixe = reproductible).
-4. **Segmentation** (`segment_posts.py`) : découpage en phrases + split supplémentaire sur conjonctions de coordination (et/and/mais/but) quand une phrase mélange deux fonctions.
+1. `reddit_post_scraper.py` collected missing Reddit post text through an
+   authenticated CDP browser and handled HTTP 429 responses with a growing
+   backoff. It recovered 732 English and 211 Vietnamese posts.
+2. `extract_posts.py` normalized all three sources to
+   `{post_id, platform, language, text}`.
+3. `build_balanced_sample.py` retained text between 20 and 3,000 characters
+   and balanced each language to the least represented platform with a fixed
+   random seed.
+4. `segment_posts.py` split posts into sentences and separated clauses joined
+   by common coordinating conjunctions when one sentence mixed two roles.
 
-## Résultats — posts retenus (équilibrés)
+## Balanced posts
 
-| Réseau | Langue | Posts retenus |
-|---|---|---|
+| Platform | Language | Retained posts |
+|---|---|---:|
 | Reddit | EN | 418 |
 | X | EN | 418 |
 | YouTube | EN | 418 |
@@ -24,37 +34,38 @@ Préparer un dataset équilibré (par réseau et par langue) de posts originaux 
 | X | VI | 135 |
 | YouTube | VI | 135 |
 
-**Total : 1659 posts** (équilibre parfait par réseau au sein de chaque langue ; le goulot d'étranglement est Reddit VI à 135 posts disponibles après filtre qualité).
+Total: 1,659 posts. Reddit Vietnamese data is the limiting group with 135
+quality-filtered posts.
 
-## Résultats — segments produits
+## Produced segments
 
-| Réseau | Langue | Segments | Moy. segments/post |
-|---|---|---|---|
-| Reddit | EN | 1577 | 3.8 |
-| X | EN | 1408 | 3.4 |
-| YouTube | EN | 7361 | 17.6 |
-| Reddit | VI | 1319 | 9.8 |
+| Platform | Language | Segments | Mean segments per post |
+|---|---|---:|---:|
+| Reddit | EN | 1,577 | 3.8 |
+| X | EN | 1,408 | 3.4 |
+| YouTube | EN | 7,361 | 17.6 |
+| Reddit | VI | 1,319 | 9.8 |
 | X | VI | 901 | 6.7 |
-| YouTube | VI | 1940 | 14.4 |
+| YouTube | VI | 1,940 | 14.4 |
 
-**Total : 14 506 segments.** Longueur des segments : médiane 48 caractères, moyenne 61.7, max 1754.
+Total: 14,506 segments. Median length is 48 characters, mean length is 61.7,
+and maximum length is 1,754.
 
-## Point d'attention pour la suite
+## Sampling caveat
 
-L'équilibrage a été fait au niveau **post**, comme demandé, pas au niveau **segment**. YouTube produit nettement plus de segments par post (descriptions plus longues) que X ou Reddit — YouTube EN représente à lui seul ~51 % des segments anglais. Si l'annotation finale doit aussi être équilibrée au niveau segment (et non juste au niveau post), il faudra un sous-échantillonnage supplémentaire après l'annotation LLM, ou un plafond de segments par post avant le passage en annotation.
+Balancing was performed at the post level, not at the segment level. Longer
+YouTube descriptions produce substantially more segments; YouTube English
+accounts for roughly 51% of all English segments. A segment-balanced training
+set therefore needs an additional deterministic subsample or a per-post
+segment cap.
 
-## Fichiers livrés (`Codes/annotation_marketing/`)
+## Produced artifacts
 
-- `reddit_post_scraper.py` — scraper Reddit (titre + selftext), via CDP
-- `extract_posts.py` — extraction commune des 3 réseaux
-- `build_balanced_sample.py` — filtre qualité + équilibrage réseau × langue
-- `segment_posts.py` — segmentation mécanique en unités courtes
-- `prompt_annotation.txt` — prompt LLM prêt à l'emploi pour la phase d'annotation
-- `all_posts_raw.jsonl` — 2798 posts extraits avant équilibrage (toutes langues/réseaux)
-- `posts_originaux_selection.jsonl` — 1659 posts équilibrés sélectionnés
-- `segments_a_annoter.jsonl` — 14 506 segments prêts pour l'annotation LLM
-- `rapport_preparation_dataset.md` — ce rapport
+- `all_posts_raw.jsonl`: 2,798 normalized posts before balancing.
+- `posts_originaux_selection.jsonl`: 1,659 balanced posts.
+- `segments_a_annoter.jsonl`: 14,506 segments before the later EV and noise
+  filters.
+- `annotation_instructions.txt`: role definitions and expected JSON schema.
 
-## Prochaine étape (non faite dans cette phase)
-
-Lancer l'annotation LLM sur `segments_a_annoter.jsonl` avec `prompt_annotation.txt`, filtrer par seuil de confiance (≥ 0.75 = silver auto, < 0.75 ou uncertain = revue humaine), puis produire `silver_dataset.jsonl` et `gold_dataset.jsonl`.
+The subsequent quality pass applies the labeling specification, separates
+unsupported rows, and writes the Silver, Gold, and uncertain datasets.

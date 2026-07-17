@@ -1,69 +1,85 @@
-# =========================================
-# OS
-# =========================================
+# Operating systems
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
 
-# =========================================
-# VSCode / IDE
-# =========================================
+# Editors and development containers
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
 .idea/
-.devcontainer/
+.devcontainer/*
+!.devcontainer/devcontainer.json
 
-# =========================================
-# Python
-# =========================================
+# Python bytecode, environments, and packaging
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Virtual environments
-venv/
 .venv/
+venv/
 env/
 ENV/
-
-# Python packaging
 build/
 dist/
 *.egg-info/
 .eggs/
-
-# =========================================
-# Jupyter
-# =========================================
 .ipynb_checkpoints/
 
-# =========================================
-# Logs
-# =========================================
+# Test, lint, coverage, and local analysis output
+.cache/
+.pytest_cache/
+pytest-cache-files-*/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.code-review-graph/
+.a[g]ents/
+PROJECT.md
+PROJECT_CONTEXT_NOTES.md
+TEST_INFRA.md
+TEST_READY.md
+local-analysis/
+.local-analysis/
+
+# Browser state and Playwright artifacts
+.playwright-cli/
+playwright/.auth/
+playwright/.sessions/
+playwright/browser-profile/
+playwright/test-results/
+playwright-report/
+**/storage-state.json
+**/cookies.json
+data/x-browser-profile/
+data/x-edge-profile/
+data/x-login-debug/
+data/x-edge.pid
+data/x-edge-mode.txt
+
+# Logs and runtime state
 logs/
 *.log
 *.pid
 orchestrator/logs/
+tmp/
+temp/
+*.tmp
 
-# =========================================
-# Environment variables / secrets
-# =========================================
+# Environment variables and credentials
 .env
 .env.*
 !.env.example
-
-# API keys / credentials
 *.pem
 *.key
 *.crt
 secrets/
 credentials/
 
-# =========================================
-# Data files
-# =========================================
+# Collected and derived data
 data/
-data/collector-state/
 datasets/
 raw_data/
 processed_data/
@@ -71,8 +87,7 @@ API/video_list.txt
 API/yt_raw_json/
 playwright/x_urls.txt
 playwright/reddit_urls.txt
-
-# Large files
+dashboard/data/
 *.csv
 *.parquet
 *.feather
@@ -80,7 +95,7 @@ playwright/reddit_urls.txt
 *.sqlite
 *.db
 
-# Models
+# Model artifacts
 models/
 checkpoints/
 *.pt
@@ -89,104 +104,33 @@ checkpoints/
 *.pkl
 *.joblib
 
-# =========================================
-# Spark / Hadoop
-# =========================================
+# Spark and Hadoop runtime output
 spark-warehouse/
 metastore_db/
 derby.log
 
-# =========================================
-# Cache
-# =========================================
-.cache/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# =========================================
-# Coverage
-# =========================================
-.coverage
-htmlcov/
-
-# =========================================
-# Node.js (frontend éventuel)
-# =========================================
+# JavaScript dependencies and builds
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-
-# Build frontend
 .next/
 out/
-dist/
 
-# =========================================
-# Docker
-# =========================================
+# Local infrastructure overrides
 docker-compose.override.yml
-
-# =========================================
-# Terraform
-# =========================================
 .terraform/
 *.tfstate
 *.tfstate.*
 
-# =========================================
-# Temporary files
-# =========================================
-tmp/
-temp/
-*.tmp
-
-# Local project reading notes for Codex/user context
-PROJECT_CONTEXT_NOTES.md
+# Local reference files
 ORIGINAL_REQUEST.md
-
-# =========================================
-# Mac/Linux swap
-# =========================================
-*.swp
-*.swo
-
-# Documents
-*.doc
-*.docx
-*.pdf
-
-# Local X browser process state
-data/x-edge.pid
-data/x-edge-mode.txt
-
-API/yt_raw_json/
-API/video_list.txt
-
-# Local dashboard data
-dashboard/data/
-
-AGENTS.md
+A?ENTS.md
 .github/copilot-instructions.md
-
 ml/TONG_QUAN_HE_THONG.md
 ml/YEU_CAU_MOI.md
 ml/KIEN_TRUC_AI_TONG_THE.md
 ml/KIEN_TRUC_MOI.md
-ml/DEV_LOG.md
-# Added by code-review-graph
-.code-review-graph/
-
-# =========================================
-# Agent Coordination Files
-# =========================================
-.agents/
-PROJECT.md
-TEST_INFRA.md
-TEST_READY.md
-# Ignore agent coordination and tracking files
-
 ml/DEV_LOG.md
 
 # Local verification helpers
@@ -194,3 +138,8 @@ tests/scripts/run_python.bat
 tests/scripts/test_cleaning_empirical.py
 tests/scripts/test_issue_82_compat.py
 tests/scripts/verify_issue_82.py
+
+# Binary documents
+*.doc
+*.docx
+*.pdf

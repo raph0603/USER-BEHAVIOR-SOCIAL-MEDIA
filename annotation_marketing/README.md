@@ -1,63 +1,58 @@
-# annotation_marketing — README
+# Marketing annotation datasets
 
-Annotation des rôles rhétoriques marketing (EV) + sentiment, sur posts et
-commentaires Reddit/X/YouTube (EN+VI). Lire ce fichier avant d'utiliser les
-datasets — il résume les points qui ont une incidence directe sur l'usage.
+This directory contains rhetorical-role and sentiment datasets for electric
+vehicle posts and comments from Reddit, X, and YouTube in English and
+Vietnamese.
 
-## ⚠️ À savoir avant d'utiliser les données
+## Read this before using the data
 
-1. **Aucun appel LLM payant, aucun humain n'a annoté ce corpus.** Le doc de
-   cahier des charges (`instructions_annotation_roles_marketing.md`) prévoit
-   un appel LLM avec triple annotation à températures différentes (section
-   9). Cette contrainte de l'utilisateur ("pas de LLM payant") a remplacé ce
-   processus par des heuristiques à base de règles/lexique (regex multilingue
-   FR/EN/VI), exécutées par Claude directement, avec un dispositif de vote à
-   3 angles indépendants pour simuler la corroboration inter-annotateur
-   (détail complet : `rapport_qualite_annotation.md`, section 1).
-   **Conséquence : il n'existe pas de fichier "appel LLM" dans ce dossier —
-   c'est voulu, pas un oubli.**
+The role labels were produced with deterministic multilingual lexical and
+structural rules. They have not been validated by human reviewers. The
+three-way corroboration score is useful for ranking confidence, but it is not
+equivalent to inter-reviewer agreement.
 
-2. **50.4 % des segments sont `uncertain`** (3 468 / 6 876, désormais isolés
-   dans `uncertain_dataset.jsonl`). Ce taux élevé reflète la nature réelle du
-   corpus (descriptions YouTube automatiques, timestamps, mentions légales,
-   fragments hors-sujet), pas une sous-performance de l'annotateur — voir
-   `rapport_qualite_annotation.md` section 4. **À garder en tête si vous
-   filtrez/échantillonnez sur ce corpus : la moitié des lignes n'a pas de
-   rôle marketing assigné.**
+Half of the retained segments are intentionally classified as `uncertain`:
+3,468 of 6,876 rows, or 50.4%. This reflects timestamps, channel boilerplate,
+legal notices, and unrelated fragments in the source material. Exclude those
+rows when training a rhetorical-role classifier unless `uncertain` is an
+explicit target class.
 
-3. **Convention silver/gold (mise à jour) :**
-   - `gold_dataset.jsonl` (286 lignes) = sous-ensemble à confiance maximale
-     (≥0.95, accord 3/3 des votes indépendants) — le plus proche d'un set
-     "vérifié" qu'on puisse produire sans annotateur humain. À utiliser comme
-     référence/évaluation, pas comme set d'entraînement principal.
-   - `silver_dataset.jsonl` (3 122 lignes) = reste des segments à rôle réel
-     (confidence <0.95, ≠ `uncertain`) — set principal pour l'entraînement.
-   - `uncertain_dataset.jsonl` (3 468 lignes) = segments sans rôle marketing
-     assignable avec confiance suffisante. Conservé séparément pour ne pas
-     perdre de données, mais à exclure de tout entraînement de classifieur de
-     rôle.
+The current split convention is:
 
-## Fichiers
+| Dataset | Definition | Rows | Recommended use |
+|---|---|---:|---|
+| `gold_dataset.jsonl` | Confidence at least 0.95, three-way agreement, non-`uncertain` | 286 | Strict evaluation reference |
+| `silver_dataset.jsonl` | Remaining non-`uncertain` segments | 3,122 | Main training set |
+| `uncertain_dataset.jsonl` | No sufficiently supported marketing role | 3,468 | Error analysis or explicit reject class |
 
-- `silver_dataset.jsonl`, `gold_dataset.jsonl`, `uncertain_dataset.jsonl` — splits ci-dessus.
-- `*_sentiment.jsonl` — mêmes splits + sentiment (label/score) et pondération par rôle rhétorique.
-- `sentiment/` — moteur de sentiment (lexique EV étendu EN, moteur de règles VI, pondération par rôle, stance commentaires) + scripts d'application sur les 3 corpus de commentaires.
-- `rapport_preparation_dataset.md` — préparation amont (scraping, segmentation, échantillonnage).
-- `rapport_qualite_annotation.md` — méthodologie d'annotation des rôles, écarts vs cahier des charges, statistiques détaillées.
-- `rapport_sentiment.md` — méthodologie sentiment, auto-évaluation honnête (bien fait / mal fait / améliorable).
-- `restructure_pipeline.py` — script de correction des tags langue + reconstruction silver/gold/uncertain (cette passe-ci).
+The Gold name means high heuristic confidence; it does not mean that a human
+reviewer verified the rows.
 
-## Limite connue sur la vérification du tag langue
+## File map
 
-46 segments tagués `language: "en"` contenaient en réalité du texte
-vietnamien (diacritiques détectés) — corrigés dans cette passe. Le moteur de
-vote de rôle ne lit jamais le champ `language` en entrée, donc ce bug ne peut
-pas avoir biaisé l'attribution du rôle pour ces lignes — **mais** la
-recompute de vérification effectuée donne un résultat différent du rôle
-original sur 22 de ces 46 lignes, ce qui indique que le script de vote
-disponible ici ne reproduit pas exactement la logique utilisée pour produire
-les fichiers originaux (probablement une version légèrement différente/
-antérieure). Par précaution, **seul le tag `language` a été corrigé ; le
-`primary_role` original a été conservé tel quel**, pour ne pas introduire un
-changement non vérifié. À garder en tête si une ré-annotation complète est
-envisagée plus tard.
+- `all_posts_raw.jsonl` contains the normalized posts before balancing.
+- `posts_originaux_selection.jsonl` contains the balanced post sample.
+- `segments_a_annoter.jsonl` contains the initial sentence-level segments.
+- `segments_a_annoter_clean.jsonl` contains the cleaned pre-filter corpus.
+- `segments_rejetes.jsonl` contains rejected noise.
+- `silver_dataset.jsonl`, `gold_dataset.jsonl`, and
+  `uncertain_dataset.jsonl` contain the role-label splits.
+- `*_sentiment.jsonl` contains role rows enriched with sentiment fields.
+- `annotation_instructions.txt` defines the role taxonomy and output schema.
+- `sentiment/` contains the English and Vietnamese sentiment engines and
+  batch scripts.
+- `rapport_preparation_dataset.md`, `rapport_qualite_annotation.md`, and
+  `rapport_sentiment.md` record preparation, quality, and sentiment results.
+
+These JSONL files are retained deliberately. Preparation scripts read the raw
+and selected-post files, and `ml/train/train_roles.py` reads
+`silver_dataset.jsonl`. They are reproducibility inputs, not disposable local
+output.
+
+## Known language-tag limitation
+
+Forty-six segments originally tagged as English contained Vietnamese
+diacritics. Their language tags were corrected. The available voting code did
+not reproduce the original role on 22 of those 46 rows, so the existing
+`primary_role` values were preserved to avoid an unverified relabeling. Rebuild
+the complete corpus before changing those role values.

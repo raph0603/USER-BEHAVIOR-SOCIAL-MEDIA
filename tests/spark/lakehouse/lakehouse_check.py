@@ -2,6 +2,7 @@ import os
 import sys
 
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, lit, to_timestamp
 
 
 def _env(name: str, default: str) -> str:
@@ -39,19 +40,29 @@ def _build_spark(app_name: str, warehouse: str) -> SparkSession:
 
 def main() -> int:
     if len(sys.argv) < 3:
-        print("Usage: lakehouse_check.py <table> <min_count>")
+        print("Usage: lakehouse_check.py <table> <min_count> [since_timestamp]")
         return 2
 
     table = sys.argv[1]
     min_count = int(sys.argv[2])
+    since_timestamp = sys.argv[3] if len(sys.argv) > 3 else None
 
     bucket = _env("MINIO_BUCKET", "lakehouse")
     warehouse = f"s3a://{bucket}/warehouse"
 
     spark = _build_spark("lakehouse-check", warehouse)
-    count = spark.table(table).limit(min_count).count()
+    dataframe = spark.table(table)
+    if since_timestamp:
+        if "collected_at" not in dataframe.columns:
+            print(f"Table {table} does not expose collected_at")
+            return 2
+        dataframe = dataframe.filter(
+            to_timestamp(col("collected_at")) >= to_timestamp(lit(since_timestamp))
+        )
+    count = dataframe.limit(min_count).count()
 
-    print(f"Table {table} has at least {count} rows")
+    scope = f" since {since_timestamp}" if since_timestamp else ""
+    print(f"Table {table} has at least {count} rows{scope}")
 
     if count < min_count:
         print(f"Expected at least {min_count} rows")

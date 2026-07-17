@@ -8,6 +8,7 @@ import socket
 import sqlite3
 import sys
 import time
+import traceback
 import unicodedata
 import uuid
 from datetime import datetime, timezone
@@ -33,8 +34,24 @@ from googleapiclient.errors import HttpError
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
-from youtube_transcript_api import YouTubeTranscriptApi
 
+from common.collection import (
+    ContentRelationship,
+    OperationResult,
+    STATUS_DISABLED,
+    STATUS_FAILED,
+    STATUS_NOT_AVAILABLE,
+    STATUS_PARTIAL,
+    STATUS_RATE_LIMITED,
+    STATUS_SUCCESS,
+    canonical_content_id,
+    isoformat_utc,
+    is_terminal_status,
+    overall_status,
+    safe_json_dumps,
+    utc_now,
+)
+from common.transcripts import fetch_transcript
 from engagement import extract_x_followers, extract_x_metric, parse_count
 import youtube_authors
 from youtube_authors import fetch_youtube_collaborators
@@ -80,7 +97,7 @@ DEFAULT_YOUTUBE_QUERIES = [
 
 
 class CollectorSoftBlock(RuntimeError):
-    """Source auth, quota, or rate-limit issue that should not fail the DAG."""
+    """Source auth, quota, or rate-limit issue requiring an explicit failure."""
 
 
 def _http_error_status(exc: Exception) -> int | None:
@@ -215,6 +232,17 @@ def _clean_text(value: str | None) -> str:
 
 
 def _env_json_list(name: str, fallback: list[str]) -> list[str]:
+    def normalize_item(value) -> str:
+        if isinstance(value, dict):
+            value = (
+                value.get("name")
+                or value.get("subreddit")
+                or value.get("keyword")
+                or value.get("value")
+                or ""
+            )
+        return str(value).strip()
+
     raw_value = os.getenv(name)
     if not raw_value:
         return fallback
@@ -222,13 +250,14 @@ def _env_json_list(name: str, fallback: list[str]) -> list[str]:
         values = json.loads(raw_value)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"{name} must contain a JSON array") from exc
+    if isinstance(values, str):
+        try:
+            values = json.loads(values)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{name} must contain a JSON array") from exc
     if not isinstance(values, list):
         raise RuntimeError(f"{name} must contain a JSON array")
-    return [
-        str(value).strip()
-        for value in values
-        if str(value).strip()
-    ]
+    return [item for item in (normalize_item(value) for value in values) if item]
 
 
 def _matches_keywords(text: str, keywords: list[str], match_mode: str) -> bool:
@@ -549,20 +578,30 @@ def _extract_reddit_comment_event(
         return None
 
     body_locator = comment.locator(".usertext-body .md")
-    text = (
-        _clean_text(body_locator.first.inner_text(timeout=1500))
-        if body_locator.count()
-        else ""
-    )
+    try:
+        text = (
+            _clean_text(body_locator.first.inner_text(timeout=1500))
+            if body_locator.count()
+            else ""
+        )
+    except (PlaywrightTimeoutError, PlaywrightError) as exc:
+        LOGGER.debug("Skipping Reddit comment %s without readable text: %s", comment_id, exc)
+        return None
     if not text:
         return None
 
     author_locator = comment.locator("a.author")
-    author = (
-        author_locator.first.inner_text(timeout=1500)
-        if author_locator.count()
-        else "anonymous"
-    )
+    try:
+        author = (
+            author_locator.first.inner_text(timeout=1500)
+            if author_locator.count()
+            else "anonymous"
+        )
+    except (PlaywrightTimeoutError, PlaywrightError) as exc:
+        LOGGER.debug(
+            "Using anonymous author for Reddit comment %s: %s", comment_id, exc
+        )
+        author = "anonymous"
     time_locator = comment.locator("time")
     timestamp = (
         time_locator.first.get_attribute("datetime")
@@ -587,11 +626,15 @@ def _extract_reddit_comment_event(
     parent_interaction_id = (
         parent_id.removeprefix("t1_") if parent_id.startswith("t1_") else None
     )
+    try:
+        depth = int(comment.get_attribute("data-depth") or 0) + 1
+    except (TypeError, ValueError):
+        depth = 2 if parent_interaction_id else 1
 
     event = {
         "event_id": comment_id,
         "platform_event_id": comment_id,
-        "user_id": f"reddit-{_hash_identity(author)}",
+        "user_id": f"reddit-{_hash_identity(author, comment_id)}",
         "url": comment_url,
         "title": text,
         "timestamp": timestamp,
@@ -599,6 +642,7 @@ def _extract_reddit_comment_event(
         "subreddit": subreddit,
         "conversation_id": conversation_id,
         "parent_interaction_id": parent_interaction_id,
+        "depth": depth,
         "like_count": None,
         "view_count": None,
         "comment_count": None,
@@ -641,7 +685,7 @@ def _extract_reddit_feed_event(entry, subreddit_info: dict | None = None) -> dic
     event = {
         "event_id": comment_id,
         "platform_event_id": comment_id,
-        "user_id": f"reddit-{_hash_identity(author_name)}",
+        "user_id": f"reddit-{_hash_identity(author_name, comment_id)}",
         "url": url.replace("https://old.reddit.com", "https://www.reddit.com"),
         "title": text,
         "timestamp": timestamp,
@@ -649,6 +693,7 @@ def _extract_reddit_feed_event(entry, subreddit_info: dict | None = None) -> dic
         "subreddit": subreddit,
         "conversation_id": conversation_id,
         "parent_interaction_id": None,
+        "depth": 1,
         "like_count": None,
         "view_count": None,
         "comment_count": None,
@@ -718,8 +763,11 @@ def _collect_reddit_feed_events(
     )
 
 
-def _hash_identity(value: str | None) -> str:
-    return hashlib.sha256((value or "anonymous").encode("utf-8")).hexdigest()
+def _hash_identity(value: str | None, fallback: str | None = None) -> str:
+    normalized = str(value or "").strip()
+    if normalized.lower() in {"", "anonymous", "deleted", "unknown", "[deleted]"}:
+        normalized = f"event:{fallback}" if fallback else "anonymous"
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 class ProcessedState:
@@ -735,29 +783,127 @@ class ProcessedState:
               source TEXT NOT NULL,
               event_id TEXT NOT NULL,
               processed_at TEXT NOT NULL,
+              collection_status TEXT,
+              metadata_status TEXT,
+              transcript_status TEXT,
+              comments_status TEXT,
+              attempt_count INTEGER NOT NULL DEFAULT 0,
+              last_attempt_at TEXT,
+              terminal INTEGER NOT NULL DEFAULT 0,
               PRIMARY KEY (source, event_id)
             )
             """
         )
+        current_columns = {
+            row[1]
+            for row in self.connection.execute("PRAGMA table_info(processed_events)")
+        }
+        migrations = {
+            "collection_status": "TEXT",
+            "metadata_status": "TEXT",
+            "transcript_status": "TEXT",
+            "comments_status": "TEXT",
+            "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+            "last_attempt_at": "TEXT",
+            "terminal": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, data_type in migrations.items():
+            if column not in current_columns:
+                self.connection.execute(
+                    f"ALTER TABLE processed_events ADD COLUMN {column} {data_type}"
+                )
         self.connection.commit()
 
     def contains(self, source: str, event_id: str) -> bool:
         row = self.connection.execute(
-            "SELECT 1 FROM processed_events WHERE source = ? AND event_id = ?",
+            """
+            SELECT terminal
+            FROM processed_events
+            WHERE source = ? AND event_id = ?
+            """,
             (source, event_id),
         ).fetchone()
-        return row is not None
+        return bool(row and row[0])
 
-    def mark_many(self, source: str, event_ids: list[str]) -> None:
-        if not event_ids:
+    def next_attempt_count(self, source: str, event_id: str) -> int:
+        row = self.connection.execute(
+            """
+            SELECT attempt_count
+            FROM processed_events
+            WHERE source = ? AND event_id = ?
+            """,
+            (source, event_id),
+        ).fetchone()
+        return int(row[0] or 0) + 1 if row else 1
+
+    @staticmethod
+    def _is_terminal_event(event: dict) -> bool:
+        statuses = {
+            "collection": event.get("collection_status"),
+            "metadata": event.get("metadata_status"),
+            "transcript": event.get("transcript_status"),
+            "comments": event.get("comments_status"),
+        }
+        for component, status in statuses.items():
+            bounded_comment_page = (
+                component == "comments"
+                and status == STATUS_PARTIAL
+                and event.get("comments_error_code") == "comment_page_limit_reached"
+            )
+            if not bounded_comment_page and not (
+                status and is_terminal_status(status)
+            ):
+                return False
+        return True
+
+    def mark_many(self, source: str, events: list[dict]) -> None:
+        if not events:
             return
         processed_at = datetime.now(timezone.utc).isoformat()
         self.connection.executemany(
             """
-            INSERT OR IGNORE INTO processed_events (source, event_id, processed_at)
-            VALUES (?, ?, ?)
+            INSERT INTO processed_events (
+              source,
+              event_id,
+              processed_at,
+              collection_status,
+              metadata_status,
+              transcript_status,
+              comments_status,
+              attempt_count,
+              last_attempt_at,
+              terminal
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source, event_id) DO UPDATE SET
+              processed_at = excluded.processed_at,
+              collection_status = excluded.collection_status,
+              metadata_status = excluded.metadata_status,
+              transcript_status = excluded.transcript_status,
+              comments_status = excluded.comments_status,
+              attempt_count = MAX(
+                processed_events.attempt_count,
+                excluded.attempt_count
+              ),
+              last_attempt_at = excluded.last_attempt_at,
+              terminal = excluded.terminal
             """,
-            [(source, event_id, processed_at) for event_id in event_ids],
+            [
+                (
+                    source,
+                    event.get("event_id") or event.get("platform_event_id"),
+                    processed_at,
+                    event.get("collection_status"),
+                    event.get("metadata_status"),
+                    event.get("transcript_status"),
+                    event.get("comments_status"),
+                    int(event.get("attempt_count") or 1),
+                    event.get("last_attempt_at") or processed_at,
+                    int(self._is_terminal_event(event)),
+                )
+                for event in events
+                if event.get("event_id") or event.get("platform_event_id")
+            ],
         )
         self.connection.commit()
 
@@ -813,7 +959,7 @@ def _bootstrap_state_from_kafka(
             return
 
         consumer.assign(assignments)
-        processed_ids = []
+        processed_events = []
         consumed = 0
         deadline = time.time() + 60
         while consumed < expected_messages and time.time() < deadline:
@@ -826,12 +972,20 @@ def _bootstrap_state_from_kafka(
             value = message.value() or {}
             if value.get("source") != source:
                 continue
-            event_id = _event_id_from_url(source, value.get("url", ""))
+            event_id = value.get("platform_event_id") or _event_id_from_url(
+                source,
+                value.get("url", ""),
+            )
             if event_id:
-                processed_ids.append(event_id)
+                processed_events.append({**value, "event_id": event_id})
 
-        state.mark_many(source, processed_ids)
-        print(f"Bootstrapped {len(set(processed_ids))} {source} IDs from Kafka")
+        state.mark_many(source, processed_events)
+        terminal_ids = {
+            event["event_id"]
+            for event in processed_events
+            if state._is_terminal_event(event)
+        }
+        print(f"Bootstrapped {len(terminal_ids)} terminal {source} IDs from Kafka")
     finally:
         consumer.close()
 
@@ -850,6 +1004,17 @@ def _search_youtube_video_ids(
     video_ids = []
     page_token = None
 
+    def video_id_from_item(item) -> str | None:
+        if not isinstance(item, dict):
+            return None
+        item_id = item.get("id")
+        if isinstance(item_id, dict):
+            video_id = item_id.get("videoId")
+            return str(video_id).strip() if video_id else None
+        if isinstance(item_id, str):
+            return item_id.strip() or None
+        return None
+
     while len(video_ids) < max_results:
         try:
             response = youtube.search().list(
@@ -866,9 +1031,12 @@ def _search_youtube_video_ids(
                 raise _soft_block("youtube", str(exc)) from exc
             raise
         video_ids.extend(
-            item["id"]["videoId"]
-            for item in response.get("items", [])
-            if item.get("id", {}).get("videoId")
+            video_id
+            for video_id in (
+                video_id_from_item(item)
+                for item in response.get("items", [])
+            )
+            if video_id
         )
         page_token = response.get("nextPageToken")
         if not page_token:
@@ -877,17 +1045,48 @@ def _search_youtube_video_ids(
     return video_ids[:max_results]
 
 
-def _fetch_video_metadata(youtube, video_id: str):
+def _fetch_video_metadata(youtube, video_id: str) -> OperationResult[dict]:
+    started_at = utc_now()
     try:
         response = youtube.videos().list(
             part="snippet,statistics,contentDetails,status,topicDetails",
             id=video_id,
         ).execute()
         items = response.get("items", [])
-        return items[0] if items else None
+        if not items:
+            return OperationResult.unavailable(
+                error_code="video_not_available",
+                error_message=f"No metadata was returned for {video_id}",
+                started_at=started_at,
+                completed_at=utc_now(),
+            )
+        return OperationResult.success(
+            items[0],
+            started_at=started_at,
+            completed_at=utc_now(),
+        )
     except HttpError as exc:
-        print(f"[YouTube] Metadata error for {video_id}: {exc}")
-        return None
+        status = _http_error_status(exc)
+        if status == 404:
+            return OperationResult.unavailable(
+                error_code="video_not_available",
+                error_message=str(exc),
+                started_at=started_at,
+                completed_at=utc_now(),
+            )
+        if _is_auth_or_quota_block(exc):
+            return OperationResult.rate_limited(
+                error_code=f"youtube_http_{status or 'blocked'}",
+                error_message=str(exc),
+                started_at=started_at,
+                completed_at=utc_now(),
+            )
+        return OperationResult.failed(
+            error_code=f"youtube_http_{status or 'error'}",
+            error_message=str(exc),
+            started_at=started_at,
+            completed_at=utc_now(),
+        )
 
 
 def _fetch_youtube_comments(
@@ -895,7 +1094,8 @@ def _fetch_youtube_comments(
     video_id: str,
     sleep_seconds: float,
     max_pages: int,
-):
+) -> OperationResult[list[dict]]:
+    started_at = utc_now()
     pages = []
     page_token = None
     while max_pages <= 0 or len(pages) < max_pages:
@@ -910,37 +1110,75 @@ def _fetch_youtube_comments(
             pages.append(response)
             page_token = response.get("nextPageToken")
             if not page_token:
-                return pages
+                return OperationResult.success(
+                    pages,
+                    started_at=started_at,
+                    completed_at=utc_now(),
+                )
             time.sleep(sleep_seconds)
         except HttpError as exc:
-            print(f"[YouTube] Comment fetch stopped for {video_id}: {exc}")
-            return pages
-    return pages
+            status = _http_error_status(exc)
+            message = str(exc)
+            if "commentsdisabled" in message.replace("_", "").lower():
+                return OperationResult.unavailable(
+                    error_code="comments_disabled",
+                    error_message=message,
+                    started_at=started_at,
+                    completed_at=utc_now(),
+                )
+            if pages:
+                return OperationResult.partial(
+                    pages,
+                    error_code=f"youtube_http_{status or 'error'}",
+                    error_message=message,
+                    started_at=started_at,
+                    completed_at=utc_now(),
+                )
+            if _is_auth_or_quota_block(exc):
+                return OperationResult.rate_limited(
+                    error_code=f"youtube_http_{status or 'blocked'}",
+                    error_message=message,
+                    started_at=started_at,
+                    completed_at=utc_now(),
+                )
+            return OperationResult.failed(
+                error_code=f"youtube_http_{status or 'error'}",
+                error_message=message,
+                started_at=started_at,
+                completed_at=utc_now(),
+            )
+    return OperationResult.partial(
+        pages,
+        error_code="comment_page_limit_reached",
+        error_message=f"Stopped after the configured limit of {max_pages} pages",
+        started_at=started_at,
+        completed_at=utc_now(),
+    )
 
 
 def _fetch_youtube_transcript(
     video_id: str,
     languages: list[str],
-) -> tuple[list[dict] | None, str | None]:
-    try:
-        transcript = YouTubeTranscriptApi().fetch(video_id, languages=languages)
-        clean_transcript = []
-        for item in transcript:
-            if isinstance(item, dict):
-                clean_transcript.append(item)
-            else:
-                clean_transcript.append(
-                    {
-                        "text": getattr(item, "text", str(item)),
-                        "start": getattr(item, "start", 0.0),
-                        "duration": getattr(item, "duration", 0.0),
-                    }
-                )
-        return clean_transcript or None, None
-    except Exception as exc:
-        reason = type(exc).__name__
-        print(f"[YouTube] Transcript unavailable for {video_id}: {reason}")
-        return None, reason
+    attempt_count: int = 1,
+) -> OperationResult:
+    return fetch_transcript(
+        video_id,
+        preferred_languages=languages,
+        require_preferred_language=True,
+        attempt_count=attempt_count,
+    )
+
+
+def _preferred_youtube_transcript_languages(metadata: dict) -> list[str]:
+    """Use Vietnamese captions for Vietnamese videos and English otherwise."""
+
+    snippet = metadata.get("snippet") or {}
+    language = str(
+        snippet.get("defaultLanguage") or snippet.get("defaultAudioLanguage") or ""
+    ).strip().casefold().replace("_", "-")
+    if language == "vi" or language.startswith("vi-") or "vietnam" in language:
+        return ["vi"]
+    return ["en"]
 
 
 def _youtube_transcript_text(transcript: list[dict] | None) -> str | None:
@@ -952,6 +1190,392 @@ def _youtube_transcript_text(transcript: list[dict] | None) -> str | None:
         if isinstance(item, dict) and str(item.get("text", "")).strip()
     )
     return text or None
+
+
+def _completed_at(result: OperationResult) -> str | None:
+    return isoformat_utc(result.completed_at or result.started_at)
+
+
+def _terminal_collection_status(*results: OperationResult) -> str:
+    if all(
+        result.is_terminal
+        or (
+            result.status == STATUS_PARTIAL
+            and result.error_code == "comment_page_limit_reached"
+        )
+        for result in results
+    ):
+        return STATUS_SUCCESS
+    return overall_status(result.status for result in results)
+
+
+def _first_operation_error(*results: OperationResult) -> tuple[str | None, str | None]:
+    for result in results:
+        if result.error_code or result.error_message:
+            return result.error_code, result.error_message
+    return None, None
+
+
+def _youtube_video_event(
+    video_id: str,
+    metadata_result: OperationResult[dict],
+    comments_result: OperationResult[list[dict]],
+    transcript_result: OperationResult,
+    owner_channel_id: str | None,
+    collaborator_channel_ids: list[str] | None,
+    attempt_count: int,
+) -> dict:
+    metadata = metadata_result.payload or {}
+    snippet = metadata.get("snippet") or {}
+    statistics = metadata.get("statistics") or {}
+    content_details = metadata.get("contentDetails") or {}
+    status = metadata.get("status") or {}
+    topic_details = metadata.get("topicDetails") or {}
+    transcript = transcript_result.payload
+    thumbnails = snippet.get("thumbnails") or {}
+    low_thumbnail = thumbnails.get("default") or {}
+    thumbnail_url = low_thumbnail.get("url")
+    relationship = ContentRelationship.root(
+        source="youtube",
+        platform_content_id=video_id,
+        content_type="youtube_video",
+    )
+    collected_at = isoformat_utc(utc_now())
+    error_code, error_message = _first_operation_error(
+        metadata_result,
+        comments_result,
+        transcript_result,
+    )
+    canonical_metadata = {
+        "title": snippet.get("title"),
+        "description": snippet.get("description"),
+        "tags": snippet.get("tags"),
+        "category_id": snippet.get("categoryId"),
+        "default_language": snippet.get("defaultLanguage"),
+        "default_audio_language": snippet.get("defaultAudioLanguage"),
+        "thumbnail_url": thumbnail_url,
+        "channel_id": snippet.get("channelId"),
+        "channel_title": snippet.get("channelTitle"),
+        "privacy_status": status.get("privacyStatus"),
+        "license": status.get("license"),
+        "embeddable": status.get("embeddable"),
+        "made_for_kids": status.get("madeForKids"),
+        "caption": content_details.get("caption"),
+        "definition": content_details.get("definition"),
+        "dimension": content_details.get("dimension"),
+        "projection": content_details.get("projection"),
+        "topic_ids": topic_details.get("topicIds"),
+        "topic_categories": topic_details.get("topicCategories"),
+        "statistics": statistics,
+    }
+    available_languages = None
+    if transcript is not None:
+        available_languages = [
+            str(item.get("language_code") or item.get("language"))
+            for item in transcript.available_languages
+            if item.get("language_code") or item.get("language")
+        ]
+    return {
+        "event_id": video_id,
+        "platform_event_id": video_id,
+        "user_id": (
+            f"youtube-channel-{owner_channel_id}"
+            if owner_channel_id
+            else f"youtube-video-{video_id}"
+        ),
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "title": snippet.get("title") or f"YouTube video {video_id}",
+        "raw_text": snippet.get("description") or snippet.get("title"),
+        "thumbnail_url": thumbnail_url,
+        "timestamp": snippet.get("publishedAt") or collected_at,
+        "published_at": snippet.get("publishedAt"),
+        "collected_at": collected_at,
+        "updated_at": collected_at,
+        "last_attempt_at": collected_at,
+        "source": "youtube",
+        "owner_channel_id": owner_channel_id,
+        "youtube_channel_name": snippet.get("channelTitle"),
+        "language": (
+            snippet.get("defaultLanguage")
+            or snippet.get("defaultAudioLanguage")
+            or (transcript.language_code if transcript else None)
+        ),
+        **relationship.to_dict(),
+        "parent_interaction_id": None,
+        "transcript_text": transcript.text if transcript else None,
+        "transcript_segments_json": transcript.segments_json if transcript else None,
+        "duration_seconds": _parse_youtube_duration_seconds(
+            content_details.get("duration")
+        ),
+        "has_auto_captions": transcript.is_generated if transcript else None,
+        "collaborator_channel_ids": collaborator_channel_ids,
+        "like_count": parse_count(statistics.get("likeCount")),
+        "view_count": parse_count(statistics.get("viewCount")),
+        "comment_count": parse_count(statistics.get("commentCount")),
+        "reply_count": sum(
+            int((thread.get("snippet") or {}).get("totalReplyCount") or 0)
+            for page in comments_result.payload or []
+            for thread in page.get("items") or []
+        ),
+        "subscriber_count": youtube_authors.SUBSCRIBER_COUNTS.get(video_id),
+        "collection_status": _terminal_collection_status(
+            metadata_result,
+            comments_result,
+            transcript_result,
+        ),
+        "metadata_status": metadata_result.status,
+        "transcript_status": transcript_result.status,
+        "comments_status": comments_result.status,
+        "storage_status": "pending",
+        "error_code": error_code,
+        "error_message": error_message,
+        "attempt_count": attempt_count,
+        "collector_version": _env_str("COLLECTOR_VERSION", "1"),
+        "source_payload_version": "2",
+        "metadata_collected_at": _completed_at(metadata_result),
+        "metadata_error_code": metadata_result.error_code,
+        "metadata_error_message": metadata_result.error_message,
+        "comments_collected_at": _completed_at(comments_result),
+        "comments_error_code": comments_result.error_code,
+        "comments_error_message": comments_result.error_message,
+        "transcript_language": transcript.language if transcript else None,
+        "transcript_language_code": transcript.language_code if transcript else None,
+        "transcript_source_language": transcript.source_language if transcript else None,
+        "transcript_source_language_code": (
+            transcript.source_language_code if transcript else None
+        ),
+        "transcript_is_generated": transcript.is_generated if transcript else None,
+        "transcript_is_translated": transcript.is_translated if transcript else None,
+        "transcript_source": transcript.source if transcript else None,
+        "transcript_selection_strategy": (
+            transcript.selection_strategy if transcript else None
+        ),
+        "transcript_segment_count": transcript.segment_count if transcript else None,
+        "transcript_available_languages": available_languages,
+        "transcript_covered_duration_seconds": (
+            transcript.covered_duration_seconds if transcript else None
+        ),
+        "transcript_collected_at": _completed_at(transcript_result),
+        "transcript_error_code": transcript_result.error_code,
+        "transcript_error_message": transcript_result.error_message,
+        "canonical_metadata": safe_json_dumps(canonical_metadata),
+        "source_specific_metadata": safe_json_dumps(metadata),
+        "raw_source_payload": safe_json_dumps(
+            {
+                "video_metadata": metadata,
+                "comment_thread_page_count": len(comments_result.payload or []),
+            }
+        ),
+    }
+
+
+def _youtube_comment_events(
+    video_id: str,
+    comments_result: OperationResult[list[dict]],
+    attempt_count: int,
+) -> list[dict]:
+    events = []
+    root_content_id = canonical_content_id("youtube", video_id)
+    collected_at = _completed_at(comments_result) or isoformat_utc(utc_now())
+    position = 0
+
+    def build(comment: dict, parent_platform_id: str, depth: int, kind: str) -> dict | None:
+        nonlocal position
+        comment_id = comment.get("id")
+        snippet = comment.get("snippet") or {}
+        text = snippet.get("textOriginal") or snippet.get("textDisplay")
+        if not comment_id or not text:
+            return None
+        author_channel = (snippet.get("authorChannelId") or {}).get("value")
+        relationship = ContentRelationship.child(
+            source="youtube",
+            platform_content_id=comment_id,
+            parent_content_id=canonical_content_id("youtube", parent_platform_id),
+            root_content_id=root_content_id,
+            conversation_id=video_id,
+            content_type=kind,
+            relation_type="reply" if depth > 1 else "comment",
+            depth=depth,
+            position_in_thread=position,
+        )
+        position += 1
+        return {
+            "event_id": comment_id,
+            "platform_event_id": comment_id,
+            "user_id": (
+                f"youtube-channel-{author_channel}"
+                if author_channel
+                else f"youtube-comment-{comment_id}"
+            ),
+            "url": f"https://www.youtube.com/watch?v={video_id}&lc={comment_id}",
+            "title": text,
+            "raw_text": text,
+            "timestamp": snippet.get("publishedAt") or collected_at,
+            "published_at": snippet.get("publishedAt"),
+            "collected_at": collected_at,
+            "updated_at": snippet.get("updatedAt") or collected_at,
+            "last_attempt_at": collected_at,
+            "source": "youtube",
+            "owner_channel_id": author_channel,
+            "youtube_channel_name": snippet.get("authorDisplayName"),
+            **relationship.to_dict(),
+            "parent_interaction_id": parent_platform_id,
+            "like_count": parse_count(snippet.get("likeCount")),
+            "collection_status": STATUS_SUCCESS,
+            "metadata_status": STATUS_SUCCESS,
+            "transcript_status": STATUS_DISABLED,
+            "comments_status": STATUS_DISABLED,
+            "storage_status": "pending",
+            "attempt_count": attempt_count,
+            "collector_version": _env_str("COLLECTOR_VERSION", "1"),
+            "source_payload_version": "2",
+            "metadata_collected_at": collected_at,
+            "canonical_metadata": safe_json_dumps(
+                {
+                    "author_channel_id": author_channel,
+                    "author_display_name": snippet.get("authorDisplayName"),
+                    "published_at": snippet.get("publishedAt"),
+                    "updated_at": snippet.get("updatedAt"),
+                }
+            ),
+            "source_specific_metadata": safe_json_dumps(
+                {
+                    "published_at": snippet.get("publishedAt"),
+                    "updated_at": snippet.get("updatedAt"),
+                    "like_count": snippet.get("likeCount"),
+                    "viewer_rating": snippet.get("viewerRating"),
+                }
+            ),
+            "raw_source_payload": safe_json_dumps(
+                {
+                    "id": comment_id,
+                    "snippet": {
+                        "publishedAt": snippet.get("publishedAt"),
+                        "updatedAt": snippet.get("updatedAt"),
+                        "likeCount": snippet.get("likeCount"),
+                    },
+                }
+            ),
+        }
+
+    for page in comments_result.payload or []:
+        for thread in page.get("items") or []:
+            top_level = ((thread.get("snippet") or {}).get("topLevelComment") or {})
+            top_event = build(top_level, video_id, 1, "youtube_comment")
+            if top_event is not None:
+                top_event["reply_count"] = parse_count(
+                    (thread.get("snippet") or {}).get("totalReplyCount")
+                )
+                events.append(top_event)
+                for reply in (thread.get("replies") or {}).get("comments") or []:
+                    reply_event = build(
+                        reply,
+                        top_event["platform_event_id"],
+                        2,
+                        "youtube_reply",
+                    )
+                    if reply_event is not None:
+                        events.append(reply_event)
+    return events
+
+
+def _prepare_event(event: dict) -> dict:
+    """Fill the canonical contract for collectors that emit legacy-shaped events."""
+
+    prepared = dict(event)
+    source = str(prepared["source"]).lower()
+    platform_event_id = str(
+        prepared.get("platform_event_id") or prepared.get("event_id")
+    )
+    now = isoformat_utc(utc_now())
+    prepared["event_id"] = platform_event_id
+    prepared["platform_event_id"] = platform_event_id
+    prepared.setdefault("raw_text", prepared.get("title"))
+    prepared.setdefault("thumbnail_url", None)
+    prepared.setdefault("published_at", prepared.get("timestamp"))
+    prepared["timestamp"] = prepared.get("timestamp") or now
+    prepared.setdefault("collected_at", now)
+    prepared.setdefault("updated_at", prepared.get("published_at") or now)
+    prepared.setdefault("last_attempt_at", now)
+
+    if not prepared.get("content_id"):
+        if source == "reddit":
+            conversation_id = str(
+                prepared.get("conversation_id") or platform_event_id
+            )
+            root_content_id = canonical_content_id(source, conversation_id)
+            parent_platform_id = str(
+                prepared.get("parent_interaction_id") or conversation_id
+            )
+            depth = max(1, int(prepared.get("depth") or 1))
+            relationship = ContentRelationship.child(
+                source=source,
+                platform_content_id=platform_event_id,
+                parent_content_id=canonical_content_id(source, parent_platform_id),
+                root_content_id=root_content_id,
+                conversation_id=conversation_id,
+                content_type="reddit_comment",
+                relation_type="reply" if prepared.get("parent_interaction_id") else "comment",
+                depth=depth,
+                position_in_thread=prepared.get("position_in_thread"),
+            )
+        else:
+            relationship = ContentRelationship.root(
+                source=source,
+                platform_content_id=platform_event_id,
+                content_type=f"{source}_post",
+                conversation_id=prepared.get("conversation_id") or platform_event_id,
+            )
+        for key, value in relationship.to_dict().items():
+            prepared.setdefault(key, value)
+
+    prepared.setdefault("collection_status", STATUS_SUCCESS)
+    prepared.setdefault("metadata_status", STATUS_SUCCESS)
+    prepared.setdefault("transcript_status", STATUS_DISABLED)
+    prepared.setdefault("comments_status", STATUS_DISABLED)
+    prepared.setdefault("storage_status", "pending")
+    prepared.setdefault("attempt_count", 1)
+    prepared.setdefault("collector_version", _env_str("COLLECTOR_VERSION", "1"))
+    prepared.setdefault("source_payload_version", "2")
+    prepared.setdefault("metadata_collected_at", prepared.get("collected_at"))
+    prepared.setdefault(
+        "canonical_metadata",
+        safe_json_dumps(
+            {
+                "like_count": prepared.get("like_count"),
+                "view_count": prepared.get("view_count"),
+                "comment_count": prepared.get("comment_count"),
+                "reply_count": prepared.get("reply_count"),
+                "retweet_count": prepared.get("retweet_count"),
+                "bookmark_count": prepared.get("bookmark_count"),
+                "score": prepared.get("score"),
+                "follower_count": prepared.get("follower_count"),
+                "subreddit_member_count": prepared.get("subreddit_member_count"),
+            }
+        ),
+    )
+    prepared.setdefault(
+        "source_specific_metadata",
+        safe_json_dumps(
+            {
+                "x_account": prepared.get("x_account"),
+                "subreddit": prepared.get("subreddit"),
+                "subreddit_title": prepared.get("subreddit_title"),
+                "subreddit_visibility": prepared.get("subreddit_visibility"),
+            }
+        ),
+    )
+    prepared.setdefault(
+        "raw_source_payload",
+        safe_json_dumps(
+            {
+                "platform_event_id": platform_event_id,
+                "url": prepared.get("url"),
+                "raw_text": prepared.get("raw_text"),
+            }
+        ),
+    )
+    return prepared
 
 
 def _parse_youtube_duration_seconds(duration: str | None) -> float | None:
@@ -1788,9 +2412,10 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                                 {
                                     "event_id": status_id,
                                     "platform_event_id": status_id,
-                                    "user_id": f"x-{_hash_identity(screen_name)}",
+                                    "user_id": f"x-{_hash_identity(screen_name, status_id)}",
                                     "url": tweet_url,
                                     "title": text,
+                                    "raw_text": text,
                                     "timestamp": timestamp,
                                     "source": "x",
                                     "x_account": screen_name,
@@ -1803,6 +2428,18 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                                     "view_count": extract_x_metric(
                                         article,
                                         "analytics",
+                                    ),
+                                    "reply_count": extract_x_metric(
+                                        article,
+                                        "reply",
+                                    ),
+                                    "retweet_count": extract_x_metric(
+                                        article,
+                                        "retweet",
+                                    ),
+                                    "bookmark_count": extract_x_metric(
+                                        article,
+                                        "bookmark",
                                     ),
                                     "follower_count": extract_x_followers(
                                         article
@@ -1841,20 +2478,22 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                 pass
             context.close()
             if discovered_statuses == 0:
-                print(
+                raise RuntimeError(
                     "No X posts were visible after all search retries. The X "
-                    "session may be rate-limited or temporarily unavailable.",
-                    flush=True,
+                    "session may be rate-limited or temporarily unavailable."
                 )
                 return []
     except Exception as exc:
         if _is_auth_or_quota_block(exc):
             raise _soft_block("x", str(exc)) from exc
-        if _env_bool("X_FAIL_ON_ERROR", False):
+        if _env_bool("X_FAIL_ON_ERROR", True):
             raise RuntimeError(
                 f"X online collection failed: {exc}"
             ) from exc
-        print(f"X online collection skipped: {exc}", flush=True)
+        print(
+            f"X online collection explicitly ignored by configuration: {exc}",
+            flush=True,
+        )
         return events
 
     return events
@@ -2037,11 +2676,23 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                         _extract_reddit_subreddit_members(page)
                         or candidate.get("subreddit_member_count")
                     )
+                    candidate_subreddit_info = {
+                        key: candidate.get(key)
+                        for key in (
+                            "subreddit_title",
+                            "subreddit_description",
+                            "subreddit_created_at",
+                            "subreddit_visibility",
+                            "subreddit_weekly_visitors",
+                            "subreddit_weekly_contributions",
+                            "subreddit_member_count",
+                        )
+                    }
                     detailed_event = _extract_reddit_comment_event(
                         exact_comment,
                         detail_url,
                         detail_member_count,
-                        subreddit_info,
+                        candidate_subreddit_info,
                     )
                     if detailed_event is not None:
                         event = detailed_event
@@ -2069,7 +2720,15 @@ def main() -> None:
     )
     schema_path = _env_str("SCHEMA_PATH", "/app/schemas/playwright_event.avsc")
     schema = _load_schema(schema_path)
-    max_events = _env_int("PRODUCER_MAX_EVENTS", 1000)
+    try:
+        schema_definition = json.loads(schema)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid Avro schema JSON: {schema_path}") from exc
+    if not isinstance(schema_definition, dict) or not isinstance(
+        schema_definition.get("fields"), list
+    ):
+        raise RuntimeError(f"Invalid Avro schema fields: {schema_path}")
+    max_events = _env_int("PRODUCER_MAX_EVENTS", 50)
     state = ProcessedState(
         _env_str("COLLECTOR_STATE_DB", "/app/state/processed.sqlite")
     )
@@ -2117,12 +2776,20 @@ def main() -> None:
         }
     )
 
+    schema_fields = tuple(
+        field["name"]
+        for field in schema_definition["fields"]
+        if isinstance(field, dict) and isinstance(field.get("name"), str)
+    )
+    if not schema_fields:
+        raise RuntimeError(f"Avro schema has no named fields: {schema_path}")
+
     def publish(events: list[dict]) -> None:
+        events[:] = [_prepare_event(event) for event in events]
         for event in events:
-            producer.produce(
-                topic=topic,
-                key=event["user_id"],
-                value={
+            value = {field: event.get(field) for field in schema_fields}
+            value.update(
+                {
                     "user_id": event["user_id"],
                     "url": event["url"],
                     "title": event["title"],
@@ -2133,45 +2800,12 @@ def main() -> None:
                     or datetime.now(timezone.utc).isoformat(),
                     "source": event["source"],
                     "error": None,
-                    "platform_event_id": event.get("platform_event_id")
-                    or event.get("event_id"),
-                    "owner_channel_id": event.get("owner_channel_id"),
-                    "subreddit": event.get("subreddit"),
-                    "subreddit_title": event.get("subreddit_title"),
-                    "subreddit_description": event.get("subreddit_description"),
-                    "subreddit_created_at": event.get("subreddit_created_at"),
-                    "subreddit_visibility": event.get("subreddit_visibility"),
-                    "subreddit_weekly_visitors": event.get(
-                        "subreddit_weekly_visitors"
-                    ),
-                    "subreddit_weekly_contributions": event.get(
-                        "subreddit_weekly_contributions"
-                    ),
-                    "x_account": event.get("x_account"),
-                    "youtube_channel_name": event.get("youtube_channel_name"),
-                    "language": event.get("language"),
-                    "parent_interaction_id": event.get("parent_interaction_id"),
-                    "conversation_id": event.get("conversation_id"),
-                    "transcript_text": event.get("transcript_text"),
-                    "transcript_segments_json": event.get(
-                        "transcript_segments_json"
-                    ),
-                    "duration_seconds": event.get("duration_seconds"),
-                    "has_auto_captions": event.get("has_auto_captions"),
-                    "collaborator_channel_ids": event.get(
-                        "collaborator_channel_ids"
-                    ),
-                    "like_count": event.get("like_count"),
-                    "view_count": event.get("view_count"),
-                    "comment_count": event.get("comment_count"),
-                    "reply_count": event.get("reply_count"),
-                    "retweet_count": event.get("retweet_count"),
-                    "bookmark_count": event.get("bookmark_count"),
-                    "score": event.get("score"),
-                    "follower_count": event.get("follower_count"),
-                    "subscriber_count": event.get("subscriber_count"),
-                    "subreddit_member_count": event.get("subreddit_member_count"),
-                },
+                }
+            )
+            producer.produce(
+                topic=topic,
+                key=event["user_id"],
+                value=value,
                 on_delivery=delivery_report,
             )
             producer.poll(0)
@@ -2181,8 +2815,9 @@ def main() -> None:
             raise RuntimeError(
                 f"Kafka delivery failed: {undelivered} undelivered, {delivery_errors}"
             )
-        state.mark_many(mode, [event["event_id"] for event in events])
+        state.mark_many(mode, events)
 
+    produced_event_count = 0
     try:
         print(f"Producer mode: {mode} (online)")
         if mode == "youtube":
@@ -2190,14 +2825,10 @@ def main() -> None:
             if not api_key:
                 raise _soft_block("youtube", "YOUTUBE_API_KEY is required")
             youtube = _get_youtube_service(api_key)
-            search_limit = _env_int("YOUTUBE_SEARCH_MAX_RESULTS", 10)
+            search_limit = _env_int("YOUTUBE_SEARCH_MAX_RESULTS", 50)
             search_languages = _env_list(
                 "YOUTUBE_SEARCH_LANGUAGES",
                 [_env_str("YOUTUBE_SEARCH_LANGUAGE", "en")],
-            )
-            transcript_languages = _env_list(
-                "YOUTUBE_TRANSCRIPT_LANGUAGES",
-                ["en", "vi"],
             )
             comment_max_pages = _env_int("YOUTUBE_COMMENT_MAX_PAGES", 3)
             transcript_max_failures = _env_int(
@@ -2228,7 +2859,15 @@ def main() -> None:
                         break
                 if len(video_ids) >= search_limit:
                     break
+            if not video_ids:
+                raise RuntimeError(
+                    "YouTube search completed without any video IDs; refusing a green empty run"
+                )
             events = []
+            youtube_processing_deadline = time.monotonic() + max(
+                1,
+                _env_int("YOUTUBE_COLLECTION_TIMEOUT_SECONDS", 900) - 120,
+            )
             output_dir = Path(
                 _env_str("YOUTUBE_OUTPUT_DIR", "/app/api/yt_raw_json")
             )
@@ -2245,125 +2884,136 @@ def main() -> None:
             }
             owner_by_id = {
                 video_id: owner_channel_id
-                for video_id, metadata in metadata_by_id.items()
+                for video_id, metadata_result in metadata_by_id.items()
                 if (
                     owner_channel_id := (
-                        (metadata or {})
+                        (metadata_result.payload or {})
                         .get("snippet", {})
                         .get("channelId")
                     )
                 )
             }
-            collaborators_by_id = fetch_youtube_collaborators(
-                owner_by_id,
-                timeout_seconds=_env_float(
-                    "YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS",
-                    20,
-                ),
-                max_workers=_env_int(
-                    "YOUTUBE_AUTHOR_FETCH_WORKERS",
-                    8,
-                ),
-            )
+            if _env_bool("YOUTUBE_COLLABORATOR_COLLECTION_ENABLED", False):
+                collaborators_by_id = fetch_youtube_collaborators(
+                    owner_by_id,
+                    timeout_seconds=_env_float(
+                        "YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS",
+                        20,
+                    ),
+                    max_workers=_env_int(
+                        "YOUTUBE_AUTHOR_FETCH_WORKERS",
+                        8,
+                    ),
+                )
+            else:
+                print("YouTube collaborator page collection is disabled")
+                collaborators_by_id = {}
             transcript_failures = 0
             transcripts_disabled = transcript_max_failures == 0
+            transcript_circuit_retryable = False
             for video_id in candidate_ids:
-                metadata = metadata_by_id[video_id]
+                if time.monotonic() >= youtube_processing_deadline:
+                    print(
+                        "YouTube processing budget reached; ending the batch "
+                        "before the Airflow timeout"
+                    )
+                    break
+                attempt_count = state.next_attempt_count("youtube", video_id)
+                metadata_result = metadata_by_id[video_id]
                 owner_channel_id = owner_by_id.get(video_id)
                 collaborator_channel_ids = collaborators_by_id.get(video_id)
-                comments = _fetch_youtube_comments(
+                comments_result = _fetch_youtube_comments(
                     youtube,
                     video_id,
                     _env_float("YOUTUBE_SLEEP_SECONDS", 0.5),
                     comment_max_pages,
                 )
-                transcript = None
-                if not transcripts_disabled:
-                    transcript, transcript_error = _fetch_youtube_transcript(
-                        video_id,
-                        transcript_languages,
+                if transcripts_disabled:
+                    result_factory = (
+                        OperationResult.rate_limited
+                        if transcript_circuit_retryable
+                        else OperationResult.disabled
                     )
-                    if transcript_error:
+                    transcript_result = result_factory(
+                        error_code="transcript_circuit_open",
+                        error_message="Transcript collection is disabled for this batch",
+                        attempt_count=attempt_count,
+                        completed_at=utc_now(),
+                    )
+                else:
+                    transcript_result = _fetch_youtube_transcript(
+                        video_id,
+                        _preferred_youtube_transcript_languages(
+                            metadata_result.payload or {}
+                        ),
+                        attempt_count,
+                    )
+                    if transcript_result.status in {
+                        STATUS_FAILED,
+                        STATUS_RATE_LIMITED,
+                    }:
                         transcript_failures += 1
                         if (
-                            transcript_error == "IpBlocked"
+                            transcript_result.error_code
+                            in {"ip_blocked", "request_blocked", "rate_limited"}
                             or transcript_failures >= transcript_max_failures
                         ):
                             transcripts_disabled = True
+                            transcript_circuit_retryable = True
                             print(
                                 "[YouTube] Transcript collection disabled for "
                                 "the remaining videos after "
                                 f"{transcript_failures} failures"
                             )
                 output_dir.mkdir(parents=True, exist_ok=True)
-                snippet = (metadata or {}).get("snippet", {})
-                content_details = (metadata or {}).get("contentDetails", {})
-                transcript_text = _youtube_transcript_text(transcript)
                 (output_dir / f"{video_id}.json").write_text(
-                    json.dumps(
+                    safe_json_dumps(
                         {
                             "video_id": video_id,
-                            "video_metadata": metadata,
-                            "video_transcript": transcript,
+                            "video_metadata": metadata_result.to_dict(),
+                            "video_transcript": transcript_result.to_dict(),
                             "owner_channel_id": owner_channel_id,
                             "collaborator_channel_ids": (
                                 collaborator_channel_ids
                             ),
-                            "comment_threads_pages": comments,
+                            "comment_threads": comments_result.to_dict(),
                         },
-                        ensure_ascii=False,
-                        indent=2,
+                        pretty=True,
                     ),
                     encoding="utf-8",
                 )
-                events.append(
-                    {
-                        "event_id": video_id,
-                        "platform_event_id": video_id,
-                        "user_id": f"youtube-{video_id}",
-                        "url": f"https://www.youtube.com/watch?v={video_id}",
-                        "title": snippet.get("title"),
-                        "raw_text": transcript_text or snippet.get("title"),
-                        "timestamp": None,
-                        "source": "youtube",
-                        "owner_channel_id": owner_channel_id,
-                        "youtube_channel_name": snippet.get("channelTitle"),
-                        "language": (
-                            snippet.get("defaultLanguage")
-                            or snippet.get("defaultAudioLanguage")
-                        ),
-                        "conversation_id": video_id,
-                        "transcript_text": transcript_text,
-                        "transcript_segments_json": (
-                            json.dumps(transcript, ensure_ascii=False)
-                            if transcript
-                            else None
-                        ),
-                        "duration_seconds": _parse_youtube_duration_seconds(
-                            content_details.get("duration")
-                        ),
-                        "has_auto_captions": None,
-                        "collaborator_channel_ids": (
-                            collaborator_channel_ids
-                        ),
-                        "like_count": parse_count(
-                            (metadata or {}).get("statistics", {}).get("likeCount")
-                        ),
-                        "view_count": parse_count(
-                            (metadata or {}).get("statistics", {}).get("viewCount")
-                        ),
-                        "subscriber_count": youtube_authors.SUBSCRIBER_COUNTS.get(video_id),
-                    }
+                video_events = [
+                    _youtube_video_event(
+                        video_id,
+                        metadata_result,
+                        comments_result,
+                        transcript_result,
+                        owner_channel_id,
+                        collaborator_channel_ids,
+                        attempt_count,
+                    )
+                ]
+                video_events.extend(
+                    _youtube_comment_events(
+                        video_id,
+                        comments_result,
+                        attempt_count,
+                    )
                 )
+                publish(video_events)
+                produced_event_count += len(video_events)
         elif mode == "x":
             events = _collect_x_events(state, max_events)
         else:
             events = _collect_reddit_events(state, max_events)
 
-        publish(events)
-        print(f"Produced {len(events)} new {mode} events")
+        if mode != "youtube":
+            publish(events)
+            produced_event_count = len(events)
+        print(f"Produced {produced_event_count} new {mode} events")
     except CollectorSoftBlock as exc:
         print(f"Collector soft-blocked: {exc}", file=sys.stderr, flush=True)
+        raise RuntimeError(str(exc)) from exc
     finally:
         state.close()
 
@@ -2373,4 +3023,5 @@ if __name__ == "__main__":
         main()
     except Exception as exc:
         print(f"Collector failed: {exc}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         raise SystemExit(1) from None

@@ -1,8 +1,16 @@
-# USER-BAHAVIOR-SOCIAL-MEDIA
+# USER-BEHAVIOR-SOCIAL-MEDIA
 
 ## Lakehouse (Bronze/Silver on Iceberg)
 
 This stack includes MinIO (S3-compatible) and Spark jobs that write to Iceberg tables.
+
+Architecture and operations:
+
+- [End-to-end architecture](docs/ARCHITECTURE.md)
+- [Canonical event schema](docs/DATA_SCHEMA.md)
+- [Collector behavior](docs/COLLECTORS.md)
+- [Lakehouse data model](docs/data-model.md)
+- [Metadata and caption troubleshooting](docs/TROUBLESHOOTING.md)
 
 ## Privacy gateway
 
@@ -61,8 +69,13 @@ The DAG `user_behavior_lakehouse` runs the complete online pipeline:
 2. clean, validate and anonymize the three raw streams in parallel, with
    separate clean topics, DLQ topics and checkpoints;
 3. merge only records marked `stage=clean` into Iceberg Bronze;
-4. publish the Bronze records to `lakehouse.bronze.for_silver`;
-5. transmit and process those Bronze records into Iceberg Silver.
+4. after the Bronze MERGE commits, publish that micro-batch to
+   `lakehouse.bronze.for_silver`;
+5. merge the handed-off records into Iceberg Silver.
+
+The Bronze write and Kafka handoff run in one `foreachBatch` callback. A
+handoff failure retries the idempotent Bronze MERGE before re-emitting the
+batch, so Silver never consumes a record ahead of its Bronze commit.
 
 The Airflow task names describe the implemented transformations. In
 particular, `sha256_hash_pii_redact_validate_*` applies salted SHA-256 user
@@ -72,25 +85,25 @@ routing. This pipeline does not currently run a NER model.
 The separate `social_clean_pipeline` DAG is retained for replaying the legacy
 sample CSV files. It is not required for the online lakehouse flow.
 
-The online DAG runs automatically every 60 minutes by default. Configure the
-interval in `.env`:
-
-```env
-LAKEHOUSE_SCHEDULE_MINUTES=30
-```
-
-Use `LAKEHOUSE_SCHEDULE_MINUTES=0` to disable automatic runs. Airflow keeps at
-most one active run, so intervals shorter than the pipeline duration do not
-execute concurrently.
-
-The `user_behavior_lakehouse_no_row_checks` DAG runs the same online pipeline
-without `wait_bronze_rows` or `wait_silver_rows`. It succeeds when collectors
-and Spark jobs finish without an execution error, even when a run produces no
-new Bronze or Silver row. It also runs every 60 minutes by default. Its
-schedule is configured separately:
+The `user_behavior_lakehouse_no_row_checks` online DAG runs automatically every
+60 minutes by default. It succeeds when collectors and Spark jobs finish
+without an execution error, even when a run produces no new Bronze or Silver
+row. Configure its interval in `.env`:
 
 ```env
 LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=30
+```
+
+Use `LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=0` to disable automatic runs.
+Airflow keeps at most one active run, so intervals shorter than the pipeline
+duration do not execute concurrently.
+
+The `user_behavior_lakehouse` DAG retains `wait_bronze_rows` and
+`wait_silver_rows`. It is a strict diagnostic/manual DAG by default; schedule
+it only when a run must fail if it produces no new Bronze or Silver row:
+
+```env
+LAKEHOUSE_SCHEDULE_MINUTES=0
 ```
 
 Both online DAGs use a shared pipeline lock. If their scheduled or manual runs
@@ -173,7 +186,8 @@ an elevated PowerShell:
 When manually triggering `user_behavior_lakehouse` from the Airflow interface,
 the trigger form exposes three limits:
 
-- `youtube_event_count`: maximum number of new YouTube videos, from 1 to 5000;
+- `youtube_event_count`: maximum number of new YouTube videos, from 1 to 5000
+  (default: 50 per Airflow run);
 - `x_event_count`: maximum number of new X posts, from 1 to 5000;
 - `reddit_event_count`: maximum number of new Reddit comments, from 1 to 5000.
 
@@ -257,6 +271,26 @@ namespace differs from `DOCKERHUB_USERNAME`. Each release is pushed with the
 Release Please tag, `production`, and `latest`. The workflow creates the Docker
 Hub repositories automatically when they do not already exist.
 
+### Docker Compose bundle (without cloning the repository)
+
+Every published production release also attaches a versioned
+`user-behavior-social-media-compose-<tag>.zip` asset. It contains the Compose
+configuration, a no-build override, an environment template and a short
+deployment guide. The bundle pulls the matching immutable images from Docker
+Hub; it never falls back to building source code locally.
+
+After downloading and extracting the asset, copy `.env.example` to `.env`, set
+strong Airflow and MinIO credentials, add `YOUTUBE_API_KEY` when YouTube
+collection is required, then run:
+
+```bash
+docker compose --env-file .env -f compose.yaml -f compose.bundle.yaml up -d --pull always
+```
+
+The image tag in the bundled `.env.example` is already pinned to the release.
+The `ml` profile remains opt-in because model training writes data and model
+artifacts to a host-mounted workspace.
+
 ### Run the local dashboard
 
 The Streamlit dashboard is containerized by default. For local dashboard
@@ -314,31 +348,34 @@ Set `YOUTUBE_API_KEY` in your `.env`, then run:
 docker compose run --rm youtube-collector
 ```
 
-The collector writes raw JSON under `API/yt_raw_json/` and emits YouTube
-events to Kafka using the same event schema as the other producers.
-By default, YouTube search and transcript fetching target English and
-Vietnamese (`YOUTUBE_SEARCH_LANGUAGES=en,vi`,
-`YOUTUBE_TRANSCRIPT_LANGUAGES=en,vi`). Use `YOUTUBE_SEARCH_QUERIES` with
-`||` separators to override the English and Vietnamese search terms.
+The collector emits YouTube events with canonical metadata, a source-specific
+metadata envelope, and a sanitized source payload. These fields travel through
+Kafka and the lakehouse, so durable metadata does not depend on a temporary
+collector-container directory.
+By default, YouTube search targets English and Vietnamese
+(`YOUTUBE_SEARCH_LANGUAGES=en,vi`). Transcript selection is strict: videos
+marked Vietnamese use Vietnamese captions; all other videos use English
+captions. A caption in another language is not stored. Use
+`YOUTUBE_SEARCH_QUERIES` with `||` separators to override the search terms.
 
 ### Engagement metadata
 
-Collector events carry a nullable engagement contract through the privacy
-cleaning topics, Iceberg Bronze and Iceberg Silver:
+Collector events carry nullable engagement and outcome fields through the
+privacy topics, Iceberg Bronze, and Iceberg Silver. `platform_event_id` is the
+preferred merge identity. Common counters include likes, views, comments,
+replies, reposts, bookmarks, score, followers, subscribers, and subreddit
+members when a source exposes them.
 
-- stable matching field: `platform_event_id`;
-- shared nullable fields: `like_count` and `view_count`;
-- YouTube and X populate likes and views when available;
-- Reddit keeps both fields null because public comment data does not expose
-  reliable equivalents. Reddit score is not mapped to likes.
-
-Platform-specific metrics are intentionally excluded from the Kafka and
-lakehouse contract instead of being mapped to misleading common fields.
-Timestamps remain ISO-8601 strings in the existing Avro contract and are
-converted to native timestamps by the lakehouse jobs. Existing Bronze and
-Silver tables are evolved automatically when new columns are first used.
-`metadata_refreshed_at` is null for initial collection rows and is set by the
-refresh job when mutable metadata is recollected.
+Null means unknown or unavailable; zero means an observed count of zero.
+Reddit score remains `score` and is not mapped to likes. Independent
+`metadata_status`, `comments_status`, `transcript_status`, and
+`storage_status` values explain why an enrichment is missing. Source
+publication time remains separate from collection and retry timestamps.
+Existing Bronze and Silver tables add missing nullable columns before a MERGE.
+YouTube video rows include a low-resolution `thumbnail_url` when available.
+For older rows, the pipeline derives the public
+`https://img.youtube.com/vi/<video_id>/default.jpg` URL from the existing video
+id, so thumbnail backfill does not consume YouTube Data API quota.
 
 ### Balanced dataset
 
@@ -386,17 +423,12 @@ duplicating rows.
   engagement metrics.
 - `lakehouse.gold.user_evolution`: anonymized user activity by day and source.
 
-Collectors and manual imports now propagate entity relationship fields through
-bronze and silver so the analytics tables can group interactions under their
-root content. Reddit events populate `subreddit`, `conversation_id` from the
-post id, and `parent_interaction_id` for comment replies. X events populate
-`x_account` and use the status id as `conversation_id` when no reply root is
-available. YouTube events populate `conversation_id`, channel name, language,
-transcript text, segment JSON, and duration when those values are available.
-Existing YouTube rows can also be backfilled without using YouTube Data API
-search quota: `youtube_transcripts.py` reads `lakehouse.silver.events`, fetches
-captions with `youtube-transcript-api`, and merges rows into
-`lakehouse.silver.transcripts`.
+Collectors and manual imports propagate `content_id`, `parent_content_id`,
+`root_content_id`, `conversation_id`, `content_type`, `relation_type`,
+`depth`, and `position_in_thread` through Bronze and Silver. Root posts and
+videos become content rows; only real comments and replies become
+interactions. Existing YouTube rows can be materialized from event caption
+fields or backfilled without YouTube Data API search quota.
 
 Run the job manually with:
 
@@ -422,12 +454,41 @@ docker compose exec -T spark-master /opt/spark/bin/spark-submit \
   /opt/spark/jobs/batch/youtube_transcripts.py
 ```
 
-The main `user_behavior_lakehouse` Airflow DAG also refreshes these analytical
-tables after `lakehouse.silver.events` has been updated. The Streamlit
-dashboard exposes them in `Content Explorer`, with Reddit, X, YouTube, and
-Users views. If an analytical table has not been created yet, the dashboard
-shows a non-blocking availability message and keeps the raw events view
-available for debugging.
+To backfill missing low-resolution thumbnails without YouTube API quota:
+
+```bash
+docker compose exec -T spark-master /opt/spark/bin/spark-submit \
+  --master spark://spark-master:7077 \
+  --driver-memory 512m \
+  --executor-memory 512m \
+  --conf spark.cores.max=2 \
+  --conf spark.executor.cores=1 \
+  /opt/spark/jobs/batch/youtube_thumbnail_backfill.py
+```
+
+Both online Airflow DAGs materialize or backfill captions and low-resolution
+thumbnail URLs before refreshing content analytics after
+`lakehouse.silver.events` has been updated. The
+Streamlit dashboard exposes the derived tables in `Content Explorer`, with
+Reddit, X, YouTube, and Users views. If an analytical table has not been
+created yet, the dashboard shows a non-blocking availability message and keeps
+the event view available for debugging.
+
+### ML input freshness and label coverage
+
+Training requires an explicit Silver export. The pipeline rejects a missing
+export and, by default, any export older than 24 hours:
+
+```bash
+python ml/run_pipeline.py --export --report
+```
+
+Each export writes a timestamped, checksum-addressed copy under
+`data/samples/exports/` plus `filtered_events.manifest.json`. Use
+`--allow-stale-input` only for an intentional reproducibility run, or change
+the limit with `--max-input-age-hours`. Engagement counters that were not
+observed remain null; rows without any observed label metric are excluded
+instead of becoming negative examples with an invented zero.
 
 ### YouTube owners and collaborators
 
@@ -446,16 +507,38 @@ DAG retries this enrichment for recent YouTube events.
 
 `YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS` controls the public page request timeout
 and defaults to 20 seconds. `YOUTUBE_AUTHOR_FETCH_WORKERS` limits concurrent
-watch-page requests and defaults to 8. Because collaborator extraction depends
-on undocumented page data, it should be monitored when YouTube changes its
-watch page.
+watch-page requests and defaults to 8. `YOUTUBE_COLLABORATOR_COLLECTION_ENABLED`
+defaults to `false` so normal collection does not depend on an undocumented
+YouTube watch-page endpoint that may return 429. Set it to `true` only when
+collaborator enrichment is required and the endpoint is available. Because it
+depends on undocumented page data, it should be monitored when YouTube changes
+its watch page.
 
-YouTube collection is bounded for scheduled DAG runs. `YOUTUBE_COLLECTION_TIMEOUT_SECONDS`
-defaults to 900 seconds and stops leftover `youtube-collector` containers when
-the limit is exceeded. `YOUTUBE_COMMENT_MAX_PAGES` defaults to 3 comment pages
-per video. `YOUTUBE_TRANSCRIPT_MAX_FAILURES` defaults to 5; after that many
-transcript failures, or immediately on `IpBlocked`, the collector skips
-transcripts for the remaining videos but still publishes the video event.
+YouTube collection is bounded for scheduled DAG runs.
+`YOUTUBE_COLLECTION_TIMEOUT_SECONDS` defaults to 900 seconds and stops
+leftover `youtube-collector` containers when the limit is exceeded.
+`YOUTUBE_COMMENT_MAX_PAGES` defaults to 3 comment pages per video.
+`YOUTUBE_TRANSCRIPT_MAX_FAILURES` bounds consecutive systemic caption
+failures. A confirmed unavailable caption track does not consume that budget;
+rate limits and network restrictions remain visible and retryable.
+
+## Development checks
+
+Install the lightweight validation dependencies and run the same non-Spark
+checks used by CI:
+
+```bash
+python -m pip install --requirement requirements-test.txt
+python -m ruff check .
+python -m pytest \
+  --ignore=tests/scripts/test_engagement_snapshots.py \
+  --ignore=tests/scripts/test_silver_post_features.py
+```
+
+Pytest uses importlib import mode so test files with the same basename in
+different directories are collected independently. The two excluded tests
+start a local Spark runtime and remain available for a Spark-enabled
+validation environment.
 
 ### Run X collection
 
@@ -476,10 +559,10 @@ collector can authenticate without opening a visible browser.
 When triggering the DAG from the Airflow UI, set `x_event_count` to the maximum
 number of new X posts to collect (between 1 and 5000). For a direct
 `docker compose run`, `X_MAX_EVENTS` in `.env` provides the limit. If fewer new
-posts are available, the collector publishes fewer events. By default,
-transient X crawler or rate-limit failures are logged and the collector keeps
-any events already collected. Set `X_FAIL_ON_ERROR=true` to make those failures
-fail the task.
+posts are available, the collector publishes fewer events. X crawler,
+authentication, and rate-limit failures fail the task by default so incomplete
+runs cannot appear healthy. Set `X_FAIL_ON_ERROR=false` only for an intentional
+best-effort collection run.
 
 Authenticate to X with Google in a non-headless run if you need to seed the
 profile manually. The crawler reuses that authenticated profile on later

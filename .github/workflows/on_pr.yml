@@ -48,14 +48,31 @@ jobs:
             ],
             parserPreset: {
               parserOpts: {
-                headerPattern: /^(\w+)(?:\(([^)]+)\))?:?\s(.+)$/,
-                headerCorrespondence: ['type', 'scope', 'subject'],
+                headerPattern: /^(\w+)(?:\(([^)]+)\))?(!)?:\s(.+)$/,
+                headerCorrespondence: ['type', 'scope', 'breaking', 'subject'],
               },
             },
             rules: {
-              'type-enum': [0],
-              'type-case': [0],
-              'subject-case': [0],
+              'type-enum': [
+                2,
+                'always',
+                [
+                  'feat',
+                  'fix',
+                  'docs',
+                  'style',
+                  'refactor',
+                  'perf',
+                  'test',
+                  'build',
+                  'ci',
+                  'chore',
+                  'core',
+                  'revert'
+                ]
+              ],
+              'type-case': [2, 'always', 'lower-case'],
+              'subject-case': [2, 'never', ['sentence-case', 'start-case', 'pascal-case', 'upper-case']],
               'type-empty': [2, 'never'],
               'subject-empty': [2, 'never'],
               'header-max-length': [2, 'always', 120]
@@ -64,13 +81,20 @@ jobs:
           EOF
 
       - name: Validate PR title
+        if: github.event_name == 'pull_request'
         run: |
           echo "${{ github.event.pull_request.title }}" | npx commitlint --verbose
 
       - name: Validate commits
-        if: github.event.pull_request.base.ref == 'main'
+        if: >-
+          github.event_name == 'pull_request'
+          && github.event.pull_request.base.ref == 'main'
         run: |
           npx commitlint \
             --from "${{ github.event.pull_request.base.sha }}" \
             --to "${{ github.event.pull_request.head.sha }}" \
             --verbose
+
+      - name: Validate current commit
+        if: github.event_name == 'workflow_dispatch'
+        run: git log -1 --pretty=%B | npx commitlint --verbose

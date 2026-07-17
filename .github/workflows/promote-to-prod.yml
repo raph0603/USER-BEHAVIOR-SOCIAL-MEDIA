@@ -53,7 +53,7 @@ jobs:
               --base production \
               --head main \
               --title "chore: promote main to production" \
-              --body "Promotion automatique de main vers production." \
+              --body "Promote the validated main branch to production." \
               || true
 
             PR_NUMBER=$(gh pr list \

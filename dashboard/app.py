@@ -118,6 +118,140 @@ CONTENT_ANALYTICS_TABLES = {
     "content_stats": ("gold", "content_stats"),
     "user_evolution": ("gold", "user_evolution"),
 }
+TRANSCRIPT_STATUS_PRESENTATION = {
+    "pending": (
+        "info",
+        "Transcript collection is pending for this video.",
+    ),
+    "partial": (
+        "warning",
+        "Only a partial transcript was collected; another attempt may complete it.",
+    ),
+    "not_available": (
+        "info",
+        "YouTube reports that no transcript is available for this video.",
+    ),
+    "disabled": (
+        "info",
+        "Transcripts are disabled for this video.",
+    ),
+    "rate_limited": (
+        "warning",
+        "Transcript collection was rate limited and can be retried after the cooldown.",
+    ),
+    "failed": (
+        "error",
+        "Transcript collection failed and can be retried while attempts remain.",
+    ),
+}
+
+
+def transcript_status_presentation(row):
+    raw_status = row.get("transcript_status")
+    status = "" if raw_status is None or pd.isna(raw_status) else str(raw_status)
+    status = status.strip().lower()
+    transcript = row.get("transcript_text")
+    has_transcript = transcript is not None and not pd.isna(transcript) and bool(
+        str(transcript).strip()
+    )
+    if not status:
+        status = "success" if has_transcript else "pending"
+    if status == "success":
+        return status, "success", "Transcript collected successfully."
+    level, message = TRANSCRIPT_STATUS_PRESENTATION.get(
+        status,
+        ("warning", "Transcript collection returned an unknown status."),
+    )
+    raw_error_code = row.get("error_code")
+    if raw_error_code is not None and not pd.isna(raw_error_code):
+        error_code = str(raw_error_code).strip()
+        if error_code:
+            message = f"{message} Error code: {error_code}."
+    return status, level, message
+
+
+def has_dashboard_value(value):
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return bool(str(value).strip())
+
+
+def normalized_status(value, default="pending"):
+    if not has_dashboard_value(value):
+        return default
+    return str(value).strip().lower()
+
+
+def latest_rows_by_content(dataframe):
+    if dataframe.empty or "content_id" not in dataframe.columns:
+        return pd.DataFrame()
+    latest = dataframe.copy()
+    if "updated_at" in latest.columns:
+        latest = latest.sort_values("updated_at", ascending=False)
+    return latest.drop_duplicates("content_id")
+
+
+def build_youtube_display_rows(youtube_contents, transcripts, content_stats):
+    display_rows = youtube_contents.copy()
+    stat_columns = [
+        column
+        for column in (
+            "content_id",
+            "latest_view_count",
+            "latest_like_count",
+            "latest_comment_count",
+            "latest_reply_count",
+        )
+        if column in content_stats.columns
+    ]
+    if not content_stats.empty and "content_id" in display_rows.columns and stat_columns:
+        display_rows = display_rows.merge(
+            content_stats[stat_columns],
+            on="content_id",
+            how="left",
+        )
+
+    latest_transcripts = latest_rows_by_content(transcripts)
+    if not latest_transcripts.empty:
+        transcript_columns = [
+            column
+            for column in ("content_id", "transcript_status", "transcript_text")
+            if column in latest_transcripts.columns
+        ]
+        latest_transcripts = latest_transcripts[transcript_columns].rename(
+            columns={
+                "transcript_status": "latest_transcript_status",
+                "transcript_text": "latest_transcript_text",
+            }
+        )
+        display_rows = display_rows.merge(
+            latest_transcripts,
+            on="content_id",
+            how="left",
+        )
+
+    if "created_at" in display_rows.columns:
+        display_rows = display_rows.sort_values("created_at", ascending=False)
+    return display_rows
+
+
+def youtube_data_completeness(row):
+    transcript_status = normalized_status(
+        row.get("latest_transcript_status", row.get("transcript_status"))
+    )
+    checks = {
+        "thumbnail": has_dashboard_value(row.get("thumbnail_url")),
+        "metadata": normalized_status(row.get("metadata_status")) == "success",
+        "transcript": transcript_status == "success",
+        "views": has_dashboard_value(row.get("latest_view_count")),
+        "comments": normalized_status(row.get("comments_status")) == "success",
+    }
+    return sum(checks.values()), len(checks), checks
 
 
 def render_add_data_panel():
@@ -2180,7 +2314,16 @@ def render_content_analytics():
     metric_columns = st.columns(5)
     metric_columns[0].metric("Contents", format_count(len(contents)))
     metric_columns[1].metric("Interactions", format_count(len(interactions)))
-    metric_columns[2].metric("Transcripts", format_count(len(transcripts)))
+    transcript_count = len(transcripts)
+    if "transcript_status" in transcripts.columns:
+        transcript_count = int(
+            transcripts["transcript_status"]
+            .astype("string")
+            .str.lower()
+            .eq("success")
+            .sum()
+        )
+    metric_columns[2].metric("Transcripts", format_count(transcript_count))
     metric_columns[3].metric("Content stats", format_count(len(content_stats)))
     metric_columns[4].metric("User days", format_count(len(user_evolution)))
 
@@ -2321,12 +2464,65 @@ def render_content_analytics():
         if youtube_contents.empty:
             st.info("No YouTube content available.")
         else:
+            youtube_display = build_youtube_display_rows(
+                youtube_contents,
+                transcripts,
+                content_stats,
+            )
+            st.caption("YouTube videos")
+            card_columns = st.columns(3)
+            for position, (_, video_row) in enumerate(youtube_display.head(30).iterrows()):
+                with card_columns[position % 3]:
+                    with st.container(border=True):
+                        thumbnail_url = video_row.get("thumbnail_url")
+                        if has_dashboard_value(thumbnail_url):
+                            st.image(str(thumbnail_url), width=120)
+                        else:
+                            st.caption("No thumbnail")
+                        st.markdown(f"**{format_optional_text(video_row.get('title'))}**")
+                        channel = format_optional_text(
+                            video_row.get("youtube_channel_name")
+                        )
+                        if channel != "N/A":
+                            st.caption(channel)
+                        complete_count, complete_total, checks = (
+                            youtube_data_completeness(video_row)
+                        )
+                        st.progress(
+                            complete_count / complete_total,
+                            text=f"Data completeness {complete_count}/{complete_total}",
+                        )
+                        transcript_status = normalized_status(
+                            video_row.get(
+                                "latest_transcript_status",
+                                video_row.get("transcript_status"),
+                            )
+                        )
+                        st.caption(
+                            " | ".join(
+                                [
+                                    f"Views: {format_count(video_row.get('latest_view_count'))}",
+                                    f"Comments: {format_count(video_row.get('latest_comment_count'))}",
+                                    f"Transcript: {transcript_status.replace('_', ' ')}",
+                                ]
+                            )
+                        )
+                        missing = [
+                            label
+                            for label, available in checks.items()
+                            if not available
+                        ]
+                        if missing:
+                            st.caption("Missing: " + ", ".join(missing))
+                        else:
+                            st.success("Complete data available.")
+
             selected_index = st.selectbox(
                 "YouTube video",
-                options=youtube_contents.index.tolist(),
-                format_func=lambda index: content_label(youtube_contents.loc[index]),
+                options=youtube_display.index.tolist(),
+                format_func=lambda index: content_label(youtube_display.loc[index]),
             )
-            selected = youtube_contents.loc[selected_index]
+            selected = youtube_display.loc[selected_index]
             render_content_interactions(selected, interactions)
             if "content_id" in transcripts.columns:
                 video_transcripts = transcripts[
@@ -2335,20 +2531,31 @@ def render_content_analytics():
             else:
                 video_transcripts = pd.DataFrame()
             if video_transcripts.empty:
-                st.info("No transcript available for this video.")
+                st.info("Transcript collection has not been attempted for this video.")
             else:
-                transcript = video_transcripts.iloc[0].get("transcript_text")
-                keyword = st.text_input("Transcript keyword")
+                if "updated_at" in video_transcripts.columns:
+                    video_transcripts = video_transcripts.sort_values(
+                        "updated_at",
+                        ascending=False,
+                    )
+                transcript_row = video_transcripts.iloc[0]
+                status, level, message = transcript_status_presentation(transcript_row)
+                st.caption(f"Transcript status: {status.replace('_', ' ')}")
+                if status != "success":
+                    getattr(st, level)(message)
+                transcript = transcript_row.get("transcript_text")
                 transcript_text = "" if pd.isna(transcript) else str(transcript)
-                if keyword:
-                    lines = [
-                        line
-                        for line in transcript_text.splitlines()
-                        if keyword.lower() in line.lower()
-                    ]
-                    st.text_area("Transcript", "\n".join(lines), height=260)
-                else:
-                    st.text_area("Transcript", transcript_text, height=260)
+                if transcript_text.strip():
+                    keyword = st.text_input("Transcript keyword")
+                    if keyword:
+                        lines = [
+                            line
+                            for line in transcript_text.splitlines()
+                            if keyword.lower() in line.lower()
+                        ]
+                        st.text_area("Transcript", "\n".join(lines), height=260)
+                    else:
+                        st.text_area("Transcript", transcript_text, height=260)
 
     with users_tab:
         if user_evolution.empty:
