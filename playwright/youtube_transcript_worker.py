@@ -7,7 +7,8 @@ import os
 from datetime import timedelta
 
 from common.transcripts import fetch_transcript
-from common.youtube_pipeline import YouTubeStateStore, parse_datetime, utc_now
+from common.youtube_pipeline import parse_datetime, utc_now
+from common.youtube_state import YouTubeStateStore
 from youtube_pipeline_events import EventConsumer, EventProducer, pipeline_event
 
 

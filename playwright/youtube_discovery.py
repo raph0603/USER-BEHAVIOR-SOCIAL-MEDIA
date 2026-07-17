@@ -11,13 +11,13 @@ from googleapiclient.discovery import build
 
 from common.youtube_pipeline import (
     SearchQuery,
-    YouTubeStateStore,
     isoformat,
     parse_datetime,
     parse_search_queries,
     published_after,
     utc_now,
 )
+from common.youtube_state import YouTubeStateStore
 from youtube_pipeline_events import EventProducer, pipeline_event
 
 

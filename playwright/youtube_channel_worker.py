@@ -9,7 +9,8 @@ from typing import Any, Iterable
 
 from googleapiclient.discovery import build
 
-from common.youtube_pipeline import YouTubeStateStore, retry_delay, utc_now
+from common.youtube_pipeline import retry_delay, utc_now
+from common.youtube_state import YouTubeStateStore
 from youtube_pipeline_events import EventConsumer, EventProducer, pipeline_event
 
 
