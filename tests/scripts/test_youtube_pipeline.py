@@ -6,7 +6,6 @@ from pathlib import Path
 
 from common.youtube_pipeline import (
     SearchQuery,
-    YouTubeStateStore,
     canonical_metadata,
     changed_metadata_fields,
     metadata_hash,
@@ -16,6 +15,7 @@ from common.youtube_pipeline import (
     parse_search_queries,
     published_after,
 )
+from common.youtube_state import YouTubeStateStore
 
 
 UTC = timezone.utc
