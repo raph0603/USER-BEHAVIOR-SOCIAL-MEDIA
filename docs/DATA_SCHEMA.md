@@ -89,6 +89,47 @@ can be backfilled without YouTube Data API quota by deriving the public
 id. Dashboards use it as a visual identifier only; the source URL remains the
 durable video reference.
 
+## YouTube event families
+
+All YouTube Kafka families use the same backward-compatible Avro envelope, but
+each event contains only one responsibility. Routing fields include
+`event_type`, `event_version`, `video_id`, `channel_id`, `correlation_id`,
+`collected_at` and `attempt_count`.
+
+| Family | Payload responsibility |
+|---|---|
+| `youtube.discovery.events` | Search identity, query identity and publication time |
+| `youtube.metadata.events` | Normalized and raw descriptive metadata from `yt-dlp` |
+| `youtube.metadata.changes` | Hash transition and exact `changed_fields` |
+| `youtube.engagement.snapshots` | One temporal view/like/comment observation |
+| `youtube.transcript.*` | Transcript request or result and transcript lifecycle |
+| `youtube.comment.*` | Text-comment request or incremental comment results |
+| `youtube.channel.*` | Cached channel-level statistics such as subscribers |
+
+Descriptive metadata uses `metadata_hash`, `previous_metadata_hash`,
+`changed_fields`, `metadata_source`, `metadata_schema_version`,
+`yt_dlp_version`, refresh timestamps/counts, and bounded error details.
+Engagement scheduling uses `last_metrics_refresh_at`,
+`next_metrics_refresh_at`, `metrics_refresh_count` and
+`metrics_refresh_status`. These field groups remain nullable so retained Avro
+records written by an older schema still decode.
+
+## YouTube historical and monitoring tables
+
+| Table | Grain and mutation policy |
+|---|---|
+| `lakehouse.silver.events` | Latest canonical event state; idempotent MERGE |
+| `lakehouse.silver.youtube_metadata_versions` | One changed canonical metadata hash per observation; append only |
+| `lakehouse.silver.engagement_snapshots` | One observation per source, event ID and observation time; append only |
+| `lakehouse.gold.youtube_engagement_velocity` | Latest velocity, acceleration and virality signal per video; MERGE |
+| `lakehouse.monitoring.youtube_api_usage` | Endpoint request/resource/success/error observations; append only |
+
+Metadata history keeps `valid_from`, the previous hash, exact changed fields,
+descriptive values and JSON for chapters, thumbnails and caption maps.
+Engagement history keeps nullable deltas, hourly rates, engagement rates and
+view acceleration. A missing or decreasing counter produces a null derived
+metric instead of a fabricated negative rate.
+
 ## Caption fields
 
 Caption collection preserves both content and provenance:
