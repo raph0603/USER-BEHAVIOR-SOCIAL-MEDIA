@@ -278,7 +278,7 @@ class YouTubeTranscriptBackfillIntegrationContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('"LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES",\n        "60"', source)
         self.assertIn(
-            "backfill_youtube_transcripts >> backfill_youtube_thumbnails",
+            "append_youtube_metadata_versions >> backfill_youtube_thumbnails",
             source,
         )
         self.assertIn(
