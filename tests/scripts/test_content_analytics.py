@@ -140,17 +140,19 @@ class ContentAnalyticsIntegrationTextTests(unittest.TestCase):
         self.assertIn("content_analytics.py", source)
         self.assertIn("update_content_analytics", source)
 
-    def test_airflow_dag_backfills_youtube_transcripts(self):
+    def test_airflow_dag_uses_the_independent_transcript_worker(self):
         source = (
             ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py"
         ).read_text(encoding="utf-8")
-        requirements = (ROOT / "spark" / "requirements.txt").read_text(
+        requirements = (ROOT / "playwright" / "requirements.txt").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn("build_youtube_transcripts_command", source)
-        self.assertIn("youtube_transcripts.py", source)
-        self.assertIn("backfill_youtube_transcripts", source)
+        self.assertIn("youtube_transcript_worker.py", source)
+        self.assertIn("process_youtube_transcript_requests", source)
+        self.assertIn("youtube.transcript.requests", source)
+        self.assertIn("youtube.transcript.results", source)
+        self.assertNotIn('task_id="backfill_youtube_transcripts"', source)
         self.assertIn("youtube-transcript-api==1.2.4", requirements)
 
     def test_airflow_dag_backfills_youtube_thumbnails_without_api_quota(self):
@@ -167,7 +169,7 @@ class ContentAnalyticsIntegrationTextTests(unittest.TestCase):
                 self.assertIn("youtube_thumbnail_backfill.py", dag_source)
                 self.assertIn("backfill_youtube_thumbnails", dag_source)
                 self.assertIn(
-                    "backfill_youtube_transcripts >> backfill_youtube_thumbnails",
+                    "append_youtube_metadata_versions >> backfill_youtube_thumbnails",
                     dag_source,
                 )
                 self.assertIn(
