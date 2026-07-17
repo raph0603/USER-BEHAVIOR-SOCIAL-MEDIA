@@ -187,9 +187,32 @@ with DAG(
         ),
     )
 
+    validate_refresh_output = BashOperator(
+        task_id="validate_refresh_output",
+        execution_timeout=timedelta(minutes=5),
+        bash_command=docker_compose(
+            "run --rm --no-deps youtube-collector "
+            "python /app/validate_insight_refresh.py"
+        ),
+    )
+
+    append_snapshots = BashOperator(
+        task_id="append_engagement_snapshots",
+        execution_timeout=timedelta(minutes=30),
+        bash_command=r"""
+        set -euo pipefail
+        docker exec spark-master /opt/spark/bin/spark-submit \
+          --master spark://spark-master:7077 \
+          --driver-memory 512m \
+          --executor-memory 512m \
+          --conf spark.cores.max=2 \
+          --conf spark.executor.cores=1 \
+          /opt/spark/jobs/batch/engagement_snapshots.py
+        """,
+    )
+
     apply_updates = BashOperator(
-        task_id="merge_refreshed_insights",
-        trigger_rule=TriggerRule.ALL_DONE,
+        task_id="merge_latest_engagement_values",
         execution_timeout=timedelta(minutes=30),
         bash_command=r"""
         set -euo pipefail
@@ -212,5 +235,6 @@ with DAG(
     initialize_services >> verify_services >> acquire_lock
     acquire_lock >> reset_output >> export_targets
     export_targets >> [refresh_youtube, refresh_x, refresh_reddit]
-    [refresh_youtube, refresh_x, refresh_reddit] >> apply_updates
-    apply_updates >> release_lock
+    [refresh_youtube, refresh_x, refresh_reddit] >> validate_refresh_output
+    validate_refresh_output >> [append_snapshots, apply_updates]
+    [append_snapshots, apply_updates] >> release_lock

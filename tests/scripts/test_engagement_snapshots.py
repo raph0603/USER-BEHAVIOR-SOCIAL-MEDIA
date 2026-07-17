@@ -140,6 +140,17 @@ class EngagementSnapshotSchemaContractTests(unittest.TestCase):
             "retweet_count",
             "bookmark_count",
             "score",
+            "observation_id",
+            "views_delta",
+            "likes_delta",
+            "comments_delta",
+            "views_per_hour",
+            "likes_per_hour",
+            "comments_per_hour",
+            "like_rate",
+            "comment_rate",
+            "engagement_rate",
+            "views_acceleration",
             "snapshot_date",
         }
         for col_name in required:
@@ -165,6 +176,15 @@ class EngagementSnapshotSchemaContractTests(unittest.TestCase):
         source = insight_path.read_text(encoding="utf-8")
         self.assertIn("metadata_refreshed_at", source)
         self.assertIn("lakehouse.silver.events", source)
+
+    def test_snapshot_write_filters_existing_observation_ids(self):
+        source = (ROOT / "spark" / "jobs" / "batch" / "engagement_snapshots.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('dropDuplicates(["observation_id"])', source)
+        self.assertIn('join(existing_ids, ["observation_id"], "left_anti")', source)
+        self.assertNotIn("DELETE FROM lakehouse.silver.engagement_snapshots", source)
 
 
 if __name__ == "__main__":
