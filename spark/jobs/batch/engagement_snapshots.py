@@ -23,16 +23,22 @@ PROCESSING_MODE=continuous      – streaming micro-batch
 import os
 from datetime import datetime, timezone
 
-from pyspark.sql import SparkSession
+from pyspark.sql import SparkSession, Window
 from pyspark.sql.functions import (
     col,
+    coalesce,
+    concat_ws,
     lit,
+    row_number,
+    sha2,
     to_date,
     to_timestamp,
     unix_timestamp,
+    when,
 )
 from pyspark.sql.types import (
     ArrayType,
+    DoubleType,
     LongType,
     IntegerType,
     StringType,
@@ -110,6 +116,7 @@ INSIGHT_REFRESH_SCHEMA = StructType(
 
 _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS lakehouse.silver.engagement_snapshots (
+  observation_id       STRING    COMMENT 'Stable source, platform ID, observed-at identity',
   source               STRING    COMMENT 'Origin platform: youtube, x, reddit, playwright',
   platform_event_id    STRING    COMMENT 'Platform-native stable identifier',
   user_id              STRING    COMMENT 'Internal session/user identifier',
@@ -124,6 +131,18 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.engagement_snapshots (
   retweet_count        BIGINT    COMMENT 'Retweet / repost count at observation time',
   bookmark_count       BIGINT    COMMENT 'Bookmark count at observation time',
   score                BIGINT    COMMENT 'Reddit score (upvotes - downvotes) at observation time',
+  views_delta          BIGINT    COMMENT 'Non-negative views change since prior observation',
+  likes_delta          BIGINT    COMMENT 'Non-negative likes change since prior observation',
+  comments_delta       BIGINT    COMMENT 'Non-negative comments change since prior observation',
+  hours_since_previous DOUBLE    COMMENT 'Elapsed hours since prior observation',
+  views_per_hour       DOUBLE    COMMENT 'Views delta divided by elapsed hours',
+  likes_per_hour       DOUBLE    COMMENT 'Likes delta divided by elapsed hours',
+  comments_per_hour    DOUBLE    COMMENT 'Comments delta divided by elapsed hours',
+  like_rate            DOUBLE    COMMENT 'Likes divided by views when views are positive',
+  comment_rate         DOUBLE    COMMENT 'Comments divided by views when views are positive',
+  engagement_rate      DOUBLE    COMMENT 'Likes plus comments divided by views',
+  views_acceleration   DOUBLE    COMMENT 'Change in views per hour divided by elapsed hours',
+  metrics_refresh_status STRING  COMMENT 'Outcome of the metrics observation',
   snapshot_date        DATE      COMMENT 'Partition column derived from observed_at'
 )
 USING iceberg
@@ -134,6 +153,7 @@ TBLPROPERTIES (
 """
 
 _SNAPSHOT_COLUMNS = [
+    "observation_id",
     "source",
     "platform_event_id",
     "user_id",
@@ -148,6 +168,18 @@ _SNAPSHOT_COLUMNS = [
     "retweet_count",
     "bookmark_count",
     "score",
+    "views_delta",
+    "likes_delta",
+    "comments_delta",
+    "hours_since_previous",
+    "views_per_hour",
+    "likes_per_hour",
+    "comments_per_hour",
+    "like_rate",
+    "comment_rate",
+    "engagement_rate",
+    "views_acceleration",
+    "metrics_refresh_status",
     "snapshot_date",
 ]
 
@@ -157,7 +189,20 @@ _SNAPSHOT_COLUMNS = [
 # ---------------------------------------------------------------------------
 
 
-def build_snapshots_from_updates(spark: SparkSession, updates: list[dict]):
+def _non_negative_delta(current: str, previous: str):
+    return when(
+        col(current).isNull()
+        | col(previous).isNull()
+        | (col(current) < col(previous)),
+        lit(None).cast("bigint"),
+    ).otherwise((col(current) - col(previous)).cast("bigint"))
+
+
+def build_snapshots_from_updates(
+    spark: SparkSession,
+    updates: list[dict],
+    previous_snapshots=None,
+):
     """
     Convert a list of insight-refresh dicts into a DataFrame of snapshot rows.
 
@@ -180,6 +225,124 @@ def build_snapshots_from_updates(spark: SparkSession, updates: list[dict]):
             ).cast("bigint"),
         )
         .withColumn("snapshot_date", to_date(col("observed_at")))
+        .withColumn(
+            "observation_id",
+            sha2(
+                concat_ws(
+                    "\u001f",
+                    coalesce(col("source"), lit("")),
+                    coalesce(col("platform_event_id"), col("url"), lit("")),
+                    coalesce(col("observed_at").cast("string"), lit("")),
+                ),
+                256,
+            ),
+        )
+    )
+
+    if previous_snapshots is None:
+        for name, data_type in (
+            ("previous_observed_at", "timestamp"),
+            ("previous_view_count", "bigint"),
+            ("previous_like_count", "bigint"),
+            ("previous_comment_count", "bigint"),
+            ("previous_views_per_hour", "double"),
+        ):
+            df = df.withColumn(name, lit(None).cast(data_type))
+    else:
+        previous = previous_snapshots.select(
+            "source",
+            "platform_event_id",
+            col("observed_at").alias("previous_observed_at"),
+            col("view_count").alias("previous_view_count"),
+            col("like_count").alias("previous_like_count"),
+            col("comment_count").alias("previous_comment_count"),
+            col("views_per_hour").alias("previous_views_per_hour"),
+        )
+        df = df.join(previous, ["source", "platform_event_id"], "left")
+
+    df = (
+        df.withColumn(
+            "hours_since_previous",
+            when(
+                col("previous_observed_at").isNotNull()
+                & (col("observed_at") > col("previous_observed_at")),
+                (
+                    unix_timestamp(col("observed_at"))
+                    - unix_timestamp(col("previous_observed_at"))
+                )
+                / lit(3600.0),
+            ).cast("double"),
+        )
+        .withColumn(
+            "views_delta",
+            _non_negative_delta("view_count", "previous_view_count"),
+        )
+        .withColumn(
+            "likes_delta",
+            _non_negative_delta("like_count", "previous_like_count"),
+        )
+        .withColumn(
+            "comments_delta",
+            _non_negative_delta("comment_count", "previous_comment_count"),
+        )
+        .withColumn(
+            "views_per_hour",
+            when(
+                (col("hours_since_previous") > 0) & col("views_delta").isNotNull(),
+                col("views_delta") / col("hours_since_previous"),
+            ).cast("double"),
+        )
+        .withColumn(
+            "likes_per_hour",
+            when(
+                (col("hours_since_previous") > 0) & col("likes_delta").isNotNull(),
+                col("likes_delta") / col("hours_since_previous"),
+            ).cast("double"),
+        )
+        .withColumn(
+            "comments_per_hour",
+            when(
+                (col("hours_since_previous") > 0)
+                & col("comments_delta").isNotNull(),
+                col("comments_delta") / col("hours_since_previous"),
+            ).cast("double"),
+        )
+        .withColumn(
+            "like_rate",
+            when(
+                (col("view_count") > 0) & col("like_count").isNotNull(),
+                col("like_count") / col("view_count"),
+            ).cast("double"),
+        )
+        .withColumn(
+            "comment_rate",
+            when(
+                (col("view_count") > 0) & col("comment_count").isNotNull(),
+                col("comment_count") / col("view_count"),
+            ).cast("double"),
+        )
+        .withColumn(
+            "engagement_rate",
+            when(
+                (col("view_count") > 0)
+                & (col("like_count").isNotNull() | col("comment_count").isNotNull()),
+                (
+                    coalesce(col("like_count"), lit(0))
+                    + coalesce(col("comment_count"), lit(0))
+                )
+                / col("view_count"),
+            ).cast("double"),
+        )
+        .withColumn(
+            "views_acceleration",
+            when(
+                (col("hours_since_previous") > 0)
+                & col("views_per_hour").isNotNull()
+                & col("previous_views_per_hour").isNotNull(),
+                (col("views_per_hour") - col("previous_views_per_hour"))
+                / col("hours_since_previous"),
+            ).cast("double"),
+        )
     )
 
     return df.select(*_SNAPSHOT_COLUMNS)
@@ -213,8 +376,21 @@ def main() -> None:
         spark,
         "lakehouse.silver.engagement_snapshots",
         {
+            "observation_id": "STRING",
             "score": "BIGINT",
             "bookmark_count": "BIGINT",
+            "views_delta": "BIGINT",
+            "likes_delta": "BIGINT",
+            "comments_delta": "BIGINT",
+            "hours_since_previous": "DOUBLE",
+            "views_per_hour": "DOUBLE",
+            "likes_per_hour": "DOUBLE",
+            "comments_per_hour": "DOUBLE",
+            "like_rate": "DOUBLE",
+            "comment_rate": "DOUBLE",
+            "engagement_rate": "DOUBLE",
+            "views_acceleration": "DOUBLE",
+            "metrics_refresh_status": "STRING",
         },
     )
 
@@ -237,13 +413,40 @@ def main() -> None:
         spark.stop()
         return
 
-    snapshots_df = build_snapshots_from_updates(spark, updates)
+    current_snapshots = spark.table("lakehouse.silver.engagement_snapshots")
+    previous_snapshots = (
+        current_snapshots.withColumn(
+            "_previous_rank",
+            row_number().over(
+                Window.partitionBy("source", "platform_event_id").orderBy(
+                    col("observed_at").desc()
+                )
+            ),
+        )
+        .filter(col("_previous_rank") == 1)
+        .drop("_previous_rank")
+    )
+    snapshots_df = build_snapshots_from_updates(
+        spark,
+        updates,
+        previous_snapshots=previous_snapshots,
+    )
     if snapshots_df is None or snapshots_df.rdd.isEmpty():
         print("No valid snapshots derived")
         spark.stop()
         return
 
-    # Append-only: always insert, never update
+    snapshots_df = snapshots_df.dropDuplicates(["observation_id"])
+    existing_ids = current_snapshots.filter(col("observation_id").isNotNull()).select(
+        "observation_id"
+    )
+    snapshots_df = snapshots_df.join(existing_ids, ["observation_id"], "left_anti")
+    if snapshots_df.rdd.isEmpty():
+        print("No new engagement snapshots after idempotence check")
+        spark.stop()
+        return
+
+    # Append-only: only unseen observations are inserted; no row is updated.
     snapshots_df.writeTo("lakehouse.silver.engagement_snapshots").append()
 
     print(f"Appended {len(updates)} engagement snapshots")
