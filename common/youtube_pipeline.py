@@ -329,11 +329,64 @@ class YouTubeStateStore:
               first_seen_at TEXT NOT NULL,
               PRIMARY KEY (video_id, comment_id)
             );
+            CREATE TABLE IF NOT EXISTS youtube_transcript_state (
+              video_id TEXT PRIMARY KEY,
+              correlation_id TEXT NOT NULL,
+              first_seen_at TEXT NOT NULL,
+              published_at TEXT,
+              request_json TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending',
+              attempt_count INTEGER NOT NULL DEFAULT 0,
+              last_attempt_at TEXT,
+              next_attempt_at TEXT,
+              error_class TEXT,
+              error_message TEXT,
+              result_json TEXT
+            );
+            CREATE TABLE IF NOT EXISTS youtube_comment_state (
+              video_id TEXT PRIMARY KEY,
+              correlation_id TEXT NOT NULL,
+              first_seen_at TEXT NOT NULL,
+              published_at TEXT,
+              request_json TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending',
+              attempt_count INTEGER NOT NULL DEFAULT 0,
+              last_attempt_at TEXT,
+              next_attempt_at TEXT,
+              error_class TEXT,
+              error_message TEXT,
+              result_json TEXT
+            );
+            CREATE TABLE IF NOT EXISTS youtube_channel_state (
+              channel_id TEXT PRIMARY KEY,
+              first_seen_at TEXT NOT NULL,
+              last_video_published_at TEXT,
+              last_refresh_at TEXT,
+              next_refresh_at TEXT NOT NULL,
+              refresh_count INTEGER NOT NULL DEFAULT 0,
+              subscriber_count INTEGER,
+              hidden_subscriber_count INTEGER NOT NULL DEFAULT 0,
+              status TEXT NOT NULL DEFAULT 'pending',
+              attempt_count INTEGER NOT NULL DEFAULT 0,
+              error_class TEXT,
+              error_message TEXT
+            );
             CREATE TABLE IF NOT EXISTS youtube_circuit_breakers (
               breaker_name TEXT PRIMARY KEY,
               opened_at TEXT NOT NULL,
               cooldown_until TEXT NOT NULL,
               reason TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS youtube_api_usage (
+              usage_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              usage_date TEXT NOT NULL,
+              endpoint TEXT NOT NULL,
+              request_count INTEGER NOT NULL,
+              resource_count INTEGER NOT NULL,
+              success_count INTEGER NOT NULL,
+              error_count INTEGER NOT NULL,
+              quota_bucket TEXT NOT NULL,
+              observed_at TEXT NOT NULL
             );
             """
         )
@@ -445,6 +498,13 @@ class YouTubeStateStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def metadata_state(self, video_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM youtube_metadata_state WHERE video_id = ?",
+            (video_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
     def record_metadata_success(
         self,
         *,
@@ -543,6 +603,103 @@ class YouTubeStateStore:
             )
         }
 
+    @staticmethod
+    def _request_table(family: str) -> str:
+        if family not in {"transcript", "comment"}:
+            raise ValueError(f"Unsupported YouTube request family: {family}")
+        return f"youtube_{family}_state"
+
+    def enqueue_request(
+        self,
+        family: str,
+        *,
+        video_id: str,
+        correlation_id: str,
+        first_seen_at: datetime,
+        published_at: str | datetime | None,
+        request: dict[str, Any],
+    ) -> bool:
+        table = self._request_table(family)
+        cursor = self.connection.execute(
+            f"""
+            INSERT OR IGNORE INTO {table} (
+              video_id, correlation_id, first_seen_at, published_at,
+              request_json, next_attempt_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                video_id,
+                correlation_id,
+                isoformat(first_seen_at),
+                isoformat(parse_datetime(published_at)),
+                json.dumps(request, ensure_ascii=False, sort_keys=True),
+                isoformat(first_seen_at),
+            ),
+        )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def due_requests(
+        self, family: str, *, now: datetime, limit: int
+    ) -> list[dict[str, Any]]:
+        table = self._request_table(family)
+        terminal_statuses = (
+            "('available', 'permanent_error')"
+            if family == "transcript"
+            else "('permanent_error')"
+        )
+        rows = self.connection.execute(
+            f"""
+            SELECT * FROM {table}
+            WHERE status NOT IN {terminal_statuses}
+              AND next_attempt_at IS NOT NULL
+              AND next_attempt_at <= ?
+            ORDER BY next_attempt_at, first_seen_at
+            LIMIT ?
+            """,
+            (isoformat(now), max(1, int(limit))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_request_result(
+        self,
+        family: str,
+        *,
+        video_id: str,
+        status: str,
+        attempted_at: datetime,
+        next_attempt_at: datetime | None,
+        result: dict[str, Any] | None = None,
+        error_class: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        table = self._request_table(family)
+        self.connection.execute(
+            f"""
+            UPDATE {table} SET
+              status = ?,
+              attempt_count = attempt_count + 1,
+              last_attempt_at = ?,
+              next_attempt_at = ?,
+              error_class = ?,
+              error_message = ?,
+              result_json = ?
+            WHERE video_id = ?
+            """,
+            (
+                status,
+                isoformat(attempted_at),
+                isoformat(next_attempt_at),
+                error_class,
+                error_message[:1000] if error_message else None,
+                json.dumps(result, ensure_ascii=False, sort_keys=True)
+                if result is not None
+                else None,
+                video_id,
+            ),
+        )
+        self.connection.commit()
+
     def record_comment_ids(
         self, video_id: str, comment_ids: Iterable[str], observed_at: datetime
     ) -> None:
@@ -557,6 +714,138 @@ class YouTubeStateStore:
                 for comment_id in comment_ids
                 if comment_id
             ],
+        )
+        self.connection.commit()
+
+    def enqueue_channel(
+        self,
+        *,
+        channel_id: str,
+        first_seen_at: datetime,
+        last_video_published_at: str | datetime | None,
+    ) -> bool:
+        """Create one persistent refresh target per YouTube channel."""
+        published_value = isoformat(parse_datetime(last_video_published_at))
+        cursor = self.connection.execute(
+            """
+            INSERT OR IGNORE INTO youtube_channel_state (
+              channel_id, first_seen_at, last_video_published_at, next_refresh_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                channel_id,
+                isoformat(first_seen_at),
+                published_value,
+                isoformat(first_seen_at),
+            ),
+        )
+        if not cursor.rowcount and published_value:
+            self.connection.execute(
+                """
+                UPDATE youtube_channel_state SET
+                  last_video_published_at = CASE
+                    WHEN last_video_published_at IS NULL
+                      OR last_video_published_at < ? THEN ?
+                    ELSE last_video_published_at
+                  END
+                WHERE channel_id = ?
+                """,
+                (published_value, published_value, channel_id),
+            )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def due_channels(self, *, now: datetime, limit: int) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT * FROM youtube_channel_state
+            WHERE next_refresh_at <= ?
+              AND status != 'permanent_error'
+            ORDER BY next_refresh_at, first_seen_at
+            LIMIT ?
+            """,
+            (isoformat(now), max(1, int(limit))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def channel_state(self, channel_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM youtube_channel_state WHERE channel_id = ?",
+            (channel_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def record_channel_success(
+        self,
+        *,
+        channel_id: str,
+        observed_at: datetime,
+        subscriber_count: int | None,
+        hidden_subscriber_count: bool,
+        active_after: datetime,
+        active_interval: timedelta,
+        inactive_interval: timedelta,
+    ) -> None:
+        row = self.channel_state(channel_id)
+        if row is None:
+            raise KeyError(channel_id)
+        last_video = parse_datetime(row.get("last_video_published_at"))
+        interval = (
+            active_interval
+            if last_video is not None and last_video >= active_after
+            else inactive_interval
+        )
+        self.connection.execute(
+            """
+            UPDATE youtube_channel_state SET
+              last_refresh_at = ?,
+              next_refresh_at = ?,
+              refresh_count = refresh_count + 1,
+              subscriber_count = ?,
+              hidden_subscriber_count = ?,
+              status = 'success',
+              attempt_count = attempt_count + 1,
+              error_class = NULL,
+              error_message = NULL
+            WHERE channel_id = ?
+            """,
+            (
+                isoformat(observed_at),
+                isoformat(observed_at + interval),
+                subscriber_count,
+                int(hidden_subscriber_count),
+                channel_id,
+            ),
+        )
+        self.connection.commit()
+
+    def record_channel_failure(
+        self,
+        *,
+        channel_id: str,
+        attempted_at: datetime,
+        next_attempt_at: datetime | None,
+        error_class: str,
+        error_message: str,
+        permanent: bool = False,
+    ) -> None:
+        self.connection.execute(
+            """
+            UPDATE youtube_channel_state SET
+              next_refresh_at = COALESCE(?, next_refresh_at),
+              status = ?,
+              attempt_count = attempt_count + 1,
+              error_class = ?,
+              error_message = ?
+            WHERE channel_id = ?
+            """,
+            (
+                isoformat(next_attempt_at),
+                "permanent_error" if permanent else "retryable_error",
+                error_class,
+                error_message[:1000],
+                channel_id,
+            ),
         )
         self.connection.commit()
 
@@ -576,6 +865,48 @@ class YouTubeStateStore:
             (name, isoformat(now), isoformat(now + cooldown), reason[:1000]),
         )
         self.connection.commit()
+
+    def record_api_usage(
+        self,
+        *,
+        endpoint: str,
+        request_count: int,
+        resource_count: int,
+        success_count: int,
+        error_count: int,
+        quota_bucket: str,
+        observed_at: datetime,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO youtube_api_usage (
+              usage_date, endpoint, request_count, resource_count,
+              success_count, error_count, quota_bucket, observed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ensure_utc(observed_at).date().isoformat(),
+                endpoint,
+                max(0, int(request_count)),
+                max(0, int(resource_count)),
+                max(0, int(success_count)),
+                max(0, int(error_count)),
+                quota_bucket,
+                isoformat(observed_at),
+            ),
+        )
+        self.connection.commit()
+
+    def api_requests_today(self, endpoint: str, now: datetime) -> int:
+        row = self.connection.execute(
+            """
+            SELECT COALESCE(SUM(request_count), 0)
+            FROM youtube_api_usage
+            WHERE usage_date = ? AND endpoint = ?
+            """,
+            (ensure_utc(now).date().isoformat(), endpoint),
+        ).fetchone()
+        return int(row[0] or 0)
 
     def breaker_open(self, name: str, now: datetime) -> bool:
         row = self.connection.execute(

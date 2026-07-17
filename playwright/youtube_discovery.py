@@ -149,6 +149,10 @@ def main() -> None:
             if totals["new_videos"] >= run_limit:
                 break
             started_at = utc_now()
+            daily_budget = _env_int("YOUTUBE_SEARCH_DAILY_REQUEST_BUDGET", 100)
+            if state.api_requests_today("search.list", started_at) >= daily_budget:
+                totals["budget_exhausted"] = True
+                break
             watermark = state.watermark(spec.query_id) or {}
             after = published_after(
                 watermark.get("last_published_at_seen")
@@ -168,6 +172,15 @@ def main() -> None:
             totals["search_calls"] += calls
             totals["pages"] += calls
             totals["discovered"] += len(items)
+            state.record_api_usage(
+                endpoint="search.list",
+                request_count=calls,
+                resource_count=len(items),
+                success_count=calls,
+                error_count=0,
+                quota_bucket="discovery",
+                observed_at=started_at,
+            )
             query_events: list[dict] = []
             last_published = parse_datetime(watermark.get("last_published_at_seen"))
             for item in items:

@@ -122,7 +122,8 @@ class YouTubeEngagementRefreshTests(unittest.TestCase):
         self.assertNotIn("fetch_youtube_collaborators", source)
         self.assertNotIn("youtube_authors", source)
         self.assertNotIn("YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS", source)
-        self.assertIn('"comment_count": parse_count(statistics.get("commentCount"))', source)
+        self.assertIn('"comment_count": parse_count(', source)
+        self.assertIn('statistics.get("commentCount")', source)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,11 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-from common.youtube_pipeline import next_metrics_refresh_at, parse_datetime
+from common.youtube_pipeline import (
+    YouTubeStateStore,
+    next_metrics_refresh_at,
+    parse_datetime,
+)
 from engagement import extract_x_followers, extract_x_metric, parse_count
 
 
@@ -131,45 +135,75 @@ def _refresh_youtube(targets: list[dict]) -> list[dict]:
     youtube = build("youtube", "v3", developerKey=api_key)
     updates = []
     video_ids = list(targets_by_id)
-    for start in range(0, len(video_ids), 50):
-        batch_ids = video_ids[start : start + 50]
-        observed_at = datetime.now(timezone.utc)
-        response = (
-            youtube.videos()
-            .list(part="statistics", id=",".join(batch_ids))
-            .execute()
-        )
-        items_by_id = {
-            item["id"]: item for item in response.get("items", []) if item.get("id")
-        }
-        for video_id in batch_ids:
-            target = targets_by_id[video_id]
-            item = items_by_id.get(video_id)
-            update = _base_update(target, observed_at)
-            if item is None:
-                update["metrics_refresh_status"] = "not_available"
+    state_path = _env("YOUTUBE_PIPELINE_STATE_DB")
+    usage_store = YouTubeStateStore(state_path) if state_path else None
+    try:
+        if usage_store:
+            budget = int(_env("YOUTUBE_VIDEOS_DAILY_REQUEST_BUDGET", "500"))
+            used = usage_store.api_requests_today(
+                "videos.list", datetime.now(timezone.utc)
+            )
+            remaining_batches = max(0, budget - used)
+            video_ids = video_ids[: remaining_batches * 50]
+            if not video_ids and targets_by_id:
+                print("Skipping YouTube metrics refresh: videos.list budget exhausted")
+                SKIPPED_REFRESH_SOURCES.add("youtube")
+        for start in range(0, len(video_ids), 50):
+            batch_ids = video_ids[start : start + 50]
+            observed_at = datetime.now(timezone.utc)
+            response = (
+                youtube.videos()
+                .list(part="statistics", id=",".join(batch_ids))
+                .execute()
+            )
+            items_by_id = {
+                item["id"]: item
+                for item in response.get("items", [])
+                if item.get("id")
+            }
+            if usage_store:
+                usage_store.record_api_usage(
+                    endpoint="videos.list",
+                    request_count=1,
+                    resource_count=len(batch_ids),
+                    success_count=1,
+                    error_count=0,
+                    quota_bucket="recent_metrics",
+                    observed_at=observed_at,
+                )
+            for video_id in batch_ids:
+                target = targets_by_id[video_id]
+                item = items_by_id.get(video_id)
+                update = _base_update(target, observed_at)
+                if item is None:
+                    update["metrics_refresh_status"] = "not_available"
+                    updates.append(update)
+                    continue
+                statistics = item.get("statistics", {})
+                view_count = parse_count(statistics.get("viewCount"))
+                growth_multiplier = _youtube_growth_multiplier(
+                    target,
+                    view_count,
+                    observed_at,
+                )
+                update["next_metrics_refresh_at"] = next_metrics_refresh_at(
+                    target.get("event_ts") or observed_at,
+                    observed_at,
+                    growth_multiplier=growth_multiplier,
+                ).isoformat()
+                update.update(
+                    {
+                        "like_count": parse_count(statistics.get("likeCount")),
+                        "view_count": view_count,
+                        "comment_count": parse_count(
+                            statistics.get("commentCount")
+                        ),
+                    }
+                )
                 updates.append(update)
-                continue
-            statistics = item.get("statistics", {})
-            view_count = parse_count(statistics.get("viewCount"))
-            growth_multiplier = _youtube_growth_multiplier(
-                target,
-                view_count,
-                observed_at,
-            )
-            update["next_metrics_refresh_at"] = next_metrics_refresh_at(
-                target.get("event_ts") or observed_at,
-                observed_at,
-                growth_multiplier=growth_multiplier,
-            ).isoformat()
-            update.update(
-                {
-                    "like_count": parse_count(statistics.get("likeCount")),
-                    "view_count": view_count,
-                    "comment_count": parse_count(statistics.get("commentCount")),
-                }
-            )
-            updates.append(update)
+    finally:
+        if usage_store:
+            usage_store.close()
     return updates
 
 
@@ -591,6 +625,44 @@ def _refresh_reddit(targets: list[dict]) -> list[dict]:
     return updates
 
 
+def _publish_youtube_engagement(updates: list[dict]) -> None:
+    if not updates or not _env("KAFKA_BOOTSTRAP"):
+        return
+    from youtube_pipeline_events import EventProducer, pipeline_event
+
+    producer = EventProducer(
+        bootstrap_servers=_env("KAFKA_BOOTSTRAP", "kafka:9092"),
+        schema_registry_url=_env(
+            "SCHEMA_REGISTRY_URL", "http://schema-registry:8081"
+        ),
+        schema_path=_env("SCHEMA_PATH", "/app/schemas/playwright_event.avsc"),
+    )
+    events = [
+        pipeline_event(
+            "youtube.engagement.snapshot",
+            update["platform_event_id"],
+            collected_at=parse_datetime(update["metadata_refreshed_at"]),
+            attempt_count=update.get("metrics_refresh_count") or 1,
+            published_at=update.get("event_ts"),
+            view_count=update.get("view_count"),
+            like_count=update.get("like_count"),
+            comment_count=update.get("comment_count"),
+            last_metrics_refresh_at=update.get("last_metrics_refresh_at"),
+            next_metrics_refresh_at=update.get("next_metrics_refresh_at"),
+            metrics_refresh_count=update.get("metrics_refresh_count"),
+            metrics_refresh_status=update.get("metrics_refresh_status"),
+            collection_status=update.get("metrics_refresh_status"),
+            payload_json=json.dumps(update, ensure_ascii=False, sort_keys=True),
+        )
+        for update in updates
+        if update.get("platform_event_id")
+    ]
+    producer.publish(
+        _env("YOUTUBE_ENGAGEMENT_TOPIC", "youtube.engagement.snapshots"),
+        events,
+    )
+
+
 def main() -> None:
     source = _env("INSIGHT_REFRESH_SOURCE").lower()
     if source not in {"youtube", "x", "reddit"}:
@@ -617,6 +689,8 @@ def main() -> None:
         "reddit": _refresh_reddit,
     }
     updates = refreshers[source](targets) if targets else []
+    if source == "youtube":
+        _publish_youtube_engagement(updates)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = output_path.with_suffix(f"{output_path.suffix}.tmp")

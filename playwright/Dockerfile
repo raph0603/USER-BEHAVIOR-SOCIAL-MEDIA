@@ -13,6 +13,9 @@ COPY playwright/youtube_authors.py /app/youtube_authors.py
 COPY playwright/youtube_pipeline_events.py /app/youtube_pipeline_events.py
 COPY playwright/youtube_discovery.py /app/youtube_discovery.py
 COPY playwright/youtube_metadata_worker.py /app/youtube_metadata_worker.py
+COPY playwright/youtube_transcript_worker.py /app/youtube_transcript_worker.py
+COPY playwright/youtube_comment_worker.py /app/youtube_comment_worker.py
+COPY playwright/youtube_channel_worker.py /app/youtube_channel_worker.py
 COPY common/ /app/common/
 COPY schemas/ /app/schemas/
 COPY API/ /app/api/

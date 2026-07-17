@@ -226,7 +226,19 @@ with DAG(
             CRAWLER_CONFIG["youtube_search_queries"],
             type="array",
             minItems=1,
-            items={"type": "string", "minLength": 1},
+            items={
+                "oneOf": [
+                    {"type": "string", "minLength": 1},
+                    {
+                        "type": "object",
+                        "required": ["query", "language"],
+                        "properties": {
+                            "query": {"type": "string", "minLength": 1},
+                            "language": {"type": "string", "minLength": 2},
+                        },
+                    },
+                ]
+            },
             title="Recherches YouTube",
         ),
         "youtube_search_language": Param(
@@ -368,7 +380,16 @@ with DAG(
     create_source_topics = BashOperator(
         task_id="provision_kafka_pipeline_topics",
         bash_command=r"""
-        YOUTUBE_TOPIC="${YOUTUBE_KAFKA_TOPIC:-youtube.raw.events}"
+        YOUTUBE_TOPIC="${YOUTUBE_METADATA_TOPIC:-youtube.metadata.events}"
+        YOUTUBE_DISCOVERY_TOPIC="${YOUTUBE_DISCOVERY_TOPIC:-youtube.discovery.events}"
+        YOUTUBE_CHANGES_TOPIC="${YOUTUBE_METADATA_CHANGES_TOPIC:-youtube.metadata.changes}"
+        YOUTUBE_TRANSCRIPT_REQUEST_TOPIC="${YOUTUBE_TRANSCRIPT_REQUEST_TOPIC:-youtube.transcript.requests}"
+        YOUTUBE_TRANSCRIPT_RESULT_TOPIC="${YOUTUBE_TRANSCRIPT_RESULT_TOPIC:-youtube.transcript.results}"
+        YOUTUBE_COMMENT_REQUEST_TOPIC="${YOUTUBE_COMMENT_REQUEST_TOPIC:-youtube.comment.requests}"
+        YOUTUBE_COMMENT_RESULT_TOPIC="${YOUTUBE_COMMENT_RESULT_TOPIC:-youtube.comment.results}"
+        YOUTUBE_CHANNEL_REQUEST_TOPIC="${YOUTUBE_CHANNEL_REQUEST_TOPIC:-youtube.channel.requests}"
+        YOUTUBE_CHANNEL_RESULT_TOPIC="${YOUTUBE_CHANNEL_RESULT_TOPIC:-youtube.channel.results}"
+        YOUTUBE_ENGAGEMENT_TOPIC="${YOUTUBE_ENGAGEMENT_TOPIC:-youtube.engagement.snapshots}"
         X_TOPIC="${X_KAFKA_TOPIC:-x.raw.events}"
         REDDIT_TOPIC="${REDDIT_KAFKA_TOPIC:-reddit.raw.events}"
         YOUTUBE_CLEAN_TOPIC="${YOUTUBE_CLEAN_KAFKA_TOPIC:-youtube.clean.events}"
@@ -379,7 +400,11 @@ with DAG(
         REDDIT_DLQ_TOPIC="${REDDIT_DLQ_KAFKA_TOPIC:-reddit.dlq.events}"
         BRONZE_TOPIC="${BRONZE_KAFKA_OUT_TOPIC:-lakehouse.bronze.for_silver}"
         for TOPIC in \
-          "$YOUTUBE_TOPIC" "$X_TOPIC" "$REDDIT_TOPIC" \
+          "$YOUTUBE_TOPIC" "$YOUTUBE_DISCOVERY_TOPIC" "$YOUTUBE_CHANGES_TOPIC" \
+          "$YOUTUBE_TRANSCRIPT_REQUEST_TOPIC" "$YOUTUBE_TRANSCRIPT_RESULT_TOPIC" \
+          "$YOUTUBE_COMMENT_REQUEST_TOPIC" "$YOUTUBE_COMMENT_RESULT_TOPIC" \
+          "$YOUTUBE_CHANNEL_REQUEST_TOPIC" "$YOUTUBE_CHANNEL_RESULT_TOPIC" \
+          "$YOUTUBE_ENGAGEMENT_TOPIC" "$X_TOPIC" "$REDDIT_TOPIC" \
           "$YOUTUBE_CLEAN_TOPIC" "$X_CLEAN_TOPIC" "$REDDIT_CLEAN_TOPIC" \
           "$YOUTUBE_DLQ_TOPIC" "$X_DLQ_TOPIC" "$REDDIT_DLQ_TOPIC"; do
           docker exec kafka /opt/kafka/bin/kafka-topics.sh \
@@ -411,8 +436,8 @@ with DAG(
         task_id="sha256_hash_pii_redact_validate_youtube",
         bash_command=clean_stream_command(
             "youtube",
-            "YOUTUBE_KAFKA_TOPIC",
-            "youtube.raw.events",
+            "YOUTUBE_PIPELINE_SOURCE_TOPICS",
+            "youtube.metadata.events,youtube.transcript.results,youtube.comment.results,youtube.channel.results",
             "YOUTUBE_CLEAN_KAFKA_TOPIC",
             "youtube.clean.events",
             "YOUTUBE_DLQ_KAFKA_TOPIC",
@@ -472,8 +497,8 @@ with DAG(
           spark-master /bin/bash -lc "set -o pipefail; mkdir -p /tmp/user-behavior-lakehouse; /opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=2 --conf spark.executor.cores=1 /opt/spark/jobs/batch/bronze_to_silver_from_kafka.py 2>&1 | tee /tmp/user-behavior-lakehouse/silver_stream.log"
         """,
     )
-    run_youtube_collection = BashOperator(
-        task_id="collect_youtube_api_events",
+    run_youtube_discovery = BashOperator(
+        task_id="discover_youtube_videos",
         execution_timeout=timedelta(
             seconds=int(os.getenv("YOUTUBE_COLLECTION_TIMEOUT_SECONDS", "900")) + 60,
         ),
@@ -485,16 +510,50 @@ with DAG(
         append_env=True,
         bash_command=timed_docker_compose(
             "run --rm "
-            "-e PRODUCER_MAX_EVENTS={{ [params.youtube_event_count, 50] | min }} "
-            "-e YOUTUBE_SEARCH_MAX_RESULTS={{ [params.youtube_event_count, 50] | min }} "
+            "-e YOUTUBE_DISCOVERY_MAX_EVENTS={{ params.youtube_event_count }} "
             "-e YOUTUBE_SEARCH_QUERIES_JSON "
             "-e YOUTUBE_SEARCH_LANGUAGES={{ params.youtube_search_language }} "
             "-e YOUTUBE_SEARCH_LANGUAGE={{ params.youtube_search_language }} "
             "-e YOUTUBE_SEARCH_ORDER={{ params.youtube_search_order }} "
-            "youtube-collector",
+            "youtube-collector python /app/youtube_discovery.py",
             "YOUTUBE_COLLECTION_TIMEOUT_SECONDS",
             900,
-            "youtube-collector",
+            "youtube-discovery",
+        ),
+    )
+
+    run_youtube_metadata = BashOperator(
+        task_id="enrich_youtube_metadata",
+        execution_timeout=timedelta(minutes=45),
+        bash_command=docker_compose(
+            "run --rm youtube-collector python /app/youtube_metadata_worker.py"
+        ),
+    )
+
+    run_youtube_transcripts = BashOperator(
+        task_id="process_youtube_transcript_requests",
+        trigger_rule=TriggerRule.ALL_DONE,
+        execution_timeout=timedelta(minutes=30),
+        bash_command=docker_compose(
+            "run --rm youtube-collector python /app/youtube_transcript_worker.py"
+        ),
+    )
+
+    run_youtube_comments = BashOperator(
+        task_id="process_youtube_comment_requests",
+        trigger_rule=TriggerRule.ALL_DONE,
+        execution_timeout=timedelta(minutes=30),
+        bash_command=docker_compose(
+            "run --rm youtube-collector python /app/youtube_comment_worker.py"
+        ),
+    )
+
+    run_youtube_channels = BashOperator(
+        task_id="refresh_youtube_channel_statistics",
+        trigger_rule=TriggerRule.ALL_DONE,
+        execution_timeout=timedelta(minutes=30),
+        bash_command=docker_compose(
+            "run --rm youtube-collector python /app/youtube_channel_worker.py"
         ),
     )
 
@@ -608,12 +667,6 @@ with DAG(
         bash_command=build_balancing_report_command(),
     )
 
-    backfill_youtube_transcripts = BashOperator(
-        task_id="backfill_youtube_transcripts",
-        execution_timeout=timedelta(hours=1),
-        bash_command=build_youtube_transcripts_command(),
-    )
-
     backfill_youtube_thumbnails = BashOperator(
         task_id="backfill_youtube_thumbnails",
         execution_timeout=timedelta(hours=1),
@@ -624,6 +677,36 @@ with DAG(
         task_id="update_content_analytics",
         execution_timeout=timedelta(hours=1),
         bash_command=build_content_analytics_command(),
+    )
+
+    append_youtube_metadata_versions = BashOperator(
+        task_id="append_youtube_metadata_versions",
+        execution_timeout=timedelta(minutes=30),
+        bash_command=r"""
+        set -euo pipefail
+        docker exec spark-master /opt/spark/bin/spark-submit \
+          --master spark://spark-master:7077 \
+          --driver-memory 512m \
+          --executor-memory 512m \
+          --conf spark.cores.max=2 \
+          --conf spark.executor.cores=1 \
+          /opt/spark/jobs/batch/youtube_metadata_versions.py
+        """,
+    )
+
+    persist_youtube_api_usage = BashOperator(
+        task_id="persist_youtube_api_usage",
+        execution_timeout=timedelta(minutes=30),
+        bash_command=r"""
+        set -euo pipefail
+        docker exec spark-master /opt/spark/bin/spark-submit \
+          --master spark://spark-master:7077 \
+          --driver-memory 512m \
+          --executor-memory 512m \
+          --conf spark.cores.max=1 \
+          --conf spark.executor.cores=1 \
+          /opt/spark/jobs/maintenance/youtube_api_usage.py
+        """,
     )
 
     stop_realtime_streams = BashOperator(
@@ -652,11 +735,22 @@ with DAG(
     start_stack >> wait_services >> acquire_pipeline_lock >> cleanup_spark
     cleanup_spark >> create_source_topics >> ensure_minio_bucket
     ensure_minio_bucket >> [
-        run_youtube_collection,
+        run_youtube_discovery,
         run_x_collection,
         run_reddit_collection,
     ]
-    run_youtube_collection >> start_clean_youtube
+    run_youtube_discovery >> run_youtube_metadata
+    run_youtube_metadata >> [
+        run_youtube_transcripts,
+        run_youtube_comments,
+        run_youtube_channels,
+    ]
+    [
+        run_youtube_metadata,
+        run_youtube_transcripts,
+        run_youtube_comments,
+        run_youtube_channels,
+    ] >> start_clean_youtube
     run_x_collection >> start_clean_x
     run_reddit_collection >> start_clean_reddit
     start_clean_youtube >> wait_clean_youtube
@@ -670,8 +764,8 @@ with DAG(
     start_bronze_stream >> wait_bronze
     wait_bronze >> start_silver_stream
     start_silver_stream >> wait_silver
-    wait_silver >> backfill_youtube_transcripts
-    backfill_youtube_transcripts >> backfill_youtube_thumbnails
+    wait_silver >> [append_youtube_metadata_versions, persist_youtube_api_usage]
+    append_youtube_metadata_versions >> backfill_youtube_thumbnails
     backfill_youtube_thumbnails >> update_content_analytics
     update_content_analytics >> update_balancing_report
     [
@@ -685,14 +779,19 @@ with DAG(
         wait_bronze,
         start_silver_stream,
         wait_silver,
-        backfill_youtube_transcripts,
+        append_youtube_metadata_versions,
+        persist_youtube_api_usage,
         backfill_youtube_thumbnails,
         update_content_analytics,
         update_balancing_report,
     ] >> stop_realtime_streams
     stop_realtime_streams >> release_pipeline_lock
     [
-        run_youtube_collection,
+        run_youtube_discovery,
+        run_youtube_metadata,
+        run_youtube_transcripts,
+        run_youtube_comments,
+        run_youtube_channels,
         run_x_collection,
         run_reddit_collection,
         wait_clean_youtube,
@@ -700,7 +799,8 @@ with DAG(
         wait_clean_reddit,
         wait_bronze,
         wait_silver,
-        backfill_youtube_transcripts,
+        append_youtube_metadata_versions,
+        persist_youtube_api_usage,
         backfill_youtube_thumbnails,
         update_content_analytics,
         update_balancing_report,
