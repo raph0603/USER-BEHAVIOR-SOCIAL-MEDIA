@@ -112,6 +112,10 @@ class EngagementMetadataTests(unittest.TestCase):
 
         expected = {
             "platform_event_id",
+            "content_id",
+            "root_content_id",
+            "content_type",
+            "metadata_collected_at",
             "like_count",
             "view_count",
             "bookmark_count",
@@ -126,10 +130,8 @@ class EngagementMetadataTests(unittest.TestCase):
         self.assertTrue(expected.issubset(field_names))
         self.assertFalse(
             {
-                "content_type",
                 "crosspost_count",
                 "event_id",
-                "metadata_collected_at",
                 "repost_count",
                 "share_count",
             }
@@ -170,9 +172,21 @@ class EngagementMetadataTests(unittest.TestCase):
             / "apply_insight_updates.py",
             ROOT / "playwright" / "insight_refresh.py",
         ]
+        shared_contract = (
+            ROOT / "spark" / "jobs" / "event_contract.py"
+        ).read_text(encoding="utf-8")
+        shared_stages = {
+            "collector_stream_pipeline.py",
+            "kafka_to_iceberg_bronze.py",
+            "bronze_to_silver.py",
+            "bronze_to_silver_from_kafka.py",
+        }
 
         for path in paths:
             source = path.read_text(encoding="utf-8")
+            if path.name in shared_stages:
+                self.assertIn("event_contract", source)
+                source += shared_contract
             with self.subTest(path=path):
                 for field_name in expected:
                     self.assertIn(field_name, source)
@@ -188,6 +202,7 @@ class EngagementMetadataTests(unittest.TestCase):
             "subreddit_weekly_contributions",
             "x_account",
             "youtube_channel_name",
+            "thumbnail_url",
             "language",
             "parent_interaction_id",
             "conversation_id",
@@ -213,9 +228,21 @@ class EngagementMetadataTests(unittest.TestCase):
             / "bronze_to_silver_from_kafka.py",
             ROOT / "spark" / "jobs" / "batch" / "content_analytics.py",
         ]
+        shared_contract = (
+            ROOT / "spark" / "jobs" / "event_contract.py"
+        ).read_text(encoding="utf-8")
+        shared_stages = {
+            "collector_stream_pipeline.py",
+            "kafka_to_iceberg_bronze.py",
+            "bronze_to_silver.py",
+            "bronze_to_silver_from_kafka.py",
+        }
 
         for path in paths:
             source = path.read_text(encoding="utf-8")
+            if path.name in shared_stages:
+                self.assertIn("event_contract", source)
+                source += shared_contract
             with self.subTest(path=path):
                 for field_name in expected:
                     self.assertIn(field_name, source)
@@ -242,7 +269,7 @@ class EngagementMetadataTests(unittest.TestCase):
         )
 
         self.assertIn("LOGGER = logging.getLogger(__name__)", producer)
-        self.assertIn('_env_int("PRODUCER_MAX_EVENTS", 1000)', producer)
+        self.assertIn('_env_int("PRODUCER_MAX_EVENTS", 50)', producer)
         self.assertIn('_env_int("REDDIT_COMMENT_SCAN_LIMIT", 1000)', producer)
         self.assertIn('f"https://old.reddit.com/r/{subreddit}/comments/', producer)
         self.assertIn("REDDIT_COMMENT_SCAN_LIMIT", producer)
@@ -263,7 +290,8 @@ class EngagementMetadataTests(unittest.TestCase):
 
         self.assertIn("X_SEARCH_NAVIGATION_TIMEOUT_MS", producer)
         self.assertIn("X_FAIL_ON_ERROR", producer)
-        self.assertIn("X online collection skipped", producer)
+        self.assertIn("X online collection explicitly ignored by configuration", producer)
+        self.assertIn('_env_bool("X_FAIL_ON_ERROR", True)', producer)
         self.assertIn("_click_x_google_login_button", producer)
         self.assertIn("X_LOGIN_DEBUG_DIR", producer)
         self.assertIn("CollectorSoftBlock", producer)

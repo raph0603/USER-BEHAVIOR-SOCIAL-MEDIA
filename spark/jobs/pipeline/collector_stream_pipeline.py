@@ -1,6 +1,10 @@
 import os
 import re
+import sys
+import json
 from pathlib import Path
+from urllib.parse import quote
+from urllib.request import urlopen
 
 from pyspark.sql import SparkSession
 from pyspark.sql.avro.functions import from_avro
@@ -18,17 +22,10 @@ from pyspark.sql.functions import (
     to_json,
     when,
 )
-from pyspark.sql.types import (
-    ArrayType,
-    BooleanType,
-    DoubleType,
-    LongType,
-    StringType,
-    StructField,
-    StructType,
-)
-
 from cleaning import clean_text, invalid_reason, prepare_text_for_model
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from event_contract import EVENT_COLUMNS, spark_struct_type
 
 
 def _env(name: str, default: str) -> str:
@@ -61,6 +58,77 @@ def _build_spark(app_name: str) -> SparkSession:
     )
 
 
+def _registered_avro_schemas(registry_url: str, subject: str) -> list[tuple[int, str]]:
+    """Load every writer schema so historical Confluent records decode safely."""
+
+    subject_url = quote(subject, safe="")
+    with urlopen(
+        f"{registry_url.rstrip('/')}/subjects/{subject_url}/versions",
+        timeout=30,
+    ) as response:
+        versions = json.load(response)
+
+    schemas = []
+    for version in versions:
+        with urlopen(
+            f"{registry_url.rstrip('/')}/subjects/{subject_url}/versions/{version}",
+            timeout=30,
+        ) as response:
+            registered = json.load(response)
+        schemas.append((int(registered["id"]), registered["schema"]))
+    if not schemas:
+        raise RuntimeError(f"No Avro writer schemas are registered for {subject}")
+    return schemas
+
+
+def _decode_confluent_avro(metadata, registry_url: str, subject: str):
+    """Decode each record with the writer schema identified by its wire header."""
+
+    framed = (
+        metadata.withColumn("_schema_id", expr("conv(hex(substring(value, 2, 4)), 16, 10)").cast("int"))
+        .withColumn("_avro_value", expr("substring(value, 6, length(value) - 5)"))
+    )
+    registered_schemas = _registered_avro_schemas(registry_url, subject)
+    known_schema_ids = [schema_id for schema_id, _ in registered_schemas]
+    decoded_json = lit(None).cast("string")
+    for schema_id, writer_schema in reversed(registered_schemas):
+        decoded_json = when(
+            col("_schema_id") == lit(schema_id),
+            to_json(
+                from_avro(
+                    col("_avro_value"),
+                    writer_schema,
+                    {"mode": "PERMISSIVE"},
+                )
+            ),
+        ).otherwise(decoded_json)
+
+    return (
+        framed.withColumn("_decoded_json", decoded_json)
+        .withColumn(
+            "data",
+            from_json(col("_decoded_json"), spark_struct_type()),
+        )
+        .select(
+            "_kafka_topic",
+            "_kafka_partition",
+            "_kafka_offset",
+            "_schema_id",
+            "data.*",
+        )
+        .withColumn(
+            "_decode_error",
+            when(
+                ~col("_schema_id").isin(known_schema_ids),
+                expr(
+                    "concat('unregistered_schema_id:', "
+                    "cast(_schema_id as string))"
+                ),
+            ).otherwise(lit(None).cast("string")),
+        )
+    )
+
+
 def main() -> None:
     platform = _env("PLATFORM", "").strip().lower()
     if platform not in {"youtube", "x", "reddit"}:
@@ -77,12 +145,16 @@ def main() -> None:
     dlq_topic = _env("DLQ_KAFKA_TOPIC", f"{platform}.dlq.events")
     schema_path = _env("SCHEMA_PATH", "/opt/spark/schemas/playwright_event.avsc")
     value_format = _env("CLEAN_SOURCE_VALUE_FORMAT", "avro").lower()
+    schema_registry_url = _env(
+        "SCHEMA_REGISTRY_URL",
+        "http://schema-registry:8081",
+    )
     bucket = _env("MINIO_BUCKET", "lakehouse")
     privacy_hash_salt = _env("PRIVACY_HASH_SALT", "dev-privacy-salt")
     starting_offsets = _env("CLEAN_STARTING_OFFSETS", "earliest")
     trigger_interval = _env("CLEAN_TRIGGER", "10 seconds")
     trigger_mode = _env("CLEAN_TRIGGER_MODE", "processing_time").lower()
-    checkpoint_version = _env("CLEAN_CHECKPOINT_VERSION", "pre_bronze_v3")
+    checkpoint_version = _env("CLEAN_CHECKPOINT_VERSION", "pre_bronze_v4")
     checkpoint_key = re.sub(r"[^a-zA-Z0-9._-]+", "_", source_topic)
 
     spark = _build_spark(f"collector-event-cleaning-{platform}")
@@ -104,83 +176,32 @@ def main() -> None:
         col("value"),
     )
     if value_format == "avro":
-        schema = Path(schema_path).read_text(encoding="utf-8")
-        decoded = (
-            metadata.withColumn(
-                "avro_value",
-                expr("substring(value, 6, length(value) - 5)"),
-            )
-            .select(
-                "_kafka_topic",
-                "_kafka_partition",
-                "_kafka_offset",
-                from_avro(
-                    col("avro_value"),
-                    schema,
-                    {"mode": "PERMISSIVE"},
-                ).alias("data"),
-            )
-            .select("_kafka_topic", "_kafka_partition", "_kafka_offset", "data.*")
+        Path(schema_path).read_text(encoding="utf-8")
+        decoded = _decode_confluent_avro(
+            metadata,
+            schema_registry_url,
+            f"{source_topic}-value",
         )
     elif value_format == "json":
-        event_schema = StructType(
-            [
-                StructField("user_id", StringType()),
-                StructField("url", StringType()),
-                StructField("title", StringType()),
-                StructField("raw_text", StringType()),
-                StructField("clean_text", StringType()),
-                StructField("text_for_model", StringType()),
-                StructField("timestamp", StringType()),
-                StructField("source", StringType()),
-                StructField("error", StringType()),
-                StructField("platform_event_id", StringType()),
-                StructField("owner_channel_id", StringType()),
-                StructField("subreddit", StringType()),
-                StructField("subreddit_title", StringType()),
-                StructField("subreddit_description", StringType()),
-                StructField("subreddit_created_at", StringType()),
-                StructField("subreddit_visibility", StringType()),
-                StructField("subreddit_weekly_visitors", LongType()),
-                StructField("subreddit_weekly_contributions", LongType()),
-                StructField("x_account", StringType()),
-                StructField("youtube_channel_name", StringType()),
-                StructField("language", StringType()),
-                StructField("parent_interaction_id", StringType()),
-                StructField("conversation_id", StringType()),
-                StructField("transcript_text", StringType()),
-                StructField("transcript_segments_json", StringType()),
-                StructField("duration_seconds", DoubleType()),
-                StructField("has_auto_captions", BooleanType()),
-                StructField(
-                    "collaborator_channel_ids",
-                    ArrayType(StringType()),
-                ),
-                StructField("like_count", LongType()),
-                StructField("view_count", LongType()),
-                StructField("comment_count", LongType()),
-                StructField("reply_count", LongType()),
-                StructField("retweet_count", LongType()),
-                StructField("bookmark_count", LongType()),
-                StructField("score", LongType()),
-                StructField("follower_count", LongType()),
-                StructField("subscriber_count", LongType()),
-                StructField("subreddit_member_count", LongType()),
-            ]
-        )
+        event_schema = spark_struct_type()
         decoded = metadata.select(
             "_kafka_topic",
             "_kafka_partition",
             "_kafka_offset",
             from_json(col("value").cast("string"), event_schema).alias("data"),
-        ).select("_kafka_topic", "_kafka_partition", "_kafka_offset", "data.*")
+        ).select("_kafka_topic", "_kafka_partition", "_kafka_offset", "data.*").withColumn(
+            "_decode_error",
+            lit(None).cast("string"),
+        )
     else:
         raise ValueError(
             f"Unsupported CLEAN_SOURCE_VALUE_FORMAT={value_format!r}; "
             "expected avro or json"
         )
 
-    decoded = decoded.filter(col("source") == lit(platform))
+    decoded = decoded.filter(
+        (col("source") == lit(platform)) | col("_decode_error").isNotNull()
+    )
     protected = (
         decoded.withColumn(
             "user_id",
@@ -195,12 +216,16 @@ def main() -> None:
         .withColumn("raw_text", coalesce(col("raw_text"), col("title")))
         .withColumn("clean_text", clean_text(col("raw_text")))
         .withColumn("text_for_model", prepare_text_for_model(col("clean_text")))
-        .withColumn("title", col("clean_text"))
+        .withColumn("title", clean_text(col("title")))
         .withColumn("error", clean_text(col("error")))
     )
 
     reason = (
-        when(protected["user_id"].isNull(), lit("missing_user_id"))
+        when(
+            protected["_decode_error"].isNotNull(),
+            lit("unregistered_writer_schema"),
+        )
+        .when(protected["user_id"].isNull(), lit("missing_user_id"))
         .when(protected["url"].isNull(), lit("missing_url"))
         .when(protected["timestamp"].isNull(), lit("missing_timestamp"))
         .when(protected["error"].isNotNull(), lit("collector_error"))
@@ -211,47 +236,7 @@ def main() -> None:
     clean_payload = validated.filter(col("_invalid_reason").isNull()).select(
         col("user_id").cast("string").alias("key"),
         to_json(
-            struct(
-                "user_id",
-                "url",
-                "title",
-                "raw_text",
-                "clean_text",
-                "text_for_model",
-                "timestamp",
-                "source",
-                "error",
-                "platform_event_id",
-                "owner_channel_id",
-                "subreddit",
-                "subreddit_title",
-                "subreddit_description",
-                "subreddit_created_at",
-                "subreddit_visibility",
-                "subreddit_weekly_visitors",
-                "subreddit_weekly_contributions",
-                "x_account",
-                "youtube_channel_name",
-                "language",
-                "parent_interaction_id",
-                "conversation_id",
-                "transcript_text",
-                "transcript_segments_json",
-                "duration_seconds",
-                "has_auto_captions",
-                "collaborator_channel_ids",
-                "like_count",
-                "view_count",
-                "comment_count",
-                "reply_count",
-                "retweet_count",
-                "bookmark_count",
-                "score",
-                "follower_count",
-                "subscriber_count",
-                "subreddit_member_count",
-                lit("clean").alias("stage"),
-            )
+            struct(*EVENT_COLUMNS, lit("clean").alias("stage"))
         ).alias("value"),
     )
 
@@ -259,47 +244,11 @@ def main() -> None:
         to_json(
             struct(
                 col("_invalid_reason").alias("reason"),
-                "user_id",
-                "url",
-                "title",
-                "raw_text",
-                "clean_text",
-                "text_for_model",
-                "timestamp",
-                "source",
-                "error",
-                "platform_event_id",
-                "owner_channel_id",
-                "subreddit",
-                "subreddit_title",
-                "subreddit_description",
-                "subreddit_created_at",
-                "subreddit_visibility",
-                "subreddit_weekly_visitors",
-                "subreddit_weekly_contributions",
-                "x_account",
-                "youtube_channel_name",
-                "language",
-                "parent_interaction_id",
-                "conversation_id",
-                "transcript_text",
-                "transcript_segments_json",
-                "duration_seconds",
-                "has_auto_captions",
-                "collaborator_channel_ids",
-                "like_count",
-                "view_count",
-                "comment_count",
-                "reply_count",
-                "retweet_count",
-                "bookmark_count",
-                "score",
-                "follower_count",
-                "subscriber_count",
-                "subreddit_member_count",
+                *EVENT_COLUMNS,
                 "_kafka_topic",
                 "_kafka_partition",
                 "_kafka_offset",
+                "_decode_error",
                 current_timestamp().alias("failed_at"),
             )
         ).alias("value")

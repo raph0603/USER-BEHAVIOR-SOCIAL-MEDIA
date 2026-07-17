@@ -43,9 +43,9 @@ Rules:
 - If the segment explains what the user gains, prefer benefit.
 - If unsure, use uncertain.
 - The segments below were produced by a mechanical sentence splitter. If a
-  segment still mixes two distinct marketing functions, split it yourself in
-  your response (add an extra entry with a new segment_id, e.g. 2.1) and
-  lower the confidence of both halves accordingly.
+  segment still mixes two distinct marketing functions, split it in the
+  response, add a new segment_id such as 2.1, and lower the confidence of both
+  parts accordingly.
 - Return only valid JSON.
 
 Input post (platform: {platform}, language: {language}):

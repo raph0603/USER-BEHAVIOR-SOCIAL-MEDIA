@@ -27,7 +27,7 @@ DEFAULT_KEYWORDS = [
 ]
 DEFAULT_CRAWLER_CONFIG = {
     "youtube_keywords": DEFAULT_KEYWORDS,
-    "youtube_event_count": 1000,
+    "youtube_event_count": 50,
     "youtube_search_language": "en",
     "youtube_keyword_match_mode": "OR",
     "youtube_search_order": "date",
@@ -179,8 +179,8 @@ with youtube_tab:
         youtube_event_count = st.number_input(
             "Maximum videos",
             min_value=1,
-            max_value=5000,
-            value=int(crawler_config["youtube_event_count"]),
+            max_value=50,
+            value=min(max(1, int(crawler_config["youtube_event_count"])), 50),
         )
         youtube_language_label = st.selectbox(
             "Preferred language",

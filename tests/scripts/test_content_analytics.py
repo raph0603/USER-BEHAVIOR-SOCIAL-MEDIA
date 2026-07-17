@@ -28,6 +28,7 @@ class ContentAnalyticsContractTests(unittest.TestCase):
             "subreddit_weekly_visitors",
             "subreddit_weekly_contributions",
             "youtube_channel_id",
+            "thumbnail_url",
             "text_for_model",
         ):
             with self.subTest(column=column):
@@ -100,6 +101,7 @@ class ContentAnalyticsContractTests(unittest.TestCase):
             "transcript_segments_json",
             "duration_seconds",
             "has_auto_captions",
+            "thumbnail_url",
         ):
             with self.subTest(column=column):
                 self.assertIn(column, ca.OPTIONAL_EVENT_COLUMNS)
@@ -151,6 +153,28 @@ class ContentAnalyticsIntegrationTextTests(unittest.TestCase):
         self.assertIn("backfill_youtube_transcripts", source)
         self.assertIn("youtube-transcript-api==1.2.4", requirements)
 
+    def test_airflow_dag_backfills_youtube_thumbnails_without_api_quota(self):
+        source = (
+            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py"
+        ).read_text(encoding="utf-8")
+        no_checks_source = (
+            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse_no_row_checks.py"
+        ).read_text(encoding="utf-8")
+
+        for dag_source in (source, no_checks_source):
+            with self.subTest(dag_source=dag_source[:40]):
+                self.assertIn("build_youtube_thumbnails_command", dag_source)
+                self.assertIn("youtube_thumbnail_backfill.py", dag_source)
+                self.assertIn("backfill_youtube_thumbnails", dag_source)
+                self.assertIn(
+                    "backfill_youtube_transcripts >> backfill_youtube_thumbnails",
+                    dag_source,
+                )
+                self.assertIn(
+                    "backfill_youtube_thumbnails >> update_content_analytics",
+                    dag_source,
+                )
+
     def test_dashboard_surfaces_content_explorer(self):
         source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
 
@@ -169,6 +193,8 @@ class ContentAnalyticsIntegrationTextTests(unittest.TestCase):
             'str.extract(r"/r/([^/]+)"',
             "render_content_analytics()",
             "Transcript keyword",
+            "thumbnail_url",
+            "Data completeness",
         ):
             with self.subTest(value=value):
                 self.assertIn(value, source)

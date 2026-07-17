@@ -19,7 +19,7 @@ PROJECT_DIR = "/workspace"
 
 
 def schedule_interval() -> timedelta | None:
-    raw_value = os.getenv("LAKEHOUSE_SCHEDULE_MINUTES", "60").strip()
+    raw_value = os.getenv("LAKEHOUSE_SCHEDULE_MINUTES", "0").strip()
     try:
         minutes = int(raw_value)
     except ValueError as exc:
@@ -98,7 +98,7 @@ def clean_stream_command(
       -e CLEAN_KAFKA_TOPIC="${{{clean_variable}:-{clean_default}}}" \\
       -e DLQ_KAFKA_TOPIC="${{{dlq_variable}:-{dlq_default}}}" \\
       -e CLEAN_SOURCE_VALUE_FORMAT=avro \\
-      -e CLEAN_CHECKPOINT_VERSION=pre_bronze_v3 \\
+      -e CLEAN_CHECKPOINT_VERSION=pre_bronze_v4 \\
       -e CLEAN_TRIGGER_MODE=available_now \\
       spark-master /bin/bash -lc "set -o pipefail; mkdir -p /tmp/user-behavior-lakehouse; /opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/jobs/pipeline/collector_stream_pipeline.py 2>&1 | tee /tmp/user-behavior-lakehouse/clean_{platform}.log"
     """
@@ -169,9 +169,12 @@ def build_youtube_transcripts_command() -> str:
     return r"""
     set -euo pipefail
     docker exec \
-      -e YOUTUBE_TRANSCRIPT_LANGUAGES="${YOUTUBE_TRANSCRIPT_LANGUAGES:-en,vi}" \
       -e YOUTUBE_TRANSCRIPT_BACKFILL_LIMIT="${YOUTUBE_TRANSCRIPT_BACKFILL_LIMIT:-500}" \
       -e YOUTUBE_TRANSCRIPT_BACKFILL_SLEEP_SECONDS="${YOUTUBE_TRANSCRIPT_BACKFILL_SLEEP_SECONDS:-0.25}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS="${YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS:-5}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS="${YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS:-3600}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_STOP_ON_RATE_LIMIT="${YOUTUBE_TRANSCRIPT_BACKFILL_STOP_ON_RATE_LIMIT:-true}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE="${YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE:-false}" \
       spark-master /opt/spark/bin/spark-submit \
       --master spark://spark-master:7077 \
       --driver-memory 512m \
@@ -179,6 +182,21 @@ def build_youtube_transcripts_command() -> str:
       --conf spark.cores.max=2 \
       --conf spark.executor.cores=1 \
       /opt/spark/jobs/batch/youtube_transcripts.py
+    """
+
+
+def build_youtube_thumbnails_command() -> str:
+    return r"""
+    set -euo pipefail
+    docker exec \
+      -e YOUTUBE_THUMBNAIL_BACKFILL_LIMIT="${YOUTUBE_THUMBNAIL_BACKFILL_LIMIT:-5000}" \
+      spark-master /opt/spark/bin/spark-submit \
+      --master spark://spark-master:7077 \
+      --driver-memory 512m \
+      --executor-memory 512m \
+      --conf spark.cores.max=2 \
+      --conf spark.executor.cores=1 \
+      /opt/spark/jobs/batch/youtube_thumbnail_backfill.py
     """
 
 
@@ -195,10 +213,10 @@ with DAG(
     default_args={"owner": "data-platform", "retries": 0},
     params={
         "youtube_event_count": Param(
-            CRAWLER_CONFIG["youtube_event_count"],
+            min(int(CRAWLER_CONFIG["youtube_event_count"]), 50),
             type="integer",
             minimum=1,
-            maximum=5000,
+            maximum=50,
             title="Nombre d'evenements YouTube",
             description=(
                 "Nombre maximal de nouvelles videos YouTube a publier dans Kafka."
@@ -467,9 +485,10 @@ with DAG(
         append_env=True,
         bash_command=timed_docker_compose(
             "run --rm "
-            "-e PRODUCER_MAX_EVENTS={{ params.youtube_event_count }} "
-            "-e YOUTUBE_SEARCH_MAX_RESULTS={{ params.youtube_event_count }} "
+            "-e PRODUCER_MAX_EVENTS={{ [params.youtube_event_count, 50] | min }} "
+            "-e YOUTUBE_SEARCH_MAX_RESULTS={{ [params.youtube_event_count, 50] | min }} "
             "-e YOUTUBE_SEARCH_QUERIES_JSON "
+            "-e YOUTUBE_SEARCH_LANGUAGES={{ params.youtube_search_language }} "
             "-e YOUTUBE_SEARCH_LANGUAGE={{ params.youtube_search_language }} "
             "-e YOUTUBE_SEARCH_ORDER={{ params.youtube_search_order }} "
             "youtube-collector",
@@ -571,7 +590,7 @@ with DAG(
         task_id="verify_bronze_rows",
         bash_command=r"""
         set -euo pipefail
-        timeout 120s docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/tests/lakehouse/lakehouse_check.py lakehouse.bronze.events 1"
+        timeout 120s docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/tests/lakehouse/lakehouse_check.py lakehouse.bronze.events 1 '{{ dag_run.start_date.isoformat() }}'"
         """,
     )
 
@@ -579,7 +598,7 @@ with DAG(
         task_id="verify_silver_rows",
         bash_command=r"""
         set -euo pipefail
-        timeout 120s docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/tests/lakehouse/lakehouse_check.py lakehouse.silver.events 1"
+        timeout 120s docker exec spark-master /bin/bash -lc "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/tests/lakehouse/lakehouse_check.py lakehouse.silver.events 1 '{{ dag_run.start_date.isoformat() }}'"
         """,
     )
 
@@ -593,6 +612,12 @@ with DAG(
         task_id="backfill_youtube_transcripts",
         execution_timeout=timedelta(hours=1),
         bash_command=build_youtube_transcripts_command(),
+    )
+
+    backfill_youtube_thumbnails = BashOperator(
+        task_id="backfill_youtube_thumbnails",
+        execution_timeout=timedelta(hours=1),
+        bash_command=build_youtube_thumbnails_command(),
     )
 
     update_content_analytics = BashOperator(
@@ -646,7 +671,8 @@ with DAG(
     wait_bronze >> start_silver_stream
     start_silver_stream >> wait_silver
     wait_silver >> backfill_youtube_transcripts
-    backfill_youtube_transcripts >> update_content_analytics
+    backfill_youtube_transcripts >> backfill_youtube_thumbnails
+    backfill_youtube_thumbnails >> update_content_analytics
     update_content_analytics >> update_balancing_report
     [
         start_clean_youtube,
@@ -660,6 +686,7 @@ with DAG(
         start_silver_stream,
         wait_silver,
         backfill_youtube_transcripts,
+        backfill_youtube_thumbnails,
         update_content_analytics,
         update_balancing_report,
     ] >> stop_realtime_streams
@@ -674,6 +701,7 @@ with DAG(
         wait_bronze,
         wait_silver,
         backfill_youtube_transcripts,
+        backfill_youtube_thumbnails,
         update_content_analytics,
         update_balancing_report,
         stop_realtime_streams,

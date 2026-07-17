@@ -36,6 +36,7 @@ COPY spark/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY spark/jobs/ /opt/spark/jobs/
+COPY common/ /opt/spark/jobs/common/
 COPY schemas/ /opt/spark/schemas/
 COPY tests/spark/ /opt/spark/tests/
 
