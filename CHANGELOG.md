@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.15.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.14.0...v1.15.0) (2026-07-17)
+
+
+### Features
+
+* **airflow:** schedule no-row-checks pipeline by default ([8a30377](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/8a30377a067a8de909a60102820885aab227e26f))
+* **deploy:** add Docker Compose release bundle ([e47ef52](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/e47ef526da446cc5adf97a03abed5b88ac7b5d44))
+* **transcripts:** enforce per-video language selection ([3517e39](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/3517e39c33c940924cd59b08b8c9f20c612cff3a))
+* **transcripts:** enforce per-video language selection ([4d992d1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/4d992d14f6380d9ea984318fdfe2e9ecdbd22138))
+* **youtube:** enrich content with thumbnails ([2d736d6](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/2d736d614a674b0e085bd895be2c7d073e4ee8b4))
+
+
+### Bug Fixes
+
+* **ml:** preserve unknown engagement labels ([7fc92ca](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/7fc92cabe2b877c8dfe1cc8ec7a36fc60f4852a5))
+* **pipeline:** restore metadata and transcript flow ([4082dc9](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/4082dc984676bd31f435f337a1403483cd14c593))
+
 ## [1.14.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.13.0...v1.14.0) (2026-07-10)
 
 
