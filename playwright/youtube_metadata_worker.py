@@ -150,6 +150,7 @@ def main() -> None:
     changes_topic = _env("YOUTUBE_METADATA_CHANGES_TOPIC", "youtube.metadata.changes")
     transcript_topic = _env("YOUTUBE_TRANSCRIPT_REQUEST_TOPIC", "youtube.transcript.requests")
     comment_topic = _env("YOUTUBE_COMMENT_REQUEST_TOPIC", "youtube.comment.requests")
+    channel_topic = _env("YOUTUBE_CHANNEL_REQUEST_TOPIC", "youtube.channel.requests")
     state_path = _env("YOUTUBE_PIPELINE_STATE_DB", "/app/state/youtube-pipeline.sqlite")
     output_dir = Path(_env("YOUTUBE_OUTPUT_DIR", "/app/api/yt_raw_json"))
     batch_size = _env_int("YOUTUBE_METADATA_BATCH_SIZE", 20, 1)
@@ -217,6 +218,7 @@ def main() -> None:
                         metadata=metadata,
                         offsets=offsets,
                     )
+                    refreshed_state = state.metadata_state(video_id) or {}
                     event = pipeline_event(
                         "youtube.metadata.observed",
                         video_id,
@@ -242,6 +244,12 @@ def main() -> None:
                         metadata_status="success",
                         metadata_collected_at=isoformat(observed_at),
                         last_metadata_refresh_at=isoformat(observed_at),
+                        next_metadata_refresh_at=refreshed_state.get(
+                            "next_metadata_refresh_at"
+                        ),
+                        metadata_refresh_count=refreshed_state.get(
+                            "metadata_refresh_count"
+                        ),
                         metadata_hash=current_hash,
                         previous_metadata_hash=previous_hash,
                         changed_fields=changed_fields,
@@ -295,6 +303,17 @@ def main() -> None:
                                 )
                             ],
                         )
+                        if metadata.get("channel_id"):
+                            producer.publish(
+                                channel_topic,
+                                [
+                                    pipeline_event(
+                                        "youtube.channel.requested",
+                                        video_id,
+                                        **request_fields,
+                                    )
+                                ],
+                            )
                 except BaseException as exc:
                     blocked = _blocked(exc)
                     permanent = attempt_count >= max_attempts and not blocked
@@ -310,6 +329,40 @@ def main() -> None:
                         next_attempt_at=None if permanent else observed_at + delay,
                         error=exc,
                         permanent=permanent,
+                    )
+                    producer.publish(
+                        metadata_topic,
+                        [
+                            pipeline_event(
+                                "youtube.metadata.failed",
+                                video_id,
+                                correlation_id=row["correlation_id"],
+                                collected_at=observed_at,
+                                attempt_count=attempt_count,
+                                published_at=row.get("published_at"),
+                                metadata_source="yt-dlp",
+                                metadata_schema_version="1.0",
+                                yt_dlp_version=yt_dlp.version.__version__,
+                                enrichment_status=(
+                                    "permanent_error" if permanent else "retryable_error"
+                                ),
+                                metadata_status=(
+                                    "failed" if permanent else "pending"
+                                ),
+                                next_attempt_at=(
+                                    (observed_at + delay).isoformat()
+                                    if not permanent
+                                    else None
+                                ),
+                                error_class=type(exc).__name__,
+                                error_code="yt_dlp_blocked" if blocked else "yt_dlp_error",
+                                error_message=str(exc)[:1000],
+                                metadata_error_code=(
+                                    "yt_dlp_blocked" if blocked else "yt_dlp_error"
+                                ),
+                                metadata_error_message=str(exc)[:1000],
+                            )
+                        ],
                     )
                     summary["failed"] += 1
                     if blocked:

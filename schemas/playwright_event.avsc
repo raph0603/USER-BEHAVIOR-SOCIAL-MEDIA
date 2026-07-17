@@ -102,6 +102,7 @@
     { "name": "yt_dlp_version", "type": ["null", "string"], "default": null },
     { "name": "enrichment_status", "type": ["null", "string"], "default": null },
     { "name": "next_attempt_at", "type": ["null", "string"], "default": null },
+    { "name": "error_class", "type": ["null", "string"], "default": null },
     { "name": "metadata_hash", "type": ["null", "string"], "default": null },
     { "name": "previous_metadata_hash", "type": ["null", "string"], "default": null },
     {

@@ -19,7 +19,7 @@ PROJECT_DIR = "/workspace"
 
 
 def schedule_interval() -> timedelta | None:
-    raw_value = os.getenv("INSIGHT_REFRESH_SCHEDULE_MINUTES", "1440").strip()
+    raw_value = os.getenv("INSIGHT_REFRESH_SCHEDULE_MINUTES", "30").strip()
     try:
         minutes = int(raw_value)
     except ValueError as exc:
@@ -211,6 +211,21 @@ with DAG(
         """,
     )
 
+    compute_velocity = BashOperator(
+        task_id="compute_youtube_velocity_and_virality",
+        execution_timeout=timedelta(minutes=30),
+        bash_command=r"""
+        set -euo pipefail
+        docker exec spark-master /opt/spark/bin/spark-submit \
+          --master spark://spark-master:7077 \
+          --driver-memory 512m \
+          --executor-memory 512m \
+          --conf spark.cores.max=2 \
+          --conf spark.executor.cores=1 \
+          /opt/spark/jobs/batch/youtube_engagement_velocity.py
+        """,
+    )
+
     apply_updates = BashOperator(
         task_id="merge_latest_engagement_values",
         execution_timeout=timedelta(minutes=30),
@@ -237,4 +252,5 @@ with DAG(
     export_targets >> [refresh_youtube, refresh_x, refresh_reddit]
     [refresh_youtube, refresh_x, refresh_reddit] >> validate_refresh_output
     validate_refresh_output >> [append_snapshots, apply_updates]
-    [append_snapshots, apply_updates] >> release_lock
+    append_snapshots >> compute_velocity
+    [compute_velocity, apply_updates] >> release_lock

@@ -207,6 +207,87 @@ class YouTubeStateTests(unittest.TestCase):
                     state.breaker_open("transcript", observed + timedelta(hours=2))
                 )
 
+    def test_request_state_and_api_usage_are_persistent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            observed = datetime(2026, 7, 17, tzinfo=UTC)
+            with YouTubeStateStore(Path(directory) / "youtube.sqlite") as state:
+                self.assertTrue(
+                    state.enqueue_request(
+                        "transcript",
+                        video_id="video-1",
+                        correlation_id="correlation",
+                        first_seen_at=observed,
+                        published_at=observed,
+                        request={"language": "en"},
+                    )
+                )
+                self.assertEqual(
+                    len(state.due_requests("transcript", now=observed, limit=10)),
+                    1,
+                )
+                state.record_request_result(
+                    "transcript",
+                    video_id="video-1",
+                    status="available",
+                    attempted_at=observed,
+                    next_attempt_at=None,
+                    result={"text": "hello"},
+                )
+                self.assertEqual(
+                    state.due_requests("transcript", now=observed, limit=10),
+                    [],
+                )
+                state.record_api_usage(
+                    endpoint="videos.list",
+                    request_count=1,
+                    resource_count=50,
+                    success_count=1,
+                    error_count=0,
+                    quota_bucket="recent_metrics",
+                    observed_at=observed,
+                )
+                self.assertEqual(
+                    state.api_requests_today("videos.list", observed),
+                    1,
+                )
+
+    def test_channel_cache_is_persistent_and_deduplicated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            observed = datetime(2026, 7, 17, tzinfo=UTC)
+            path = Path(directory) / "youtube.sqlite"
+            with YouTubeStateStore(path) as state:
+                self.assertTrue(
+                    state.enqueue_channel(
+                        channel_id="channel-1",
+                        first_seen_at=observed,
+                        last_video_published_at=observed,
+                    )
+                )
+                self.assertFalse(
+                    state.enqueue_channel(
+                        channel_id="channel-1",
+                        first_seen_at=observed,
+                        last_video_published_at=observed,
+                    )
+                )
+                state.record_channel_success(
+                    channel_id="channel-1",
+                    observed_at=observed,
+                    subscriber_count=123,
+                    hidden_subscriber_count=False,
+                    active_after=observed - timedelta(days=30),
+                    active_interval=timedelta(days=1),
+                    inactive_interval=timedelta(days=7),
+                )
+
+            with YouTubeStateStore(path) as state:
+                row = state.channel_state("channel-1")
+                self.assertEqual(row["subscriber_count"], 123)
+                self.assertEqual(
+                    row["next_refresh_at"],
+                    (observed + timedelta(days=1)).isoformat(),
+                )
+
 
 class YouTubeSchemaCompatibilityTests(unittest.TestCase):
     def test_new_avro_fields_are_nullable_with_null_defaults(self):

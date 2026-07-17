@@ -26,8 +26,14 @@ DEFAULT_CRAWLER_CONFIG = {
     ],
     "youtube_event_count": 50,
     "youtube_search_queries": [
-        '"electric vehicle" | EV | "electric car" | Tesla | '
-        '"EV charging" | "battery range"'
+        {
+            "query": "electric vehicle review|EV charging battery range",
+            "language": "en",
+        },
+        {
+            "query": "đánh giá xe điện|xe điện VinFast trạm sạc",
+            "language": "vi",
+        },
     ],
     "youtube_search_language": "en",
     "youtube_keyword_match_mode": "OR",

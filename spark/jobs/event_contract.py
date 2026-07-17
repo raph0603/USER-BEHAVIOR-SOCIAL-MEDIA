@@ -95,6 +95,7 @@ EVENT_FIELD_TYPES = {
     "yt_dlp_version": "string",
     "enrichment_status": "string",
     "next_attempt_at": "string",
+    "error_class": "string",
     "metadata_hash": "string",
     "previous_metadata_hash": "string",
     "changed_fields": "array_string",
