@@ -117,6 +117,7 @@ def main() -> None:
     state_path = _env("YOUTUBE_PIPELINE_STATE_DB", "/app/state/youtube-pipeline.sqlite")
     batch_size = _env_int("YOUTUBE_COMMENT_BATCH_SIZE", 10)
     max_pages = _env_int("YOUTUBE_COMMENT_MAX_PAGES", 3)
+    daily_budget = _env_int("YOUTUBE_COMMENT_DAILY_REQUEST_BUDGET", 100)
     youtube = build("youtube", "v3", developerKey=api_key)
     producer = EventProducer(
         bootstrap_servers=bootstrap,
@@ -130,13 +131,21 @@ def main() -> None:
         "pages": 0,
         "stopped_on_known": 0,
         "errors": 0,
+        "budget_exhausted": False,
     }
     with YouTubeStateStore(state_path) as state:
         _ingest_requests(state, bootstrap, registry, request_topic, batch_size)
         now = utc_now()
         due = state.due_requests("comment", now=now, limit=batch_size)
         summary["due"] = len(due)
+        remaining_budget = max(
+            0,
+            daily_budget - state.api_requests_today("commentThreads.list", now),
+        )
         for row in due:
+            if remaining_budget == 0:
+                summary["budget_exhausted"] = True
+                break
             attempted_at = utc_now()
             attempt_count = int(row.get("attempt_count") or 0) + 1
             try:
@@ -144,8 +153,9 @@ def main() -> None:
                     youtube,
                     row["video_id"],
                     known_comment_ids=state.known_comment_ids(row["video_id"]),
-                    max_pages=max_pages,
+                    max_pages=min(max_pages, remaining_budget),
                 )
+                remaining_budget = max(0, remaining_budget - pages)
                 state.record_api_usage(
                     endpoint="commentThreads.list",
                     request_count=pages,
@@ -198,6 +208,7 @@ def main() -> None:
                 summary["pages"] += pages
                 summary["stopped_on_known"] += int(stopped)
             except HttpError as exc:
+                remaining_budget = max(0, remaining_budget - 1)
                 status_code = int(getattr(getattr(exc, "resp", None), "status", 0) or 0)
                 permanent = status_code in {400, 404}
                 status = "permanent_error" if permanent else "retryable_error"
@@ -218,6 +229,28 @@ def main() -> None:
                     attempted_at=attempted_at,
                     next_attempt_at=next_attempt,
                     error_class=f"youtube_http_{status_code or 'error'}",
+                    error_message=str(exc),
+                )
+                summary["errors"] += 1
+            except BaseException as exc:
+                remaining_budget = max(0, remaining_budget - 1)
+                state.record_api_usage(
+                    endpoint="commentThreads.list",
+                    request_count=1,
+                    resource_count=0,
+                    success_count=0,
+                    error_count=1,
+                    quota_bucket="secondary",
+                    observed_at=attempted_at,
+                )
+                next_attempt = attempted_at + timedelta(hours=6)
+                state.record_request_result(
+                    "comment",
+                    video_id=row["video_id"],
+                    status="retryable_error",
+                    attempted_at=attempted_at,
+                    next_attempt_at=next_attempt,
+                    error_class=type(exc).__name__,
                     error_message=str(exc),
                 )
                 summary["errors"] += 1

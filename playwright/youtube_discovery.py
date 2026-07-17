@@ -150,7 +150,9 @@ def main() -> None:
                 break
             started_at = utc_now()
             daily_budget = _env_int("YOUTUBE_SEARCH_DAILY_REQUEST_BUDGET", 100)
-            if state.api_requests_today("search.list", started_at) >= daily_budget:
+            used_budget = state.api_requests_today("search.list", started_at)
+            remaining_budget = max(0, daily_budget - used_budget)
+            if remaining_budget == 0:
                 totals["budget_exhausted"] = True
                 break
             watermark = state.watermark(spec.query_id) or {}
@@ -166,7 +168,7 @@ def main() -> None:
                 spec,
                 published_after_value=isoformat(after).replace("+00:00", "Z"),
                 backfill=backfill,
-                max_pages=max_pages,
+                max_pages=min(max_pages, remaining_budget),
                 order=order,
             )
             totals["search_calls"] += calls

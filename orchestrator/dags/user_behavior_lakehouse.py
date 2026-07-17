@@ -434,6 +434,7 @@ with DAG(
 
     start_clean_youtube = BashOperator(
         task_id="sha256_hash_pii_redact_validate_youtube",
+        trigger_rule=TriggerRule.ALL_DONE,
         bash_command=clean_stream_command(
             "youtube",
             "YOUTUBE_PIPELINE_SOURCE_TOPICS",
