@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import timedelta
 
 from common.transcripts import fetch_transcript
-from common.youtube_pipeline import parse_datetime, utc_now
+from common.youtube_pipeline import finalize_worker_summary, parse_datetime, utc_now
 from common.youtube_state import YouTubeStateStore
 from youtube_pipeline_events import EventConsumer, EventProducer, pipeline_event
 
@@ -77,6 +78,7 @@ def _ingest_requests(state, bootstrap, registry, topic, limit):
 
 
 def main() -> None:
+    run_started = time.monotonic()
     bootstrap = _env("KAFKA_BOOTSTRAP", "kafka:9092")
     registry = _env("SCHEMA_REGISTRY_URL", "http://schema-registry:8081")
     schema_path = _env("SCHEMA_PATH", "/app/schemas/playwright_event.avsc")
@@ -98,7 +100,16 @@ def main() -> None:
         now = utc_now()
         if state.breaker_open("transcript", now):
             summary["circuit_open"] = True
-            print(json.dumps(summary, sort_keys=True))
+            print(
+                json.dumps(
+                    finalize_worker_summary(
+                        summary,
+                        elapsed_seconds=time.monotonic() - run_started,
+                        processed=0,
+                    ),
+                    sort_keys=True,
+                )
+            )
             return
         due = state.due_requests("transcript", now=now, limit=batch_size)
         summary["due"] = len(due)
@@ -167,7 +178,17 @@ def main() -> None:
                 )
                 summary["circuit_open"] = True
                 break
-    print(json.dumps(summary, sort_keys=True))
+    processed = summary["succeeded"] + summary["failed"]
+    print(
+        json.dumps(
+            finalize_worker_summary(
+                summary,
+                elapsed_seconds=time.monotonic() - run_started,
+                processed=processed,
+            ),
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":

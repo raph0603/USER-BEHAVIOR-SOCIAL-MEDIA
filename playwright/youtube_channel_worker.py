@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import timedelta
 from typing import Any, Iterable
 
 from googleapiclient.discovery import build
 
-from common.youtube_pipeline import retry_delay, utc_now
+from common.youtube_pipeline import finalize_worker_summary, retry_delay, utc_now
 from common.youtube_state import YouTubeStateStore
 from youtube_pipeline_events import EventConsumer, EventProducer, pipeline_event
 
@@ -64,6 +65,7 @@ def _subscriber_count(statistics: dict[str, Any]) -> int | None:
 
 
 def main() -> None:
+    run_started = time.monotonic()
     api_key = _env("YOUTUBE_API_KEY")
     if not api_key:
         raise RuntimeError("YOUTUBE_API_KEY is required for channel refresh")
@@ -122,7 +124,16 @@ def main() -> None:
         due = state.due_channels(now=now, limit=min(run_limit, remaining * 50))
         if not due:
             summary["budget_exhausted"] = remaining == 0
-            print(json.dumps(summary, sort_keys=True))
+            print(
+                json.dumps(
+                    finalize_worker_summary(
+                        summary,
+                        elapsed_seconds=time.monotonic() - run_started,
+                        processed=0,
+                    ),
+                    sort_keys=True,
+                )
+            )
             return
 
         client = build("youtube", "v3", developerKey=api_key, cache_discovery=False)
@@ -226,7 +237,17 @@ def main() -> None:
                     )
                     summary["failed"] += 1
 
-    print(json.dumps(summary, sort_keys=True))
+    processed = summary["refreshed"] + summary["missing"] + summary["failed"]
+    print(
+        json.dumps(
+            finalize_worker_summary(
+                summary,
+                elapsed_seconds=time.monotonic() - run_started,
+                processed=processed,
+            ),
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":

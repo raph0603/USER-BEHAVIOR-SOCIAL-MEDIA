@@ -8,6 +8,7 @@ from common.youtube_pipeline import (
     SearchQuery,
     canonical_metadata,
     changed_metadata_fields,
+    finalize_worker_summary,
     metadata_hash,
     metrics_refresh_interval,
     next_metadata_refresh_at,
@@ -121,6 +122,14 @@ class YouTubeSchedulingTests(unittest.TestCase):
         for age, expected in cases:
             with self.subTest(age=age):
                 self.assertEqual(metrics_refresh_interval(age), expected)
+
+    def test_worker_summary_reports_average_processing_time(self):
+        result = finalize_worker_summary(
+            {"due": 2}, elapsed_seconds=5.0, processed=2
+        )
+
+        self.assertEqual(result["elapsed_seconds"], 5.0)
+        self.assertEqual(result["avg_seconds_per_video"], 2.5)
 
 
 class YouTubeStateTests(unittest.TestCase):
