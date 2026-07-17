@@ -66,6 +66,7 @@ def _ensure_columns(spark: SparkSession, table: str, columns: dict[str, str]) ->
 
 def main() -> None:
     lookback_days = _env_int("INSIGHT_REFRESH_LOOKBACK_DAYS", 15)
+    youtube_max_age_days = _env_int("YOUTUBE_METRICS_MAX_AGE_DAYS", 3650)
     max_per_source = _env_int("INSIGHT_REFRESH_MAX_PER_SOURCE", 100)
     output_path = Path(
         _env(
@@ -82,6 +83,10 @@ def main() -> None:
         {
             "platform_event_id": "STRING",
             "metadata_refreshed_at": "TIMESTAMP",
+            "last_metrics_refresh_at": "TIMESTAMP",
+            "next_metrics_refresh_at": "TIMESTAMP",
+            "metrics_refresh_count": "INT",
+            "metrics_refresh_status": "STRING",
         },
     )
 
@@ -89,8 +94,26 @@ def main() -> None:
         spark.table("lakehouse.silver.events")
         .filter(col("source").isin("youtube", "x", "reddit"))
         .filter(
-            col("event_ts")
-            >= current_timestamp() - expr(f"INTERVAL {lookback_days} DAYS")
+            (
+                (col("source") == "youtube")
+                & (
+                    col("event_ts")
+                    >= current_timestamp()
+                    - expr(f"INTERVAL {youtube_max_age_days} DAYS")
+                )
+            )
+            | (
+                (col("source") != "youtube")
+                & (
+                    col("event_ts")
+                    >= current_timestamp() - expr(f"INTERVAL {lookback_days} DAYS")
+                )
+            )
+        )
+        .filter(
+            (col("source") != "youtube")
+            | col("next_metrics_refresh_at").isNull()
+            | (col("next_metrics_refresh_at") <= current_timestamp())
         )
         .filter(col("url").isNotNull())
         .dropDuplicates(
@@ -99,7 +122,10 @@ def main() -> None:
         .withColumn(
             "_rank",
             row_number().over(
-                Window.partitionBy("source").orderBy(col("event_ts").desc())
+                Window.partitionBy("source").orderBy(
+                    col("next_metrics_refresh_at").asc_nulls_first(),
+                    col("event_ts").desc(),
+                )
             ),
         )
         .filter(col("_rank") <= max_per_source)
@@ -110,6 +136,14 @@ def main() -> None:
             "platform_event_id",
             col("event_ts").cast("string").alias("event_ts"),
             "source",
+            col("metadata_refreshed_at").cast("string").alias("metadata_refreshed_at"),
+            col("last_metrics_refresh_at").cast("string").alias("last_metrics_refresh_at"),
+            col("next_metrics_refresh_at").cast("string").alias("next_metrics_refresh_at"),
+            "metrics_refresh_count",
+            "metrics_refresh_status",
+            "like_count",
+            "view_count",
+            "comment_count",
         )
         .orderBy("source", col("event_ts").desc())
     )

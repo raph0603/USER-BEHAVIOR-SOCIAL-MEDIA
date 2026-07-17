@@ -5,6 +5,7 @@ from pathlib import Path
 from pyspark.sql import SparkSession
 from pyspark.sql.types import (
     ArrayType,
+    IntegerType,
     LongType,
     StringType,
     StructField,
@@ -30,6 +31,10 @@ AUTHOR_COLUMNS = (
 )
 METADATA_COLUMNS = (
     "platform_event_id",
+)
+METRICS_REFRESH_COLUMNS = (
+    "metrics_refresh_count",
+    "metrics_refresh_status",
 )
 
 
@@ -91,14 +96,25 @@ def _load_updates(path: Path) -> list[dict]:
 def _merge_updates(spark: SparkSession, table: str) -> None:
     assignments = ",\n".join(
         f"t.{column} = COALESCE(s.{column}, t.{column})"
-        for column in (*METADATA_COLUMNS, *AUTHOR_COLUMNS, *METRIC_COLUMNS)
+        for column in (
+            *METADATA_COLUMNS,
+            *AUTHOR_COLUMNS,
+            *METRIC_COLUMNS,
+            *METRICS_REFRESH_COLUMNS,
+        )
     )
     assignments = (
         f"{assignments},\n"
         "t.metadata_refreshed_at = COALESCE("
         "to_timestamp(s.metadata_refreshed_at), "
         "t.metadata_refreshed_at"
-        ")"
+        "),\n"
+        "t.last_metrics_refresh_at = COALESCE("
+        "to_timestamp(s.last_metrics_refresh_at), "
+        "t.last_metrics_refresh_at),\n"
+        "t.next_metrics_refresh_at = COALESCE("
+        "to_timestamp(s.next_metrics_refresh_at), "
+        "t.next_metrics_refresh_at)"
     )
     spark.sql(
         f"""
@@ -148,6 +164,10 @@ def main() -> None:
             StructField("source", StringType(), False),
             StructField("platform_event_id", StringType(), True),
             StructField("metadata_refreshed_at", StringType(), True),
+            StructField("last_metrics_refresh_at", StringType(), True),
+            StructField("next_metrics_refresh_at", StringType(), True),
+            StructField("metrics_refresh_count", IntegerType(), True),
+            StructField("metrics_refresh_status", StringType(), True),
             StructField("owner_channel_id", StringType(), True),
             StructField(
                 "collaborator_channel_ids",
@@ -184,6 +204,22 @@ def main() -> None:
             spark.sql(
                 f"ALTER TABLE {table} ADD COLUMN "
                 "collaborator_channel_ids ARRAY<STRING>"
+            )
+        if "last_metrics_refresh_at" not in current_columns:
+            spark.sql(
+                f"ALTER TABLE {table} ADD COLUMN last_metrics_refresh_at TIMESTAMP"
+            )
+        if "next_metrics_refresh_at" not in current_columns:
+            spark.sql(
+                f"ALTER TABLE {table} ADD COLUMN next_metrics_refresh_at TIMESTAMP"
+            )
+        if "metrics_refresh_count" not in current_columns:
+            spark.sql(
+                f"ALTER TABLE {table} ADD COLUMN metrics_refresh_count INT"
+            )
+        if "metrics_refresh_status" not in current_columns:
+            spark.sql(
+                f"ALTER TABLE {table} ADD COLUMN metrics_refresh_status STRING"
             )
         for metric_column in METRIC_COLUMNS:
             if metric_column not in current_columns:

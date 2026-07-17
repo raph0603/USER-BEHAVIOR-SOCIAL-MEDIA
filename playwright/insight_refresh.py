@@ -12,9 +12,8 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
+from common.youtube_pipeline import next_metrics_refresh_at, parse_datetime
 from engagement import extract_x_followers, extract_x_metric, parse_count
-import youtube_authors
-from youtube_authors import fetch_youtube_collaborators
 
 
 METRIC_COLUMNS = (
@@ -51,14 +50,27 @@ def _load_targets(path: Path, source: str) -> list[dict]:
         return targets
 
 
-def _base_update(target: dict) -> dict:
+def _base_update(target: dict, observed_at: datetime | None = None) -> dict:
+    observed_at = observed_at or datetime.now(timezone.utc)
+    observed_value = observed_at.isoformat()
+    try:
+        next_refresh = next_metrics_refresh_at(
+            target.get("event_ts") or observed_value,
+            observed_at,
+        ).isoformat()
+    except ValueError:
+        next_refresh = None
     update = {
         "user_id": target.get("user_id"),
         "url": target.get("url"),
         "event_ts": target.get("event_ts"),
         "source": target.get("source"),
         "platform_event_id": target.get("platform_event_id"),
-        "metadata_refreshed_at": datetime.now(timezone.utc).isoformat(),
+        "metadata_refreshed_at": observed_value,
+        "last_metrics_refresh_at": observed_value,
+        "next_metrics_refresh_at": next_refresh,
+        "metrics_refresh_count": int(target.get("metrics_refresh_count") or 0) + 1,
+        "metrics_refresh_status": "success",
     }
     update.update({column: None for column in METRIC_COLUMNS})
     update["owner_channel_id"] = None
@@ -73,6 +85,34 @@ def _youtube_video_id(url: str) -> str | None:
     return parse_qs(parsed.query).get("v", [None])[0]
 
 
+def _youtube_growth_multiplier(
+    target: dict,
+    current_view_count: int | None,
+    observed_at: datetime,
+) -> float:
+    previous_view_count = parse_count(target.get("view_count"))
+    previous_observed_at = parse_datetime(
+        target.get("last_metrics_refresh_at")
+        or target.get("metadata_refreshed_at")
+    )
+    if (
+        current_view_count is None
+        or previous_view_count is None
+        or previous_observed_at is None
+        or observed_at <= previous_observed_at
+    ):
+        return 1.0
+    elapsed_hours = (observed_at - previous_observed_at).total_seconds() / 3600
+    views_per_hour = max(0, current_view_count - previous_view_count) / elapsed_hours
+    threshold = float(_env("YOUTUBE_HIGH_GROWTH_VIEWS_PER_HOUR", "1000"))
+    if views_per_hour < threshold:
+        return 1.0
+    return max(
+        0.25,
+        min(1.0, float(_env("YOUTUBE_HIGH_GROWTH_INTERVAL_MULTIPLIER", "0.5"))),
+    )
+
+
 def _refresh_youtube(targets: list[dict]) -> list[dict]:
     api_key = _env("YOUTUBE_API_KEY")
     if not api_key:
@@ -81,53 +121,52 @@ def _refresh_youtube(targets: list[dict]) -> list[dict]:
     targets_by_id = {
         video_id: target
         for target in targets
-        if (video_id := _youtube_video_id(target["url"]))
+        if (
+            video_id := (
+                target.get("platform_event_id")
+                or _youtube_video_id(target["url"])
+            )
+        )
     }
     youtube = build("youtube", "v3", developerKey=api_key)
     updates = []
     video_ids = list(targets_by_id)
     for start in range(0, len(video_ids), 50):
         batch_ids = video_ids[start : start + 50]
+        observed_at = datetime.now(timezone.utc)
         response = (
             youtube.videos()
-            .list(part="snippet,statistics", id=",".join(batch_ids))
+            .list(part="statistics", id=",".join(batch_ids))
             .execute()
         )
-        items = response.get("items", [])
-        owner_by_id = {
-            item["id"]: owner_channel_id
-            for item in items
-            if (
-                owner_channel_id := (
-                    item.get("snippet", {}).get("channelId")
-                )
-            )
+        items_by_id = {
+            item["id"]: item for item in response.get("items", []) if item.get("id")
         }
-        collaborators_by_id = fetch_youtube_collaborators(
-            owner_by_id,
-            timeout_seconds=float(
-                _env("YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS", "20")
-            ),
-            max_workers=int(
-                _env("YOUTUBE_AUTHOR_FETCH_WORKERS", "8")
-            ),
-        )
-        for item in items:
-            target = targets_by_id.get(item.get("id"))
-            if not target:
+        for video_id in batch_ids:
+            target = targets_by_id[video_id]
+            item = items_by_id.get(video_id)
+            update = _base_update(target, observed_at)
+            if item is None:
+                update["metrics_refresh_status"] = "not_available"
+                updates.append(update)
                 continue
             statistics = item.get("statistics", {})
-            owner_channel_id = item.get("snippet", {}).get("channelId")
-            update = _base_update(target)
+            view_count = parse_count(statistics.get("viewCount"))
+            growth_multiplier = _youtube_growth_multiplier(
+                target,
+                view_count,
+                observed_at,
+            )
+            update["next_metrics_refresh_at"] = next_metrics_refresh_at(
+                target.get("event_ts") or observed_at,
+                observed_at,
+                growth_multiplier=growth_multiplier,
+            ).isoformat()
             update.update(
                 {
-                    "owner_channel_id": owner_channel_id,
-                    "collaborator_channel_ids": collaborators_by_id.get(
-                        item["id"]
-                    ),
                     "like_count": parse_count(statistics.get("likeCount")),
-                    "view_count": parse_count(statistics.get("viewCount")),
-                    "subscriber_count": youtube_authors.SUBSCRIBER_COUNTS.get(item["id"]),
+                    "view_count": view_count,
+                    "comment_count": parse_count(statistics.get("commentCount")),
                 }
             )
             updates.append(update)
