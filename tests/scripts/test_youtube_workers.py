@@ -21,6 +21,7 @@ sys.modules.setdefault("googleapiclient.errors", googleapiclient_errors)
 
 import youtube_comment_worker
 import youtube_channel_worker
+import youtube_discovery
 
 
 class FakeRequest:
@@ -74,6 +75,30 @@ class FakeChannelYouTube:
 
     def channels(self):
         return self._channels
+
+
+class FakeSearch:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def list(self, **kwargs):
+        self.calls.append(kwargs)
+        index = len(self.calls)
+        return FakeRequest(
+            {
+                "items": [{"id": {"videoId": f"video-{index}"}}],
+                "nextPageToken": f"page-{index + 1}",
+            }
+        )
+
+
+class FakeSearchYouTube:
+    def __init__(self):
+        self.calls = []
+        self._search = FakeSearch(self.calls)
+
+    def search(self):
+        return self._search
 
 
 def thread(comment_id):
@@ -154,6 +179,39 @@ class YouTubeChannelWorkerTests(unittest.TestCase):
 
         self.assertNotIn("youtube.com/watch", source)
         self.assertIn("channels.list", source)
+
+
+class YouTubeDiscoveryWorkerTests(unittest.TestCase):
+    def test_continuous_discovery_reads_one_page(self):
+        youtube = FakeSearchYouTube()
+        spec = youtube_discovery.SearchQuery.create("electric vehicle", "en")
+
+        _items, calls = youtube_discovery.search_query(
+            youtube,
+            spec,
+            published_after_value="2026-07-17T00:00:00Z",
+            backfill=False,
+            max_pages=10,
+            order="date",
+        )
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(youtube.calls[0]["maxResults"], 50)
+
+    def test_explicit_backfill_respects_page_limit(self):
+        youtube = FakeSearchYouTube()
+        spec = youtube_discovery.SearchQuery.create("electric vehicle", "en")
+
+        _items, calls = youtube_discovery.search_query(
+            youtube,
+            spec,
+            published_after_value="2026-07-17T00:00:00Z",
+            backfill=True,
+            max_pages=3,
+            order="date",
+        )
+
+        self.assertEqual(calls, 3)
 
 
 class YouTubeWorkerArchitectureTests(unittest.TestCase):
