@@ -14,6 +14,7 @@ from typing import Any
 import yt_dlp
 
 from common.youtube_pipeline import (
+    finalize_worker_summary,
     isoformat,
     parse_hour_offsets,
     retry_delay,
@@ -142,6 +143,7 @@ def _ingest_discoveries(
 
 
 def main() -> None:
+    run_started = time.monotonic()
     bootstrap = _env("KAFKA_BOOTSTRAP", "kafka:9092")
     registry = _env("SCHEMA_REGISTRY_URL", "http://schema-registry:8081")
     schema_path = _env("SCHEMA_PATH", "/app/schemas/playwright_event.avsc")
@@ -187,7 +189,16 @@ def main() -> None:
         now = utc_now()
         if state.breaker_open("yt_dlp", now):
             summary["circuit_open"] = True
-            print(json.dumps(summary, sort_keys=True))
+            print(
+                json.dumps(
+                    finalize_worker_summary(
+                        summary,
+                        elapsed_seconds=time.monotonic() - run_started,
+                        processed=0,
+                    ),
+                    sort_keys=True,
+                )
+            )
             return
 
         due = state.due_metadata(now, batch_size)
@@ -375,7 +386,17 @@ def main() -> None:
                     if jitter > 0:
                         time.sleep(random.uniform(0, jitter))
 
-    print(json.dumps(summary, sort_keys=True))
+    processed = summary["enriched"] + summary["unchanged"] + summary["failed"]
+    print(
+        json.dumps(
+            finalize_worker_summary(
+                summary,
+                elapsed_seconds=time.monotonic() - run_started,
+                processed=processed,
+            ),
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":

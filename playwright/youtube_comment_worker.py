@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import timedelta
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from common.youtube_pipeline import parse_datetime, utc_now
+from common.youtube_pipeline import finalize_worker_summary, parse_datetime, utc_now
 from common.youtube_state import YouTubeStateStore
 from youtube_pipeline_events import EventConsumer, EventProducer, pipeline_event
 
@@ -107,6 +108,7 @@ def _ingest_requests(state, bootstrap, registry, topic, limit):
 
 
 def main() -> None:
+    run_started = time.monotonic()
     api_key = _env("YOUTUBE_API_KEY")
     if not api_key:
         raise RuntimeError("YOUTUBE_API_KEY is required for comment collection")
@@ -132,6 +134,7 @@ def main() -> None:
         "pages": 0,
         "stopped_on_known": 0,
         "errors": 0,
+        "processed": 0,
         "budget_exhausted": False,
     }
     with YouTubeStateStore(state_path) as state:
@@ -255,7 +258,18 @@ def main() -> None:
                     error_message=str(exc),
                 )
                 summary["errors"] += 1
-    print(json.dumps(summary, sort_keys=True))
+            finally:
+                summary["processed"] += 1
+    print(
+        json.dumps(
+            finalize_worker_summary(
+                summary,
+                elapsed_seconds=time.monotonic() - run_started,
+                processed=summary["processed"],
+            ),
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":

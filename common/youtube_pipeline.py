@@ -288,3 +288,19 @@ def retry_delay(
         digest = hashlib.sha256(str(attempt_count).encode("ascii")).digest()
         deterministic_jitter = int.from_bytes(digest[:2], "big") / 65535 * jitter_seconds
     return timedelta(seconds=bounded + deterministic_jitter)
+
+
+def finalize_worker_summary(
+    summary: dict[str, Any],
+    *,
+    elapsed_seconds: float,
+    processed: int,
+) -> dict[str, Any]:
+    """Add consistent throughput fields to a structured worker summary."""
+    result = dict(summary)
+    elapsed = max(0.0, float(elapsed_seconds))
+    result["elapsed_seconds"] = round(elapsed, 3)
+    result["avg_seconds_per_video"] = (
+        round(elapsed / processed, 3) if processed > 0 else None
+    )
+    return result
