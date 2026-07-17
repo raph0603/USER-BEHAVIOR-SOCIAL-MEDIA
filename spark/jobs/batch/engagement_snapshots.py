@@ -34,6 +34,7 @@ from pyspark.sql.functions import (
 from pyspark.sql.types import (
     ArrayType,
     LongType,
+    IntegerType,
     StringType,
     StructField,
     StructType,
@@ -83,6 +84,10 @@ INSIGHT_REFRESH_SCHEMA = StructType(
         StructField("source", StringType(), False),
         StructField("platform_event_id", StringType(), True),
         StructField("metadata_refreshed_at", StringType(), True),
+        StructField("last_metrics_refresh_at", StringType(), True),
+        StructField("next_metrics_refresh_at", StringType(), True),
+        StructField("metrics_refresh_count", IntegerType(), True),
+        StructField("metrics_refresh_status", StringType(), True),
         StructField("owner_channel_id", StringType(), True),
         StructField("collaborator_channel_ids", ArrayType(StringType()), True),
         StructField("like_count", LongType(), True),
