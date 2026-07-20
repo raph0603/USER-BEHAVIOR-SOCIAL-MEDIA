@@ -142,16 +142,27 @@ class YouTubeOutboxMixin:
         )
         self._commit()
 
-    def outbox_health(self, *, now: datetime) -> dict[str, Any]:
+    def outbox_health(
+        self,
+        *,
+        now: datetime,
+        worker_name: str | None = None,
+    ) -> dict[str, Any]:
+        worker_filter = "" if worker_name is None else "AND worker_name = ?"
+        parameters: tuple[str, ...] = () if worker_name is None else (worker_name,)
         row = self.connection.execute(
-            """
+            f"""
             SELECT
               COUNT(*) AS pending_count,
               MIN(created_at) AS oldest_created_at,
-              COALESCE(SUM(delivery_attempts), 0) AS delivery_attempts
+              COALESCE(SUM(delivery_attempts), 0) AS delivery_attempts,
+              COALESCE(SUM(CASE WHEN last_error IS NOT NULL THEN 1 ELSE 0 END), 0)
+                AS error_count
             FROM youtube_worker_outbox
             WHERE delivered_at IS NULL
-            """
+              {worker_filter}
+            """,
+            parameters,
         ).fetchone()
         oldest = row["oldest_created_at"] if row else None
         oldest_age_seconds = None
@@ -166,4 +177,5 @@ class YouTubeOutboxMixin:
             "oldest_created_at": oldest,
             "oldest_age_seconds": oldest_age_seconds,
             "delivery_attempts": int(row["delivery_attempts"] or 0) if row else 0,
+            "error_count": int(row["error_count"] or 0) if row else 0,
         }

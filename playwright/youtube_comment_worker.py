@@ -6,6 +6,7 @@ import json
 import os
 import time
 from datetime import timedelta
+from typing import Any
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -132,7 +133,7 @@ def main() -> None:
         schema_registry_url=registry,
         schema_path=schema_path,
     )
-    summary = {
+    summary: dict[str, Any] = {
         "event": "youtube_comment_summary",
         "due": 0,
         "new_comments": 0,
@@ -153,16 +154,27 @@ def main() -> None:
         now = utc_now()
         due = state.due_requests("comment", now=now, limit=batch_size)
         summary["due"] = len(due)
-        remaining_budget = max(
+        legacy_remaining = max(
             0,
             daily_budget - state.api_requests_today("commentThreads.list", now),
         )
+        quota_decision = state.quota_decision(
+            endpoint="commentThreads.list",
+            workload="comments",
+            requested_calls=len(due) * max_pages,
+            now=now,
+        )
+        remaining_budget = min(legacy_remaining, quota_decision.allowed_calls)
+        if due and remaining_budget == 0:
+            summary["budget_exhausted"] = True
+            summary["quota_reason"] = quota_decision.reason
         for row in due:
             if remaining_budget == 0:
                 summary["budget_exhausted"] = True
                 break
             attempted_at = utc_now()
             attempt_count = int(row.get("attempt_count") or 0) + 1
+            request_started = time.monotonic()
             try:
                 comments, pages, stopped = fetch_incremental_comments(
                     youtube,
@@ -170,6 +182,7 @@ def main() -> None:
                     known_comment_ids=state.known_comment_ids(row["video_id"]),
                     max_pages=min(max_pages, remaining_budget),
                 )
+                latency_ms = (time.monotonic() - request_started) * 1000
                 remaining_budget = max(0, remaining_budget - pages)
                 next_attempt = attempted_at + comment_refresh_interval(
                     row.get("published_at"), attempted_at
@@ -197,8 +210,12 @@ def main() -> None:
                         resource_count=len(comments),
                         success_count=pages,
                         error_count=0,
-                        quota_bucket="secondary",
+                        quota_bucket="comments",
                         observed_at=attempted_at,
+                        priority=quota_decision.priority,
+                        retry_count=max(0, attempt_count - 1),
+                        latency_ms=latency_ms,
+                        queue_depth=max(0, len(due) - summary["processed"] - 1),
                     )
                     state.record_comment_ids(
                         row["video_id"],
@@ -224,6 +241,7 @@ def main() -> None:
                 summary["pages"] += pages
                 summary["stopped_on_known"] += int(stopped)
             except HttpError as exc:
+                latency_ms = (time.monotonic() - request_started) * 1000
                 remaining_budget = max(0, remaining_budget - 1)
                 status_code = int(getattr(getattr(exc, "resp", None), "status", 0) or 0)
                 permanent = status_code in {400, 404}
@@ -248,8 +266,14 @@ def main() -> None:
                         resource_count=0,
                         success_count=0,
                         error_count=1,
-                        quota_bucket="secondary",
+                        quota_bucket="comments",
                         observed_at=attempted_at,
+                        priority=quota_decision.priority,
+                        retry_count=max(0, attempt_count - 1),
+                        latency_ms=latency_ms,
+                        queue_depth=max(0, len(due) - summary["processed"] - 1),
+                        status="error",
+                        error_code=error_code,
                     )
                     state.record_request_result(
                         "comment",
@@ -269,6 +293,7 @@ def main() -> None:
                     )
                 summary["errors"] += 1
             except BaseException as exc:
+                latency_ms = (time.monotonic() - request_started) * 1000
                 remaining_budget = max(0, remaining_budget - 1)
                 next_attempt = attempted_at + timedelta(hours=6)
                 error_code = type(exc).__name__
@@ -290,8 +315,14 @@ def main() -> None:
                         resource_count=0,
                         success_count=0,
                         error_count=1,
-                        quota_bucket="secondary",
+                        quota_bucket="comments",
                         observed_at=attempted_at,
+                        priority=quota_decision.priority,
+                        retry_count=max(0, attempt_count - 1),
+                        latency_ms=latency_ms,
+                        queue_depth=max(0, len(due) - summary["processed"] - 1),
+                        status="error",
+                        error_code=error_code,
                     )
                     state.record_request_result(
                         "comment",
@@ -313,13 +344,33 @@ def main() -> None:
             finally:
                 summary["processed"] += 1
                 drain_outbox(state, producer)
+        completed = finalize_worker_summary(
+            summary,
+            elapsed_seconds=time.monotonic() - run_started,
+            processed=summary["processed"],
+        )
+        state.record_worker_health(
+            worker_name="youtube_comment",
+            observed_at=utc_now(),
+            status=(
+                "throttled"
+                if summary["budget_exhausted"] and not summary["processed"]
+                else "partial"
+                if summary["errors"]
+                else "success"
+                if summary["processed"]
+                else "idle"
+            ),
+            processed_count=summary["processed"],
+            success_count=summary["processed"] - summary["errors"],
+            error_count=summary["errors"],
+            retry_count=summary["errors"],
+            latency_ms=(time.monotonic() - run_started) * 1000,
+            details=completed,
+        )
     print(
         json.dumps(
-            finalize_worker_summary(
-                summary,
-                elapsed_seconds=time.monotonic() - run_started,
-                processed=summary["processed"],
-            ),
+            completed,
             sort_keys=True,
         )
     )

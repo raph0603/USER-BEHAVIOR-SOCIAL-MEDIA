@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from datetime import timedelta
+from typing import Any
 
 from googleapiclient.discovery import build
 
@@ -99,6 +101,7 @@ def _video_id(item: dict) -> str | None:
 
 
 def main() -> None:
+    run_started = time.monotonic()
     api_key = _env("YOUTUBE_API_KEY")
     if not api_key:
         raise RuntimeError("YOUTUBE_API_KEY is required for discovery")
@@ -125,7 +128,7 @@ def main() -> None:
         schema_registry_url=registry,
         schema_path=schema_path,
     )
-    totals = {
+    totals: dict[str, Any] = {
         "event": "youtube_discovery_summary",
         "search_calls": 0,
         "pages": 0,
@@ -149,9 +152,18 @@ def main() -> None:
             started_at = utc_now()
             daily_budget = _env_int("YOUTUBE_SEARCH_DAILY_REQUEST_BUDGET", 100)
             used_budget = state.api_requests_today("search.list", started_at)
-            remaining_budget = max(0, daily_budget - used_budget)
+            legacy_remaining = max(0, daily_budget - used_budget)
+            requested_calls = max_pages if backfill else 1
+            quota_decision = state.quota_decision(
+                endpoint="search.list",
+                workload="discovery",
+                requested_calls=requested_calls,
+                now=started_at,
+            )
+            remaining_budget = min(legacy_remaining, quota_decision.allowed_calls)
             if remaining_budget == 0:
                 totals["budget_exhausted"] = True
+                totals["quota_reason"] = quota_decision.reason
                 break
             watermark = state.watermark(spec.query_id) or {}
             after = published_after(
@@ -161,6 +173,7 @@ def main() -> None:
                 initial_lookback=lookback,
                 now=started_at,
             )
+            request_started = time.monotonic()
             items, calls = search_query(
                 youtube,
                 spec,
@@ -169,6 +182,7 @@ def main() -> None:
                 max_pages=min(max_pages, remaining_budget),
                 order=order,
             )
+            latency_ms = (time.monotonic() - request_started) * 1000
             totals["search_calls"] += calls
             totals["pages"] += calls
             totals["discovered"] += len(items)
@@ -221,6 +235,9 @@ def main() -> None:
                     error_count=0,
                     quota_bucket="discovery",
                     observed_at=started_at,
+                    priority=quota_decision.priority,
+                    latency_ms=latency_ms,
+                    queue_depth=max(0, len(specs) - len(totals["queries"]) - 1),
                 )
                 for event in query_events:
                     inserted = state.record_discovery(
@@ -252,6 +269,24 @@ def main() -> None:
                 "new": len(query_events),
                 "published_after": isoformat(after),
             }
+
+        processed = totals["new_videos"] + totals["duplicates"]
+        state.record_worker_health(
+            worker_name="youtube_discovery",
+            observed_at=utc_now(),
+            status=(
+                "throttled"
+                if totals.get("budget_exhausted")
+                else "success"
+                if totals["search_calls"]
+                else "idle"
+            ),
+            processed_count=processed,
+            success_count=totals["new_videos"],
+            error_count=0,
+            latency_ms=(time.monotonic() - run_started) * 1000,
+            details=totals,
+        )
 
     print(json.dumps(totals, ensure_ascii=False, sort_keys=True))
 

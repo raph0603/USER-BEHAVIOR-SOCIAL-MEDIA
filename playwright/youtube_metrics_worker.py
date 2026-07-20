@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -210,14 +211,26 @@ def collect_metrics(
                 _env("YOUTUBE_VIDEOS_DAILY_REQUEST_BUDGET", "500"),
             )
         )
-        used_units = usage_store.api_requests_today("videos.list", now())
-        video_ids = video_ids[: max(0, budget_units - used_units) * MAX_VIDEOS_PER_REQUEST]
+        decision_time = now()
+        used_units = usage_store.api_requests_today("videos.list", decision_time)
+        endpoint_calls = max(0, budget_units - used_units)
+        requested_calls = (len(video_ids) + MAX_VIDEOS_PER_REQUEST - 1) // MAX_VIDEOS_PER_REQUEST
+        decision = usage_store.quota_decision(
+            endpoint="videos.list",
+            workload="recent_metrics",
+            requested_calls=requested_calls,
+            now=decision_time,
+        )
+        allowed_calls = min(endpoint_calls, decision.allowed_calls)
+        video_ids = video_ids[: allowed_calls * MAX_VIDEOS_PER_REQUEST]
 
     updates: list[dict] = []
     for start in range(0, len(video_ids), MAX_VIDEOS_PER_REQUEST):
         batch_ids = video_ids[start : start + MAX_VIDEOS_PER_REQUEST]
         observed_at = now()
+        request_started = time.monotonic()
         response = youtube.videos().list(part="statistics", id=",".join(batch_ids)).execute()
+        latency_ms = (time.monotonic() - request_started) * 1000
         items = {
             item["id"]: item.get("statistics") or {}
             for item in response.get("items", [])
@@ -232,6 +245,9 @@ def collect_metrics(
                 error_count=0,
                 quota_bucket="recent_metrics",
                 observed_at=observed_at,
+                priority="critical",
+                latency_ms=latency_ms,
+                queue_depth=max(0, len(video_ids) - start - len(batch_ids)),
             )
         updates.extend(
             _build_update(
@@ -293,6 +309,7 @@ def _write_updates(path: Path, updates: list[dict]) -> None:
 def main() -> None:
     from googleapiclient.discovery import build
 
+    run_started = time.monotonic()
     targets_path = Path(_env("INSIGHT_REFRESH_TARGETS_PATH", "/app/insight-refresh/targets.jsonl"))
     output_path = Path(_env("INSIGHT_REFRESH_OUTPUT_PATH", "/app/insight-refresh/youtube.jsonl"))
     targets = _load_due_targets(targets_path)
@@ -317,15 +334,26 @@ def main() -> None:
         )
         if not targets:
             _write_updates(output_path, [])
+            summary = {
+                "event": "youtube_metrics_complete",
+                "targets": 0,
+                "observations": 0,
+                "max_batch_size": MAX_VIDEOS_PER_REQUEST,
+                "outbox_redrained": outbox_redrained,
+            }
+            state.record_worker_health(
+                worker_name="youtube_metrics",
+                observed_at=datetime.now(UTC),
+                status="idle",
+                processed_count=0,
+                success_count=0,
+                error_count=0,
+                latency_ms=(time.monotonic() - run_started) * 1000,
+                details=summary,
+            )
             print(
                 json.dumps(
-                    {
-                        "event": "youtube_metrics_complete",
-                        "targets": 0,
-                        "observations": 0,
-                        "max_batch_size": MAX_VIDEOS_PER_REQUEST,
-                        "outbox_redrained": outbox_redrained,
-                    },
+                    summary,
                     sort_keys=True,
                 )
             )
@@ -351,16 +379,27 @@ def main() -> None:
                     created_at=observed_at,
                 )
         outbox_drained = drain_outbox(state, producer)
+        summary = {
+            "event": "youtube_metrics_complete",
+            "targets": len(targets),
+            "observations": len(updates),
+            "max_batch_size": MAX_VIDEOS_PER_REQUEST,
+            "outbox_redrained": outbox_redrained,
+            "outbox_drained": outbox_drained,
+        }
+        state.record_worker_health(
+            worker_name="youtube_metrics",
+            observed_at=datetime.now(UTC),
+            status="success" if len(updates) == len(targets) else "partial",
+            processed_count=len(updates),
+            success_count=len(updates),
+            error_count=max(0, len(targets) - len(updates)),
+            latency_ms=(time.monotonic() - run_started) * 1000,
+            details=summary,
+        )
     print(
         json.dumps(
-            {
-                "event": "youtube_metrics_complete",
-                "targets": len(targets),
-                "observations": len(updates),
-                "max_batch_size": MAX_VIDEOS_PER_REQUEST,
-                "outbox_redrained": outbox_redrained,
-                "outbox_drained": outbox_drained,
-            },
+            summary,
             sort_keys=True,
         )
     )

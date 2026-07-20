@@ -199,16 +199,47 @@ def main() -> None:
         now = utc_now()
         if state.breaker_open("yt_dlp", now):
             summary["circuit_open"] = True
+            completed = finalize_worker_summary(
+                summary,
+                elapsed_seconds=time.monotonic() - run_started,
+                processed=0,
+            )
+            state.record_worker_health(
+                worker_name="youtube_metadata",
+                observed_at=now,
+                status="circuit_open",
+                processed_count=0,
+                success_count=0,
+                error_count=0,
+                latency_ms=(time.monotonic() - run_started) * 1000,
+                circuit_open=True,
+                details=completed,
+            )
             print(
                 json.dumps(
-                    finalize_worker_summary(
-                        summary,
-                        elapsed_seconds=time.monotonic() - run_started,
-                        processed=0,
-                    ),
+                    completed,
                     sort_keys=True,
                 )
             )
+            return
+        if not state.workload_allowed("descriptive_metadata", now):
+            summary["quota_throttled"] = True
+            completed = finalize_worker_summary(
+                summary,
+                elapsed_seconds=time.monotonic() - run_started,
+                processed=0,
+            )
+            state.record_worker_health(
+                worker_name="youtube_metadata",
+                observed_at=now,
+                status="throttled",
+                processed_count=0,
+                success_count=0,
+                error_count=0,
+                latency_ms=(time.monotonic() - run_started) * 1000,
+                details=completed,
+            )
+            print(json.dumps(completed, sort_keys=True))
             return
 
         due = state.due_metadata(now, batch_size)
@@ -227,14 +258,30 @@ def main() -> None:
                 attempt_count = int(row.get("attempt_count") or 0) + 1
                 observed_at = utc_now()
                 blocked = False
+                request_started = time.monotonic()
                 try:
                     raw, metadata = futures[video_id].result()
+                    request_latency_ms = (time.monotonic() - request_started) * 1000
                     output_dir.mkdir(parents=True, exist_ok=True)
                     (output_dir / f"{video_id}-{int(observed_at.timestamp())}.json").write_text(
                         json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str),
                         encoding="utf-8",
                     )
                     with state.transaction():
+                        state.record_api_usage(
+                            endpoint="yt-dlp.extract_info",
+                            request_count=1,
+                            resource_count=1,
+                            success_count=1,
+                            error_count=0,
+                            quota_bucket="descriptive_metadata",
+                            observed_at=observed_at,
+                            provider="yt-dlp",
+                            priority="low",
+                            retry_count=max(0, attempt_count - 1),
+                            latency_ms=request_latency_ms,
+                            queue_depth=max(0, len(due) - summary["enriched"] - 1),
+                        )
                         current_hash, previous_hash, changed_fields = state.record_metadata_success(
                             video_id=video_id,
                             observed_at=observed_at,
@@ -365,6 +412,7 @@ def main() -> None:
                                     created_at=observed_at,
                                 )
                 except BaseException as exc:
+                    request_latency_ms = (time.monotonic() - request_started) * 1000
                     blocked = _blocked(exc)
                     permanent = attempt_count >= max_attempts and not blocked
                     delay = retry_delay(
@@ -395,6 +443,23 @@ def main() -> None:
                         metadata_error_message=str(exc)[:1000],
                     )
                     with state.transaction():
+                        state.record_api_usage(
+                            endpoint="yt-dlp.extract_info",
+                            request_count=1,
+                            resource_count=1,
+                            success_count=0,
+                            error_count=1,
+                            quota_bucket="descriptive_metadata",
+                            observed_at=observed_at,
+                            provider="yt-dlp",
+                            priority="low",
+                            retry_count=max(0, attempt_count - 1),
+                            latency_ms=request_latency_ms,
+                            queue_depth=max(0, len(due) - summary["failed"] - 1),
+                            circuit_open=blocked,
+                            status="error",
+                            error_code="yt_dlp_blocked" if blocked else "yt_dlp_error",
+                        )
                         state.record_metadata_failure(
                             video_id=video_id,
                             attempted_at=observed_at,
@@ -429,14 +494,35 @@ def main() -> None:
                     summary["circuit_open"] = True
                     break
 
-    processed = summary["enriched"] + summary["unchanged"] + summary["failed"]
+        processed = summary["enriched"] + summary["unchanged"] + summary["failed"]
+        completed = finalize_worker_summary(
+            summary,
+            elapsed_seconds=time.monotonic() - run_started,
+            processed=processed,
+        )
+        state.record_worker_health(
+            worker_name="youtube_metadata",
+            observed_at=utc_now(),
+            status=(
+                "circuit_open"
+                if summary["circuit_open"]
+                else "partial"
+                if summary["failed"]
+                else "success"
+                if processed
+                else "idle"
+            ),
+            processed_count=processed,
+            success_count=summary["enriched"] + summary["unchanged"],
+            error_count=summary["failed"],
+            retry_count=summary["failed"],
+            latency_ms=(time.monotonic() - run_started) * 1000,
+            circuit_open=summary["circuit_open"],
+            details=completed,
+        )
     print(
         json.dumps(
-            finalize_worker_summary(
-                summary,
-                elapsed_seconds=time.monotonic() - run_started,
-                processed=processed,
-            ),
+            completed,
             sort_keys=True,
         )
     )

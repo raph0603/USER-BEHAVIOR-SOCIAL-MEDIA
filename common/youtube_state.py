@@ -146,6 +146,24 @@ class YouTubeStateStore(
               quota_bucket TEXT NOT NULL,
               observed_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS youtube_worker_health (
+              health_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              observed_at TEXT NOT NULL,
+              producer_run_id TEXT NOT NULL,
+              worker_name TEXT NOT NULL,
+              status TEXT NOT NULL,
+              processed_count INTEGER NOT NULL DEFAULT 0,
+              success_count INTEGER NOT NULL DEFAULT 0,
+              error_count INTEGER NOT NULL DEFAULT 0,
+              retry_count INTEGER NOT NULL DEFAULT 0,
+              cache_hit_count INTEGER NOT NULL DEFAULT 0,
+              cache_miss_count INTEGER NOT NULL DEFAULT 0,
+              latency_ms REAL,
+              queue_depth INTEGER,
+              oldest_queue_age_seconds REAL,
+              circuit_open INTEGER NOT NULL DEFAULT 0,
+              details_json TEXT
+            );
             CREATE TABLE IF NOT EXISTS youtube_metrics_state (
               observation_id TEXT PRIMARY KEY,
               video_id TEXT NOT NULL,
@@ -205,6 +223,66 @@ class YouTubeStateStore(
             );
             CREATE INDEX IF NOT EXISTS idx_youtube_worker_outbox_pending
               ON youtube_worker_outbox (delivered_at, available_at, created_at);
+            """
+        )
+        usage_columns = {
+            "provider": "TEXT NOT NULL DEFAULT 'youtube'",
+            "operation": "TEXT",
+            "quota_units": "INTEGER NOT NULL DEFAULT 0",
+            "quota_cost_per_request": "INTEGER NOT NULL DEFAULT 0",
+            "daily_budget_units": "INTEGER",
+            "reserved_units": "INTEGER",
+            "remaining_units": "INTEGER",
+            "reserve_remaining_units": "INTEGER",
+            "priority": "TEXT",
+            "cache_hit_count": "INTEGER NOT NULL DEFAULT 0",
+            "cache_miss_count": "INTEGER NOT NULL DEFAULT 0",
+            "retry_count": "INTEGER NOT NULL DEFAULT 0",
+            "latency_ms": "REAL",
+            "queue_depth": "INTEGER",
+            "oldest_queue_age_seconds": "REAL",
+            "circuit_open": "INTEGER NOT NULL DEFAULT 0",
+            "status": "TEXT",
+            "error_code": "TEXT",
+            "producer_run_id": "TEXT",
+        }
+        current_usage_columns = {
+            row[1] for row in self.connection.execute("PRAGMA table_info(youtube_api_usage)")
+        }
+        for column, data_type in usage_columns.items():
+            if column not in current_usage_columns:
+                self.connection.execute(
+                    f"ALTER TABLE youtube_api_usage ADD COLUMN {column} {data_type}"
+                )
+        self.connection.execute(
+            """
+            UPDATE youtube_api_usage
+            SET operation = COALESCE(operation, endpoint),
+                provider = COALESCE(provider, 'youtube'),
+                quota_cost_per_request = CASE
+                  WHEN quota_cost_per_request > 0 THEN quota_cost_per_request
+                  WHEN endpoint = 'search.list' THEN 100
+                  WHEN endpoint IN (
+                    'videos.list', 'channels.list', 'commentThreads.list'
+                  ) THEN 1
+                  ELSE 0
+                END,
+                quota_units = CASE
+                  WHEN quota_units > 0 THEN quota_units
+                  WHEN endpoint = 'search.list' THEN request_count * 100
+                  WHEN endpoint IN (
+                    'videos.list', 'channels.list', 'commentThreads.list'
+                  ) THEN request_count
+                  ELSE 0
+                END,
+                producer_run_id = COALESCE(producer_run_id, 'legacy'),
+                status = COALESCE(
+                  status,
+                  CASE WHEN error_count > 0 THEN 'error' ELSE 'success' END
+                )
+            WHERE operation IS NULL
+               OR producer_run_id IS NULL
+               OR status IS NULL
             """
         )
         self._backfill_transcript_lifecycle_state()

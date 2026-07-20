@@ -125,13 +125,25 @@ def main() -> None:
         now = utc_now()
         if state.breaker_open("transcript", now):
             summary["circuit_open"] = True
+            completed = finalize_worker_summary(
+                summary,
+                elapsed_seconds=time.monotonic() - run_started,
+                processed=0,
+            )
+            state.record_worker_health(
+                worker_name="youtube_transcript",
+                observed_at=now,
+                status="circuit_open",
+                processed_count=0,
+                success_count=0,
+                error_count=0,
+                latency_ms=(time.monotonic() - run_started) * 1000,
+                circuit_open=True,
+                details=completed,
+            )
             print(
                 json.dumps(
-                    finalize_worker_summary(
-                        summary,
-                        elapsed_seconds=time.monotonic() - run_started,
-                        processed=0,
-                    ),
+                    completed,
                     sort_keys=True,
                 )
             )
@@ -146,12 +158,14 @@ def main() -> None:
                 _requested_language_code(request)
             )
             requested_language = row.get("requested_language") or requested_language_code
+            request_started = time.monotonic()
             result = fetch_transcript(
                 row["video_id"],
                 preferred_languages=[requested_language_code],
                 require_preferred_language=True,
                 attempt_count=attempt_count,
             ).to_dict()
+            request_latency_ms = (time.monotonic() - request_started) * 1000
             payload = result.get("payload") or {}
             lifecycle_status = transcript_lifecycle_status(
                 result.get("status"),
@@ -242,6 +256,29 @@ def main() -> None:
                 payload_json=json.dumps(result, ensure_ascii=False, sort_keys=True),
             )
             with state.transaction():
+                technical_failure = lifecycle_status in {
+                    TRANSCRIPT_BLOCKED,
+                    TRANSCRIPT_PERMANENT_ERROR,
+                    "rate_limited",
+                    "retryable_error",
+                }
+                state.record_api_usage(
+                    endpoint="transcripts.fetch",
+                    request_count=1,
+                    resource_count=1,
+                    success_count=0 if technical_failure else 1,
+                    error_count=1 if technical_failure else 0,
+                    quota_bucket="transcript",
+                    observed_at=attempted_at,
+                    provider="youtube-transcript-api",
+                    priority="normal",
+                    retry_count=max(0, attempt_count - 1),
+                    latency_ms=request_latency_ms,
+                    queue_depth=max(0, len(due) - summary["succeeded"] - summary["failed"] - 1),
+                    circuit_open=(lifecycle_status == TRANSCRIPT_BLOCKED or blocked_response),
+                    status="error" if technical_failure else "success",
+                    error_code=result.get("error_code"),
+                )
                 state.record_transcript_result(
                     video_id=row["video_id"],
                     requested_language_code=requested_language_code,
@@ -287,14 +324,35 @@ def main() -> None:
             if lifecycle_status == TRANSCRIPT_BLOCKED or blocked_response:
                 summary["circuit_open"] = True
                 break
-    processed = summary["succeeded"] + summary["failed"]
+        processed = summary["succeeded"] + summary["failed"]
+        completed = finalize_worker_summary(
+            summary,
+            elapsed_seconds=time.monotonic() - run_started,
+            processed=processed,
+        )
+        state.record_worker_health(
+            worker_name="youtube_transcript",
+            observed_at=utc_now(),
+            status=(
+                "circuit_open"
+                if summary.get("circuit_open")
+                else "partial"
+                if summary["failed"]
+                else "success"
+                if processed
+                else "idle"
+            ),
+            processed_count=processed,
+            success_count=summary["succeeded"],
+            error_count=summary["failed"],
+            retry_count=summary["failed"],
+            latency_ms=(time.monotonic() - run_started) * 1000,
+            circuit_open=bool(summary.get("circuit_open")),
+            details=completed,
+        )
     print(
         json.dumps(
-            finalize_worker_summary(
-                summary,
-                elapsed_seconds=time.monotonic() - run_started,
-                processed=processed,
-            ),
+            completed,
             sort_keys=True,
         )
     )

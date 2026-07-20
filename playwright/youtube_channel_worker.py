@@ -94,7 +94,7 @@ def main() -> None:
         schema_registry_url=registry,
         schema_path=schema_path,
     )
-    summary = {
+    summary: dict[str, Any] = {
         "event": "youtube_channel_summary",
         "requests": 0,
         "new_channels": 0,
@@ -136,17 +136,40 @@ def main() -> None:
             consumer.commit()
 
         used = state.api_requests_today("channels.list", now)
-        remaining = max(0, daily_budget - used)
-        due = state.due_channels(now=now, limit=min(run_limit, remaining * 50))
+        legacy_remaining = max(0, daily_budget - used)
+        requested_calls = (run_limit + batch_size - 1) // batch_size
+        quota_decision = state.quota_decision(
+            endpoint="channels.list",
+            workload="channels",
+            requested_calls=requested_calls,
+            now=now,
+        )
+        remaining = min(legacy_remaining, quota_decision.allowed_calls)
+        due = state.due_channels(now=now, limit=min(run_limit, remaining * batch_size))
         if not due:
             summary["budget_exhausted"] = remaining == 0
+            if quota_decision.reason:
+                summary["quota_reason"] = quota_decision.reason
+            completed = finalize_worker_summary(
+                summary,
+                elapsed_seconds=time.monotonic() - run_started,
+                processed=0,
+            )
+            state.record_worker_health(
+                worker_name="youtube_channel",
+                observed_at=utc_now(),
+                status="throttled" if remaining == 0 else "idle",
+                processed_count=0,
+                success_count=0,
+                error_count=0,
+                cache_hit_count=summary["cache_hits"],
+                cache_miss_count=summary["new_channels"],
+                latency_ms=(time.monotonic() - run_started) * 1000,
+                details=completed,
+            )
             print(
                 json.dumps(
-                    finalize_worker_summary(
-                        summary,
-                        elapsed_seconds=time.monotonic() - run_started,
-                        processed=0,
-                    ),
+                    completed,
                     sort_keys=True,
                 )
             )
@@ -158,9 +181,11 @@ def main() -> None:
                 summary["budget_exhausted"] = True
                 break
             observed_at = utc_now()
+            request_started = time.monotonic()
             try:
                 statistics_by_id = fetch_channel_statistics(client, rows)
             except BaseException as exc:
+                latency_ms = (time.monotonic() - request_started) * 1000
                 summary["api_calls"] += 1
                 with state.transaction():
                     state.record_api_usage(
@@ -169,8 +194,17 @@ def main() -> None:
                         resource_count=len(rows),
                         success_count=0,
                         error_count=len(rows),
-                        quota_bucket="channel_statistics",
+                        quota_bucket="channels",
                         observed_at=observed_at,
+                        priority=quota_decision.priority,
+                        retry_count=sum(
+                            int((state.channel_state(channel_id) or {}).get("attempt_count") or 0)
+                            for channel_id in rows
+                        ),
+                        latency_ms=latency_ms,
+                        queue_depth=max(0, len(due) - len(rows) - summary["refreshed"]),
+                        status="error",
+                        error_code=type(exc).__name__,
                     )
                     for channel_id in rows:
                         row = state.channel_state(channel_id) or {}
@@ -220,6 +254,7 @@ def main() -> None:
                         )
                         summary["failed"] += 1
             else:
+                latency_ms = (time.monotonic() - request_started) * 1000
                 summary["api_calls"] += 1
                 with state.transaction():
                     state.record_api_usage(
@@ -228,8 +263,12 @@ def main() -> None:
                         resource_count=len(rows),
                         success_count=len(statistics_by_id),
                         error_count=len(rows) - len(statistics_by_id),
-                        quota_bucket="channel_statistics",
+                        quota_bucket="channels",
                         observed_at=observed_at,
+                        priority=quota_decision.priority,
+                        latency_ms=latency_ms,
+                        queue_depth=max(0, len(due) - len(rows) - summary["refreshed"]),
+                        status=("success" if len(statistics_by_id) == len(rows) else "partial"),
                     )
                     for channel_id in rows:
                         statistics = statistics_by_id.get(channel_id)
@@ -293,14 +332,28 @@ def main() -> None:
                         )
             drain_outbox(state, producer)
 
-    processed = summary["refreshed"] + summary["missing"] + summary["failed"]
+        processed = summary["refreshed"] + summary["missing"] + summary["failed"]
+        completed = finalize_worker_summary(
+            summary,
+            elapsed_seconds=time.monotonic() - run_started,
+            processed=processed,
+        )
+        state.record_worker_health(
+            worker_name="youtube_channel",
+            observed_at=utc_now(),
+            status="partial" if summary["failed"] or summary["missing"] else "success",
+            processed_count=processed,
+            success_count=summary["refreshed"],
+            error_count=summary["failed"] + summary["missing"],
+            retry_count=summary["failed"],
+            cache_hit_count=summary["cache_hits"],
+            cache_miss_count=summary["new_channels"],
+            latency_ms=(time.monotonic() - run_started) * 1000,
+            details=completed,
+        )
     print(
         json.dumps(
-            finalize_worker_summary(
-                summary,
-                elapsed_seconds=time.monotonic() - run_started,
-                processed=processed,
-            ),
+            completed,
             sort_keys=True,
         )
     )
