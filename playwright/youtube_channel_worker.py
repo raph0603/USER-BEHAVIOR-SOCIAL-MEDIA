@@ -12,7 +12,12 @@ from googleapiclient.discovery import build
 
 from common.youtube_pipeline import finalize_worker_summary, retry_delay, utc_now
 from common.youtube_state import YouTubeStateStore
-from youtube_pipeline_events import EventConsumer, EventProducer, pipeline_event
+from youtube_pipeline_events import (
+    EventConsumer,
+    EventProducer,
+    drain_outbox,
+    pipeline_event,
+)
 
 
 def _env(name: str, default: str = "") -> str:
@@ -84,6 +89,11 @@ def main() -> None:
     inactive_hours = _env_int("YOUTUBE_CHANNEL_INACTIVE_REFRESH_HOURS", 168, 1)
     max_attempts = _env_int("YOUTUBE_CHANNEL_MAX_ATTEMPTS", 3, 1)
     now = utc_now()
+    producer = EventProducer(
+        bootstrap_servers=bootstrap,
+        schema_registry_url=registry,
+        schema_path=schema_path,
+    )
     summary = {
         "event": "youtube_channel_summary",
         "requests": 0,
@@ -94,9 +104,15 @@ def main() -> None:
         "failed": 0,
         "api_calls": 0,
         "budget_exhausted": False,
+        "outbox_redrained": 0,
     }
 
     with YouTubeStateStore(state_path) as state:
+        summary["outbox_redrained"] = drain_outbox(
+            state,
+            producer,
+            include_deferred=True,
+        )
         with EventConsumer(
             bootstrap_servers=bootstrap,
             schema_registry_url=registry,
@@ -137,11 +153,6 @@ def main() -> None:
             return
 
         client = build("youtube", "v3", developerKey=api_key, cache_discovery=False)
-        producer = EventProducer(
-            bootstrap_servers=bootstrap,
-            schema_registry_url=registry,
-            schema_path=schema_path,
-        )
         for rows in batched((row["channel_id"] for row in due), batch_size):
             if summary["api_calls"] >= remaining:
                 summary["budget_exhausted"] = True
@@ -149,79 +160,23 @@ def main() -> None:
             observed_at = utc_now()
             try:
                 statistics_by_id = fetch_channel_statistics(client, rows)
-                state.record_api_usage(
-                    endpoint="channels.list",
-                    request_count=1,
-                    resource_count=len(rows),
-                    success_count=len(statistics_by_id),
-                    error_count=len(rows) - len(statistics_by_id),
-                    quota_bucket="channel_statistics",
-                    observed_at=observed_at,
-                )
-                summary["api_calls"] += 1
-                result_events = []
-                for channel_id in rows:
-                    statistics = statistics_by_id.get(channel_id)
-                    if statistics is None:
-                        state.record_channel_failure(
-                            channel_id=channel_id,
-                            attempted_at=observed_at,
-                            next_attempt_at=None,
-                            error_class="ChannelNotFound",
-                            error_message="Channel was not returned by channels.list",
-                            permanent=True,
-                        )
-                        summary["missing"] += 1
-                        continue
-                    subscriber_count = _subscriber_count(statistics)
-                    hidden = bool(statistics.get("hiddenSubscriberCount"))
-                    state.record_channel_success(
-                        channel_id=channel_id,
-                        observed_at=observed_at,
-                        subscriber_count=subscriber_count,
-                        hidden_subscriber_count=hidden,
-                        active_after=observed_at - timedelta(days=active_days),
-                        active_interval=timedelta(hours=active_hours),
-                        inactive_interval=timedelta(hours=inactive_hours),
-                    )
-                    result_events.append(
-                        pipeline_event(
-                            "youtube.channel.observed",
-                            channel_id,
-                            channel_id=channel_id,
-                            collected_at=observed_at,
-                            subscriber_count=subscriber_count,
-                            collection_status="success",
-                            content_type="channel",
-                            platform_event_id=channel_id,
-                            url=f"https://www.youtube.com/channel/{channel_id}",
-                            raw_source_payload=json.dumps(
-                                statistics, ensure_ascii=False, sort_keys=True
-                            ),
-                        )
-                    )
-                    summary["refreshed"] += 1
-                if result_events:
-                    producer.publish(result_topic, result_events)
             except BaseException as exc:
-                state.record_api_usage(
-                    endpoint="channels.list",
-                    request_count=1,
-                    resource_count=len(rows),
-                    success_count=0,
-                    error_count=len(rows),
-                    quota_bucket="channel_statistics",
-                    observed_at=observed_at,
-                )
                 summary["api_calls"] += 1
-                for channel_id in rows:
-                    row = state.channel_state(channel_id) or {}
-                    attempt = int(row.get("attempt_count") or 0) + 1
-                    permanent = attempt >= max_attempts
-                    state.record_channel_failure(
-                        channel_id=channel_id,
-                        attempted_at=observed_at,
-                        next_attempt_at=(
+                with state.transaction():
+                    state.record_api_usage(
+                        endpoint="channels.list",
+                        request_count=1,
+                        resource_count=len(rows),
+                        success_count=0,
+                        error_count=len(rows),
+                        quota_bucket="channel_statistics",
+                        observed_at=observed_at,
+                    )
+                    for channel_id in rows:
+                        row = state.channel_state(channel_id) or {}
+                        attempt = int(row.get("attempt_count") or 0) + 1
+                        permanent = attempt >= max_attempts
+                        next_attempt = (
                             None
                             if permanent
                             else observed_at
@@ -230,12 +185,113 @@ def main() -> None:
                                 base=timedelta(hours=1),
                                 maximum=timedelta(days=1),
                             )
-                        ),
-                        error_class=type(exc).__name__,
-                        error_message=str(exc),
-                        permanent=permanent,
+                        )
+                        state.record_channel_failure(
+                            channel_id=channel_id,
+                            attempted_at=observed_at,
+                            next_attempt_at=next_attempt,
+                            error_class=type(exc).__name__,
+                            error_message=str(exc),
+                            permanent=permanent,
+                        )
+                        state.enqueue_outbox(
+                            worker_name="youtube_channel",
+                            aggregate_id=channel_id,
+                            topic=result_topic,
+                            event=pipeline_event(
+                                "youtube.channel.failed",
+                                channel_id,
+                                channel_id=channel_id,
+                                collected_at=observed_at,
+                                attempt_count=attempt,
+                                collection_status=(
+                                    "permanent_error" if permanent else "retryable_error"
+                                ),
+                                next_attempt_at=(
+                                    next_attempt.isoformat() if next_attempt else None
+                                ),
+                                error_class=type(exc).__name__,
+                                error_message=str(exc)[:1000],
+                                content_type="channel",
+                                platform_event_id=channel_id,
+                                url=f"https://www.youtube.com/channel/{channel_id}",
+                            ),
+                            created_at=observed_at,
+                        )
+                        summary["failed"] += 1
+            else:
+                summary["api_calls"] += 1
+                with state.transaction():
+                    state.record_api_usage(
+                        endpoint="channels.list",
+                        request_count=1,
+                        resource_count=len(rows),
+                        success_count=len(statistics_by_id),
+                        error_count=len(rows) - len(statistics_by_id),
+                        quota_bucket="channel_statistics",
+                        observed_at=observed_at,
                     )
-                    summary["failed"] += 1
+                    for channel_id in rows:
+                        statistics = statistics_by_id.get(channel_id)
+                        if statistics is None:
+                            state.record_channel_failure(
+                                channel_id=channel_id,
+                                attempted_at=observed_at,
+                                next_attempt_at=None,
+                                error_class="ChannelNotFound",
+                                error_message=("Channel was not returned by channels.list"),
+                                permanent=True,
+                            )
+                            event = pipeline_event(
+                                "youtube.channel.failed",
+                                channel_id,
+                                channel_id=channel_id,
+                                collected_at=observed_at,
+                                collection_status="permanent_error",
+                                error_class="ChannelNotFound",
+                                error_message=("Channel was not returned by channels.list"),
+                                content_type="channel",
+                                platform_event_id=channel_id,
+                                url=f"https://www.youtube.com/channel/{channel_id}",
+                            )
+                            summary["missing"] += 1
+                        else:
+                            subscriber_count = _subscriber_count(statistics)
+                            hidden = bool(statistics.get("hiddenSubscriberCount"))
+                            state.record_channel_success(
+                                channel_id=channel_id,
+                                observed_at=observed_at,
+                                subscriber_count=subscriber_count,
+                                hidden_subscriber_count=hidden,
+                                active_after=(observed_at - timedelta(days=active_days)),
+                                active_interval=timedelta(hours=active_hours),
+                                inactive_interval=timedelta(hours=inactive_hours),
+                            )
+                            event = pipeline_event(
+                                "youtube.channel.observed",
+                                channel_id,
+                                channel_id=channel_id,
+                                collected_at=observed_at,
+                                subscriber_count=subscriber_count,
+                                collection_status="success",
+                                content_type="channel",
+                                platform_event_id=channel_id,
+                                url=f"https://www.youtube.com/channel/{channel_id}",
+                                raw_source_payload=json.dumps(
+                                    statistics,
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                ),
+                            )
+                            summary["refreshed"] += 1
+                        state.enqueue_outbox(
+                            worker_name="youtube_channel",
+                            aggregate_id=channel_id,
+                            topic=result_topic,
+                            event=event,
+                            created_at=observed_at,
+                        )
+            drain_outbox(state, producer)
 
     processed = summary["refreshed"] + summary["missing"] + summary["failed"]
     print(

@@ -7,7 +7,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from confluent_kafka import DeserializingConsumer, SerializingProducer
 from confluent_kafka.schema_registry import SchemaRegistryClient
@@ -95,10 +95,45 @@ class EventProducer:
             count += 1
         undelivered = self._producer.flush(60)
         if undelivered or self._errors:
-            raise RuntimeError(
-                f"Kafka delivery failed: {undelivered} undelivered, {self._errors}"
-            )
+            raise RuntimeError(f"Kafka delivery failed: {undelivered} undelivered, {self._errors}")
         return count
+
+
+def drain_outbox(
+    state: Any,
+    producer: EventProducer,
+    *,
+    limit: int = 1000,
+    include_deferred: bool = False,
+    now: datetime | None = None,
+) -> int:
+    """Publish pending rows and acknowledge SQLite only after Kafka delivery."""
+
+    drained = 0
+    reference_time = (now or datetime.now(UTC)).astimezone(UTC)
+    rows = state.pending_outbox(
+        now=reference_time,
+        limit=limit,
+        include_deferred=include_deferred,
+    )
+    for row in rows:
+        attempted_at = datetime.now(UTC)
+        try:
+            event = json.loads(row["event_json"])
+            producer.publish(row["topic"], [event])
+        except BaseException as exc:
+            state.record_outbox_failure(
+                row["outbox_id"],
+                attempted_at=attempted_at,
+                error=exc,
+            )
+            raise
+        state.mark_outbox_delivered(
+            row["outbox_id"],
+            delivered_at=datetime.now(UTC),
+        )
+        drained += 1
+    return drained
 
 
 class EventConsumer:

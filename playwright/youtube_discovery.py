@@ -18,7 +18,7 @@ from common.youtube_pipeline import (
     utc_now,
 )
 from common.youtube_state import YouTubeStateStore
-from youtube_pipeline_events import EventProducer, pipeline_event
+from youtube_pipeline_events import EventProducer, drain_outbox, pipeline_event
 
 
 def _env(name: str, default: str = "") -> str:
@@ -41,11 +41,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _legacy_queries() -> list[str]:
-    return [
-        query.strip()
-        for query in _env("YOUTUBE_SEARCH_QUERIES").split("||")
-        if query.strip()
-    ]
+    return [query.strip() for query in _env("YOUTUBE_SEARCH_QUERIES").split("||") if query.strip()]
 
 
 def _legacy_languages() -> list[str]:
@@ -120,12 +116,8 @@ def main() -> None:
     backfill = _env_bool("YOUTUBE_SEARCH_BACKFILL_ENABLED", False)
     max_pages = _env_int("YOUTUBE_SEARCH_BACKFILL_MAX_PAGES", 10)
     run_limit = _env_int("YOUTUBE_DISCOVERY_MAX_EVENTS", 200)
-    overlap = timedelta(
-        minutes=_env_int("YOUTUBE_SEARCH_OVERLAP_MINUTES", 120)
-    )
-    lookback = timedelta(
-        hours=_env_int("YOUTUBE_SEARCH_INITIAL_LOOKBACK_HOURS", 24)
-    )
+    overlap = timedelta(minutes=_env_int("YOUTUBE_SEARCH_OVERLAP_MINUTES", 120))
+    lookback = timedelta(hours=_env_int("YOUTUBE_SEARCH_INITIAL_LOOKBACK_HOURS", 24))
     order = _env("YOUTUBE_SEARCH_ORDER", "date")
     youtube = build("youtube", "v3", developerKey=api_key)
     producer = EventProducer(
@@ -140,11 +132,17 @@ def main() -> None:
         "discovered": 0,
         "duplicates": 0,
         "new_videos": 0,
+        "outbox_redrained": 0,
         "queries": {},
         "backfill": backfill,
     }
 
     with YouTubeStateStore(state_path) as state:
+        totals["outbox_redrained"] = drain_outbox(
+            state,
+            producer,
+            include_deferred=True,
+        )
         for spec in specs:
             if totals["new_videos"] >= run_limit:
                 break
@@ -174,15 +172,6 @@ def main() -> None:
             totals["search_calls"] += calls
             totals["pages"] += calls
             totals["discovered"] += len(items)
-            state.record_api_usage(
-                endpoint="search.list",
-                request_count=calls,
-                resource_count=len(items),
-                success_count=calls,
-                error_count=0,
-                quota_bucket="discovery",
-                observed_at=started_at,
-            )
             query_events: list[dict] = []
             last_published = parse_datetime(watermark.get("last_published_at_seen"))
             for item in items:
@@ -223,20 +212,38 @@ def main() -> None:
                 if totals["new_videos"] + len(query_events) >= run_limit:
                     break
 
-            producer.publish(topic, query_events)
-            for event in query_events:
-                state.record_discovery(
-                    video_id=event["video_id"],
-                    query_id=spec.query_id,
-                    first_seen_at=started_at,
-                    published_at=event.get("published_at"),
-                    correlation_id=event["correlation_id"],
+            with state.transaction():
+                state.record_api_usage(
+                    endpoint="search.list",
+                    request_count=calls,
+                    resource_count=len(items),
+                    success_count=calls,
+                    error_count=0,
+                    quota_bucket="discovery",
+                    observed_at=started_at,
                 )
-            state.record_search_success(
-                spec,
-                searched_at=started_at,
-                last_published_at_seen=last_published,
-            )
+                for event in query_events:
+                    inserted = state.record_discovery(
+                        video_id=event["video_id"],
+                        query_id=spec.query_id,
+                        first_seen_at=started_at,
+                        published_at=event.get("published_at"),
+                        correlation_id=event["correlation_id"],
+                    )
+                    if inserted:
+                        state.enqueue_outbox(
+                            worker_name="youtube_discovery",
+                            aggregate_id=event["video_id"],
+                            topic=topic,
+                            event=event,
+                            created_at=started_at,
+                        )
+                state.record_search_success(
+                    spec,
+                    searched_at=started_at,
+                    last_published_at_seen=last_published,
+                )
+            drain_outbox(state, producer)
             totals["new_videos"] += len(query_events)
             totals["queries"][spec.query_id] = {
                 "query": spec.query,

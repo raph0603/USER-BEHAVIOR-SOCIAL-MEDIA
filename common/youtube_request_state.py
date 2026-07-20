@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from common.youtube_pipeline import isoformat, parse_datetime
 
@@ -14,6 +14,7 @@ class YouTubeRequestStateMixin:
     """SQLite operations for independent secondary enrichment workers."""
 
     connection: sqlite3.Connection
+    _commit: Callable[[], None]
 
     def known_comment_ids(self, video_id: str) -> set[str]:
         return {
@@ -57,17 +58,13 @@ class YouTubeRequestStateMixin:
                 isoformat(first_seen_at),
             ),
         )
-        self.connection.commit()
+        self._commit()
         return bool(cursor.rowcount)
 
-    def due_requests(
-        self, family: str, *, now: datetime, limit: int
-    ) -> list[dict[str, Any]]:
+    def due_requests(self, family: str, *, now: datetime, limit: int) -> list[dict[str, Any]]:
         table = self._request_table(family)
         terminal_statuses = (
-            "('available', 'permanent_error')"
-            if family == "transcript"
-            else "('permanent_error')"
+            "('available', 'permanent_error')" if family == "transcript" else "('permanent_error')"
         )
         rows = self.connection.execute(
             f"""
@@ -119,7 +116,8 @@ class YouTubeRequestStateMixin:
                 video_id,
             ),
         )
-        self.connection.commit()
+        self._commit()
+
     def record_comment_ids(
         self, video_id: str, comment_ids: Iterable[str], observed_at: datetime
     ) -> None:
@@ -135,7 +133,7 @@ class YouTubeRequestStateMixin:
                 if comment_id
             ],
         )
-        self.connection.commit()
+        self._commit()
 
     def enqueue_channel(
         self,
@@ -172,7 +170,7 @@ class YouTubeRequestStateMixin:
                 """,
                 (published_value, published_value, channel_id),
             )
-        self.connection.commit()
+        self._commit()
         return bool(cursor.rowcount)
 
     def due_channels(self, *, now: datetime, limit: int) -> list[dict[str, Any]]:
@@ -237,7 +235,7 @@ class YouTubeRequestStateMixin:
                 channel_id,
             ),
         )
-        self.connection.commit()
+        self._commit()
 
     def record_channel_failure(
         self,
@@ -267,4 +265,4 @@ class YouTubeRequestStateMixin:
                 channel_id,
             ),
         )
-        self.connection.commit()
+        self._commit()

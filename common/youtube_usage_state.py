@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timedelta
+from typing import Callable
 
 from common.youtube_pipeline import ensure_utc, isoformat, parse_datetime
 
@@ -12,10 +13,9 @@ class YouTubeUsageStateMixin:
     """SQLite operations shared by quota budgets and cooldown circuits."""
 
     connection: sqlite3.Connection
+    _commit: Callable[[], None]
 
-    def open_breaker(
-        self, name: str, *, now: datetime, cooldown: timedelta, reason: str
-    ) -> None:
+    def open_breaker(self, name: str, *, now: datetime, cooldown: timedelta, reason: str) -> None:
         self.connection.execute(
             """
             INSERT INTO youtube_circuit_breakers (
@@ -28,7 +28,7 @@ class YouTubeUsageStateMixin:
             """,
             (name, isoformat(now), isoformat(now + cooldown), reason[:1000]),
         )
-        self.connection.commit()
+        self._commit()
 
     def record_api_usage(
         self,
@@ -59,7 +59,7 @@ class YouTubeUsageStateMixin:
                 isoformat(observed_at),
             ),
         )
-        self.connection.commit()
+        self._commit()
 
     def api_requests_today(self, endpoint: str, now: datetime) -> int:
         row = self.connection.execute(

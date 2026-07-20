@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Sequence
@@ -18,10 +20,15 @@ from common.youtube_pipeline import (
     parse_datetime,
 )
 from common.youtube_request_state import YouTubeRequestStateMixin
+from common.youtube_outbox import YouTubeOutboxMixin, canonical_event_json
 from common.youtube_usage_state import YouTubeUsageStateMixin
 
 
-class YouTubeStateStore(YouTubeRequestStateMixin, YouTubeUsageStateMixin):
+class YouTubeStateStore(
+    YouTubeRequestStateMixin,
+    YouTubeUsageStateMixin,
+    YouTubeOutboxMixin,
+):
     """SQLite state shared by discovery and bounded enrichment workers."""
 
     def __init__(self, path: str | Path) -> None:
@@ -31,6 +38,7 @@ class YouTubeStateStore(YouTubeRequestStateMixin, YouTubeUsageStateMixin):
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA busy_timeout = 30000")
         self.connection.execute("PRAGMA journal_mode = WAL")
+        self._transaction_depth = 0
         self._migrate()
 
     def _migrate(self) -> None:
@@ -133,9 +141,91 @@ class YouTubeStateStore(YouTubeRequestStateMixin, YouTubeUsageStateMixin):
               quota_bucket TEXT NOT NULL,
               observed_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS youtube_metrics_state (
+              observation_id TEXT PRIMARY KEY,
+              video_id TEXT NOT NULL,
+              observed_at TEXT NOT NULL,
+              status TEXT NOT NULL,
+              payload_fingerprint TEXT NOT NULL,
+              result_json TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS youtube_worker_outbox (
+              outbox_id TEXT PRIMARY KEY,
+              worker_name TEXT NOT NULL,
+              aggregate_id TEXT NOT NULL,
+              topic TEXT NOT NULL,
+              message_key TEXT NOT NULL,
+              event_json TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              available_at TEXT NOT NULL,
+              delivery_attempts INTEGER NOT NULL DEFAULT 0,
+              last_attempt_at TEXT,
+              delivered_at TEXT,
+              last_error TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_youtube_worker_outbox_pending
+              ON youtube_worker_outbox (delivered_at, available_at, created_at);
             """
         )
         self.connection.commit()
+
+    def _commit(self) -> None:
+        if self._transaction_depth == 0:
+            self.connection.commit()
+
+    @contextmanager
+    def transaction(self) -> Iterator["YouTubeStateStore"]:
+        root = self._transaction_depth == 0
+        if root:
+            self.connection.execute("BEGIN IMMEDIATE")
+        self._transaction_depth += 1
+        try:
+            yield self
+        except BaseException:
+            self._transaction_depth -= 1
+            if root:
+                self.connection.rollback()
+            raise
+        else:
+            self._transaction_depth -= 1
+            if root:
+                self.connection.commit()
+
+    def record_metrics_observation(self, update: dict[str, Any]) -> None:
+        observation_id = str(update["observation_id"])
+        result_json = canonical_event_json(update)
+        self.connection.execute(
+            """
+            INSERT OR IGNORE INTO youtube_metrics_state (
+              observation_id, video_id, observed_at, status,
+              payload_fingerprint, result_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                observation_id,
+                str(update["platform_event_id"]),
+                str(update["metadata_refreshed_at"]),
+                str(update["metrics_refresh_status"]),
+                str(update["payload_fingerprint"]),
+                result_json,
+                str(update["metadata_refreshed_at"]),
+            ),
+        )
+        row = self.connection.execute(
+            """
+            SELECT payload_fingerprint, result_json
+            FROM youtube_metrics_state WHERE observation_id = ?
+            """,
+            (observation_id,),
+        ).fetchone()
+        if (
+            row is None
+            or row["payload_fingerprint"] != update["payload_fingerprint"]
+            or row["result_json"] != result_json
+        ):
+            raise RuntimeError(f"Metrics observation collision: {observation_id}")
+        self._commit()
 
     def watermark(self, query_id: str) -> dict[str, Any] | None:
         row = self.connection.execute(
@@ -178,7 +268,7 @@ class YouTubeStateStore(YouTubeRequestStateMixin, YouTubeUsageStateMixin):
                 now_value,
             ),
         )
-        self.connection.commit()
+        self._commit()
 
     def record_discovery(
         self,
@@ -219,15 +309,19 @@ class YouTubeStateStore(YouTubeRequestStateMixin, YouTubeUsageStateMixin):
                     isoformat(first_seen_at),
                 ),
             )
-            self.connection.commit()
+            self._commit()
             return True
+        self._commit()
         return False
 
     def is_discovered(self, video_id: str) -> bool:
-        return self.connection.execute(
-            "SELECT 1 FROM youtube_discovered_videos WHERE video_id = ?",
-            (video_id,),
-        ).fetchone() is not None
+        return (
+            self.connection.execute(
+                "SELECT 1 FROM youtube_discovered_videos WHERE video_id = ?",
+                (video_id,),
+            ).fetchone()
+            is not None
+        )
 
     def due_metadata(self, now: datetime, limit: int) -> list[dict[str, Any]]:
         rows = self.connection.execute(
@@ -269,9 +363,7 @@ class YouTubeStateStore(YouTubeRequestStateMixin, YouTubeUsageStateMixin):
         current_hash = metadata_hash(metadata)
         changed_fields = changed_metadata_fields(previous_metadata, metadata)
         refresh_count = int(row["metadata_refresh_count"] or 0) + 1
-        next_refresh = next_metadata_refresh_at(
-            row["first_seen_at"], refresh_count - 1, offsets
-        )
+        next_refresh = next_metadata_refresh_at(row["first_seen_at"], refresh_count - 1, offsets)
         self.connection.execute(
             """
             UPDATE youtube_metadata_state SET
@@ -302,7 +394,7 @@ class YouTubeStateStore(YouTubeRequestStateMixin, YouTubeUsageStateMixin):
                 video_id,
             ),
         )
-        self.connection.commit()
+        self._commit()
         return current_hash, previous_hash, changed_fields
 
     def record_metadata_failure(
@@ -337,7 +429,7 @@ class YouTubeStateStore(YouTubeRequestStateMixin, YouTubeUsageStateMixin):
                 video_id,
             ),
         )
-        self.connection.commit()
+        self._commit()
 
     def close(self) -> None:
         self.connection.close()

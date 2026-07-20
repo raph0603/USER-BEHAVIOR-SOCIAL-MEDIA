@@ -21,7 +21,12 @@ from common.youtube_pipeline import (
     utc_now,
 )
 from common.youtube_state import YouTubeStateStore
-from youtube_pipeline_events import EventConsumer, EventProducer, pipeline_event
+from youtube_pipeline_events import (
+    EventConsumer,
+    EventProducer,
+    drain_outbox,
+    pipeline_event,
+)
 
 
 def _env(name: str, default: str = "") -> str:
@@ -159,9 +164,7 @@ def main() -> None:
     concurrency = min(2, _env_int("YOUTUBE_METADATA_CONCURRENCY", 1, 1))
     max_attempts = _env_int("YOUTUBE_METADATA_MAX_ATTEMPTS", 3, 1)
     jitter = _env_float("YOUTUBE_METADATA_JITTER_SECONDS", 3.0)
-    cooldown = timedelta(
-        seconds=_env_int("YOUTUBE_METADATA_BLOCK_COOLDOWN_SECONDS", 21600, 60)
-    )
+    cooldown = timedelta(seconds=_env_int("YOUTUBE_METADATA_BLOCK_COOLDOWN_SECONDS", 21600, 60))
     offsets = parse_hour_offsets(_env("YOUTUBE_METADATA_REFRESH_HOURS"))
     producer = EventProducer(
         bootstrap_servers=bootstrap,
@@ -176,9 +179,15 @@ def main() -> None:
         "unchanged": 0,
         "failed": 0,
         "circuit_open": False,
+        "outbox_redrained": 0,
     }
 
     with YouTubeStateStore(state_path) as state:
+        summary["outbox_redrained"] = drain_outbox(
+            state,
+            producer,
+            include_deferred=True,
+        )
         summary["discovery_events"] = _ingest_discoveries(
             state,
             bootstrap=bootstrap,
@@ -216,6 +225,7 @@ def main() -> None:
                 video_id = row["video_id"]
                 attempt_count = int(row.get("attempt_count") or 0) + 1
                 observed_at = utc_now()
+                blocked = False
                 try:
                     raw, metadata = futures[video_id].result()
                     output_dir.mkdir(parents=True, exist_ok=True)
@@ -223,108 +233,124 @@ def main() -> None:
                         json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str),
                         encoding="utf-8",
                     )
-                    current_hash, previous_hash, changed_fields = state.record_metadata_success(
-                        video_id=video_id,
-                        observed_at=observed_at,
-                        metadata=metadata,
-                        offsets=offsets,
-                    )
-                    refreshed_state = state.metadata_state(video_id) or {}
-                    event = pipeline_event(
-                        "youtube.metadata.observed",
-                        video_id,
-                        correlation_id=row["correlation_id"],
-                        channel_id=metadata.get("channel_id"),
-                        collected_at=observed_at,
-                        attempt_count=attempt_count,
-                        title=metadata.get("title"),
-                        description=metadata.get("description"),
-                        published_at=row.get("published_at"),
-                        language=metadata.get("language"),
-                        duration_seconds=metadata.get("duration"),
-                        thumbnail_url=(metadata.get("thumbnails") or [{}])[-1].get("url")
-                        if metadata.get("thumbnails")
-                        else None,
-                        view_count=metadata.get("view_count"),
-                        like_count=metadata.get("like_count"),
-                        comment_count=metadata.get("comment_count"),
-                        metadata_source="yt-dlp",
-                        metadata_schema_version="1.0",
-                        yt_dlp_version=yt_dlp.version.__version__,
-                        enrichment_status="success",
-                        metadata_status="success",
-                        metadata_collected_at=isoformat(observed_at),
-                        last_metadata_refresh_at=isoformat(observed_at),
-                        next_metadata_refresh_at=refreshed_state.get(
-                            "next_metadata_refresh_at"
-                        ),
-                        metadata_refresh_count=refreshed_state.get(
-                            "metadata_refresh_count"
-                        ),
-                        metadata_hash=current_hash,
-                        previous_metadata_hash=previous_hash,
-                        changed_fields=changed_fields,
-                        canonical_metadata=json.dumps(
-                            metadata, ensure_ascii=False, sort_keys=True, default=str
-                        ),
-                        raw_source_payload=json.dumps(
-                            raw, ensure_ascii=False, sort_keys=True, default=str
-                        ),
-                    )
-                    producer.publish(metadata_topic, [event])
-                    if previous_hash != current_hash:
-                        producer.publish(
-                            changes_topic,
-                            [
-                                {
+                    with state.transaction():
+                        current_hash, previous_hash, changed_fields = state.record_metadata_success(
+                            video_id=video_id,
+                            observed_at=observed_at,
+                            metadata=metadata,
+                            offsets=offsets,
+                        )
+                        refreshed_state = state.metadata_state(video_id) or {}
+                        event = pipeline_event(
+                            "youtube.metadata.observed",
+                            video_id,
+                            correlation_id=row["correlation_id"],
+                            channel_id=metadata.get("channel_id"),
+                            collected_at=observed_at,
+                            attempt_count=attempt_count,
+                            title=metadata.get("title"),
+                            description=metadata.get("description"),
+                            published_at=row.get("published_at"),
+                            language=metadata.get("language"),
+                            duration_seconds=metadata.get("duration"),
+                            thumbnail_url=(metadata.get("thumbnails") or [{}])[-1].get("url")
+                            if metadata.get("thumbnails")
+                            else None,
+                            view_count=metadata.get("view_count"),
+                            like_count=metadata.get("like_count"),
+                            comment_count=metadata.get("comment_count"),
+                            metadata_source="yt-dlp",
+                            metadata_schema_version="1.0",
+                            yt_dlp_version=yt_dlp.version.__version__,
+                            enrichment_status="success",
+                            metadata_status="success",
+                            metadata_collected_at=isoformat(observed_at),
+                            last_metadata_refresh_at=isoformat(observed_at),
+                            next_metadata_refresh_at=refreshed_state.get(
+                                "next_metadata_refresh_at"
+                            ),
+                            metadata_refresh_count=refreshed_state.get("metadata_refresh_count"),
+                            metadata_hash=current_hash,
+                            previous_metadata_hash=previous_hash,
+                            changed_fields=changed_fields,
+                            canonical_metadata=json.dumps(
+                                metadata,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                default=str,
+                            ),
+                            raw_source_payload=json.dumps(
+                                raw,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                default=str,
+                            ),
+                        )
+                        state.enqueue_outbox(
+                            worker_name="youtube_metadata",
+                            aggregate_id=video_id,
+                            topic=metadata_topic,
+                            event=event,
+                            created_at=observed_at,
+                        )
+                        if previous_hash != current_hash:
+                            state.enqueue_outbox(
+                                worker_name="youtube_metadata",
+                                aggregate_id=video_id,
+                                topic=changes_topic,
+                                event={
                                     **event,
                                     "event_type": "youtube.metadata.changed",
-                                }
-                            ],
-                        )
-                        summary["enriched"] += 1
-                    else:
-                        summary["unchanged"] += 1
-                    if previous_hash is None:
-                        request_fields = {
-                            "correlation_id": row["correlation_id"],
-                            "collected_at": observed_at,
-                            "attempt_count": 1,
-                            "channel_id": metadata.get("channel_id"),
-                            "published_at": row.get("published_at"),
-                            "collection_status": "pending",
-                        }
-                        producer.publish(
-                            transcript_topic,
-                            [
-                                pipeline_event(
-                                    "youtube.transcript.requested",
-                                    video_id,
-                                    **request_fields,
-                                )
-                            ],
-                        )
-                        producer.publish(
-                            comment_topic,
-                            [
-                                pipeline_event(
-                                    "youtube.comment.requested",
-                                    video_id,
-                                    **request_fields,
-                                )
-                            ],
-                        )
-                        if metadata.get("channel_id"):
-                            producer.publish(
-                                channel_topic,
-                                [
+                                },
+                                created_at=observed_at,
+                            )
+                        if previous_hash is None:
+                            request_fields = {
+                                "correlation_id": row["correlation_id"],
+                                "collected_at": observed_at,
+                                "attempt_count": 1,
+                                "channel_id": metadata.get("channel_id"),
+                                "published_at": row.get("published_at"),
+                                "collection_status": "pending",
+                            }
+                            requests = (
+                                (
+                                    transcript_topic,
                                     pipeline_event(
+                                        "youtube.transcript.requested",
+                                        video_id,
+                                        **request_fields,
+                                    ),
+                                ),
+                                (
+                                    comment_topic,
+                                    pipeline_event(
+                                        "youtube.comment.requested",
+                                        video_id,
+                                        **request_fields,
+                                    ),
+                                ),
+                            )
+                            for request_topic, request_event in requests:
+                                state.enqueue_outbox(
+                                    worker_name="youtube_metadata",
+                                    aggregate_id=video_id,
+                                    topic=request_topic,
+                                    event=request_event,
+                                    created_at=observed_at,
+                                )
+                            if metadata.get("channel_id"):
+                                state.enqueue_outbox(
+                                    worker_name="youtube_metadata",
+                                    aggregate_id=video_id,
+                                    topic=channel_topic,
+                                    event=pipeline_event(
                                         "youtube.channel.requested",
                                         video_id,
                                         **request_fields,
-                                    )
-                                ],
-                            )
+                                    ),
+                                    created_at=observed_at,
+                                )
                 except BaseException as exc:
                     blocked = _blocked(exc)
                     permanent = attempt_count >= max_attempts and not blocked
@@ -334,57 +360,61 @@ def main() -> None:
                         maximum=timedelta(hours=6),
                         jitter_seconds=jitter,
                     )
-                    state.record_metadata_failure(
-                        video_id=video_id,
-                        attempted_at=observed_at,
-                        next_attempt_at=None if permanent else observed_at + delay,
-                        error=exc,
-                        permanent=permanent,
+                    failure_event = pipeline_event(
+                        "youtube.metadata.failed",
+                        video_id,
+                        correlation_id=row["correlation_id"],
+                        collected_at=observed_at,
+                        attempt_count=attempt_count,
+                        published_at=row.get("published_at"),
+                        metadata_source="yt-dlp",
+                        metadata_schema_version="1.0",
+                        yt_dlp_version=yt_dlp.version.__version__,
+                        enrichment_status=("permanent_error" if permanent else "retryable_error"),
+                        metadata_status="failed" if permanent else "pending",
+                        next_attempt_at=(
+                            (observed_at + delay).isoformat() if not permanent else None
+                        ),
+                        error_class=type(exc).__name__,
+                        error_code="yt_dlp_blocked" if blocked else "yt_dlp_error",
+                        error_message=str(exc)[:1000],
+                        metadata_error_code=("yt_dlp_blocked" if blocked else "yt_dlp_error"),
+                        metadata_error_message=str(exc)[:1000],
                     )
-                    producer.publish(
-                        metadata_topic,
-                        [
-                            pipeline_event(
-                                "youtube.metadata.failed",
-                                video_id,
-                                correlation_id=row["correlation_id"],
-                                collected_at=observed_at,
-                                attempt_count=attempt_count,
-                                published_at=row.get("published_at"),
-                                metadata_source="yt-dlp",
-                                metadata_schema_version="1.0",
-                                yt_dlp_version=yt_dlp.version.__version__,
-                                enrichment_status=(
-                                    "permanent_error" if permanent else "retryable_error"
-                                ),
-                                metadata_status=(
-                                    "failed" if permanent else "pending"
-                                ),
-                                next_attempt_at=(
-                                    (observed_at + delay).isoformat()
-                                    if not permanent
-                                    else None
-                                ),
-                                error_class=type(exc).__name__,
-                                error_code="yt_dlp_blocked" if blocked else "yt_dlp_error",
-                                error_message=str(exc)[:1000],
-                                metadata_error_code=(
-                                    "yt_dlp_blocked" if blocked else "yt_dlp_error"
-                                ),
-                                metadata_error_message=str(exc)[:1000],
-                            )
-                        ],
-                    )
-                    summary["failed"] += 1
-                    if blocked:
-                        state.open_breaker(
-                            "yt_dlp", now=observed_at, cooldown=cooldown, reason=str(exc)
+                    with state.transaction():
+                        state.record_metadata_failure(
+                            video_id=video_id,
+                            attempted_at=observed_at,
+                            next_attempt_at=(None if permanent else observed_at + delay),
+                            error=exc,
+                            permanent=permanent,
                         )
-                        summary["circuit_open"] = True
-                        break
-                finally:
-                    if jitter > 0:
-                        time.sleep(random.uniform(0, jitter))
+                        state.enqueue_outbox(
+                            worker_name="youtube_metadata",
+                            aggregate_id=video_id,
+                            topic=metadata_topic,
+                            event=failure_event,
+                            created_at=observed_at,
+                        )
+                        if blocked:
+                            state.open_breaker(
+                                "yt_dlp",
+                                now=observed_at,
+                                cooldown=cooldown,
+                                reason=str(exc),
+                            )
+                    summary["failed"] += 1
+                else:
+                    if previous_hash != current_hash:
+                        summary["enriched"] += 1
+                    else:
+                        summary["unchanged"] += 1
+                drain_outbox(state, producer)
+                if jitter > 0:
+                    time.sleep(random.uniform(0, jitter))
+                if blocked:
+                    summary["circuit_open"] = True
+                    break
 
     processed = summary["enriched"] + summary["unchanged"] + summary["failed"]
     print(

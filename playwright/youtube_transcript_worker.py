@@ -10,7 +10,12 @@ from datetime import timedelta
 from common.transcripts import fetch_transcript
 from common.youtube_pipeline import finalize_worker_summary, parse_datetime, utc_now
 from common.youtube_state import YouTubeStateStore
-from youtube_pipeline_events import EventConsumer, EventProducer, pipeline_event
+from youtube_pipeline_events import (
+    EventConsumer,
+    EventProducer,
+    drain_outbox,
+    pipeline_event,
+)
 
 
 def _env(name: str, default: str = "") -> str:
@@ -86,16 +91,25 @@ def main() -> None:
     result_topic = _env("YOUTUBE_TRANSCRIPT_RESULT_TOPIC", "youtube.transcript.results")
     state_path = _env("YOUTUBE_PIPELINE_STATE_DB", "/app/state/youtube-pipeline.sqlite")
     batch_size = _env_int("YOUTUBE_TRANSCRIPT_BATCH_SIZE", 10)
-    cooldown = timedelta(
-        seconds=_env_int("YOUTUBE_TRANSCRIPT_BLOCK_COOLDOWN_SECONDS", 21600, 60)
-    )
+    cooldown = timedelta(seconds=_env_int("YOUTUBE_TRANSCRIPT_BLOCK_COOLDOWN_SECONDS", 21600, 60))
     producer = EventProducer(
         bootstrap_servers=bootstrap,
         schema_registry_url=registry,
         schema_path=schema_path,
     )
-    summary = {"event": "youtube_transcript_summary", "due": 0, "succeeded": 0, "failed": 0}
+    summary = {
+        "event": "youtube_transcript_summary",
+        "due": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "outbox_redrained": 0,
+    }
     with YouTubeStateStore(state_path) as state:
+        summary["outbox_redrained"] = drain_outbox(
+            state,
+            producer,
+            include_deferred=True,
+        )
         _ingest_requests(state, bootstrap, registry, request_topic, batch_size)
         now = utc_now()
         if state.breaker_open("transcript", now):
@@ -128,54 +142,59 @@ def main() -> None:
             next_attempt = None if terminal else _retry_at(row, attempted_at, attempt_count)
             if next_attempt is None and not terminal:
                 status = "permanent_error"
-            state.record_request_result(
-                "transcript",
-                video_id=row["video_id"],
-                status=status,
-                attempted_at=attempted_at,
-                next_attempt_at=next_attempt,
-                result=result,
-                error_class=result.get("error_code"),
-                error_message=result.get("error_message"),
-            )
             payload = result.get("payload") or {}
-            producer.publish(
-                result_topic,
-                [
-                    pipeline_event(
-                        "youtube.transcript.result",
-                        row["video_id"],
-                        correlation_id=row["correlation_id"],
-                        collected_at=attempted_at,
-                        attempt_count=attempt_count,
-                        transcript_status=status,
-                        transcript_text=payload.get("text"),
-                        transcript_segments_json=payload.get("segments_json"),
-                        transcript_language=payload.get("language"),
-                        transcript_language_code=payload.get("language_code"),
-                        transcript_source=payload.get("source"),
-                        transcript_is_generated=payload.get("is_generated"),
-                        transcript_is_translated=payload.get("is_translated"),
-                        transcript_segment_count=payload.get("segment_count"),
-                        transcript_collected_at=attempted_at.isoformat(),
-                        transcript_error_code=result.get("error_code"),
-                        transcript_error_message=result.get("error_message"),
-                        next_attempt_at=next_attempt.isoformat() if next_attempt else None,
-                        payload_json=json.dumps(result, ensure_ascii=False, sort_keys=True),
-                    )
-                ],
+            event = pipeline_event(
+                "youtube.transcript.result",
+                row["video_id"],
+                correlation_id=row["correlation_id"],
+                collected_at=attempted_at,
+                attempt_count=attempt_count,
+                transcript_status=status,
+                transcript_text=payload.get("text"),
+                transcript_segments_json=payload.get("segments_json"),
+                transcript_language=payload.get("language"),
+                transcript_language_code=payload.get("language_code"),
+                transcript_source=payload.get("source"),
+                transcript_is_generated=payload.get("is_generated"),
+                transcript_is_translated=payload.get("is_translated"),
+                transcript_segment_count=payload.get("segment_count"),
+                transcript_collected_at=attempted_at.isoformat(),
+                transcript_error_code=result.get("error_code"),
+                transcript_error_message=result.get("error_message"),
+                next_attempt_at=next_attempt.isoformat() if next_attempt else None,
+                payload_json=json.dumps(result, ensure_ascii=False, sort_keys=True),
             )
+            with state.transaction():
+                state.record_request_result(
+                    "transcript",
+                    video_id=row["video_id"],
+                    status=status,
+                    attempted_at=attempted_at,
+                    next_attempt_at=next_attempt,
+                    result=result,
+                    error_class=result.get("error_code"),
+                    error_message=result.get("error_message"),
+                )
+                state.enqueue_outbox(
+                    worker_name="youtube_transcript",
+                    aggregate_id=row["video_id"],
+                    topic=result_topic,
+                    event=event,
+                    created_at=attempted_at,
+                )
+                if status == "ip_blocked":
+                    state.open_breaker(
+                        "transcript",
+                        now=attempted_at,
+                        cooldown=cooldown,
+                        reason=result.get("error_message") or status,
+                    )
             if status == "available":
                 summary["succeeded"] += 1
             else:
                 summary["failed"] += 1
+            drain_outbox(state, producer)
             if status == "ip_blocked":
-                state.open_breaker(
-                    "transcript",
-                    now=attempted_at,
-                    cooldown=cooldown,
-                    reason=result.get("error_message") or status,
-                )
                 summary["circuit_open"] = True
                 break
     processed = summary["succeeded"] + summary["failed"]

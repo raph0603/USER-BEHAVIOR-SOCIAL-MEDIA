@@ -12,7 +12,12 @@ from googleapiclient.errors import HttpError
 
 from common.youtube_pipeline import finalize_worker_summary, parse_datetime, utc_now
 from common.youtube_state import YouTubeStateStore
-from youtube_pipeline_events import EventConsumer, EventProducer, pipeline_event
+from youtube_pipeline_events import (
+    EventConsumer,
+    EventProducer,
+    drain_outbox,
+    pipeline_event,
+)
 
 
 def _env(name: str, default: str = "") -> str:
@@ -136,8 +141,14 @@ def main() -> None:
         "errors": 0,
         "processed": 0,
         "budget_exhausted": False,
+        "outbox_redrained": 0,
     }
     with YouTubeStateStore(state_path) as state:
+        summary["outbox_redrained"] = drain_outbox(
+            state,
+            producer,
+            include_deferred=True,
+        )
         _ingest_requests(state, bootstrap, registry, request_topic, batch_size)
         now = utc_now()
         due = state.due_requests("comment", now=now, limit=batch_size)
@@ -160,20 +171,6 @@ def main() -> None:
                     max_pages=min(max_pages, remaining_budget),
                 )
                 remaining_budget = max(0, remaining_budget - pages)
-                state.record_api_usage(
-                    endpoint="commentThreads.list",
-                    request_count=pages,
-                    resource_count=len(comments),
-                    success_count=pages,
-                    error_count=0,
-                    quota_bucket="secondary",
-                    observed_at=attempted_at,
-                )
-                state.record_comment_ids(
-                    row["video_id"],
-                    [comment.get("id") for comment in comments],
-                    attempted_at,
-                )
                 next_attempt = attempted_at + comment_refresh_interval(
                     row.get("published_at"), attempted_at
                 )
@@ -182,32 +179,47 @@ def main() -> None:
                     "pages": pages,
                     "stopped_on_known": stopped,
                 }
-                state.record_request_result(
-                    "comment",
-                    video_id=row["video_id"],
-                    status="available",
-                    attempted_at=attempted_at,
-                    next_attempt_at=next_attempt,
-                    result=result,
+                event = pipeline_event(
+                    "youtube.comment.result",
+                    row["video_id"],
+                    correlation_id=row["correlation_id"],
+                    collected_at=attempted_at,
+                    attempt_count=attempt_count,
+                    comments_status="success",
+                    comments_collected_at=attempted_at.isoformat(),
+                    next_attempt_at=next_attempt.isoformat(),
+                    payload_json=json.dumps(result, ensure_ascii=False, sort_keys=True),
                 )
-                producer.publish(
-                    result_topic,
-                    [
-                        pipeline_event(
-                            "youtube.comment.result",
-                            row["video_id"],
-                            correlation_id=row["correlation_id"],
-                            collected_at=attempted_at,
-                            attempt_count=attempt_count,
-                            comments_status="success",
-                            comments_collected_at=attempted_at.isoformat(),
-                            next_attempt_at=next_attempt.isoformat(),
-                            payload_json=json.dumps(
-                                result, ensure_ascii=False, sort_keys=True
-                            ),
-                        )
-                    ],
-                )
+                with state.transaction():
+                    state.record_api_usage(
+                        endpoint="commentThreads.list",
+                        request_count=pages,
+                        resource_count=len(comments),
+                        success_count=pages,
+                        error_count=0,
+                        quota_bucket="secondary",
+                        observed_at=attempted_at,
+                    )
+                    state.record_comment_ids(
+                        row["video_id"],
+                        [comment.get("id") for comment in comments],
+                        attempted_at,
+                    )
+                    state.record_request_result(
+                        "comment",
+                        video_id=row["video_id"],
+                        status="available",
+                        attempted_at=attempted_at,
+                        next_attempt_at=next_attempt,
+                        result=result,
+                    )
+                    state.enqueue_outbox(
+                        worker_name="youtube_comment",
+                        aggregate_id=row["video_id"],
+                        topic=result_topic,
+                        event=event,
+                        created_at=attempted_at,
+                    )
                 summary["new_comments"] += len(comments)
                 summary["pages"] += pages
                 summary["stopped_on_known"] += int(stopped)
@@ -216,50 +228,91 @@ def main() -> None:
                 status_code = int(getattr(getattr(exc, "resp", None), "status", 0) or 0)
                 permanent = status_code in {400, 404}
                 status = "permanent_error" if permanent else "retryable_error"
-                state.record_api_usage(
-                    endpoint="commentThreads.list",
-                    request_count=1,
-                    resource_count=0,
-                    success_count=0,
-                    error_count=1,
-                    quota_bucket="secondary",
-                    observed_at=attempted_at,
-                )
                 next_attempt = None if permanent else attempted_at + timedelta(hours=6)
-                state.record_request_result(
-                    "comment",
-                    video_id=row["video_id"],
-                    status=status,
-                    attempted_at=attempted_at,
-                    next_attempt_at=next_attempt,
-                    error_class=f"youtube_http_{status_code or 'error'}",
-                    error_message=str(exc),
+                error_code = f"youtube_http_{status_code or 'error'}"
+                event = pipeline_event(
+                    "youtube.comment.failed",
+                    row["video_id"],
+                    correlation_id=row["correlation_id"],
+                    collected_at=attempted_at,
+                    attempt_count=attempt_count,
+                    comments_status=status,
+                    next_attempt_at=(next_attempt.isoformat() if next_attempt else None),
+                    error_code=error_code,
+                    error_message=str(exc)[:1000],
                 )
+                with state.transaction():
+                    state.record_api_usage(
+                        endpoint="commentThreads.list",
+                        request_count=1,
+                        resource_count=0,
+                        success_count=0,
+                        error_count=1,
+                        quota_bucket="secondary",
+                        observed_at=attempted_at,
+                    )
+                    state.record_request_result(
+                        "comment",
+                        video_id=row["video_id"],
+                        status=status,
+                        attempted_at=attempted_at,
+                        next_attempt_at=next_attempt,
+                        error_class=error_code,
+                        error_message=str(exc),
+                    )
+                    state.enqueue_outbox(
+                        worker_name="youtube_comment",
+                        aggregate_id=row["video_id"],
+                        topic=result_topic,
+                        event=event,
+                        created_at=attempted_at,
+                    )
                 summary["errors"] += 1
             except BaseException as exc:
                 remaining_budget = max(0, remaining_budget - 1)
-                state.record_api_usage(
-                    endpoint="commentThreads.list",
-                    request_count=1,
-                    resource_count=0,
-                    success_count=0,
-                    error_count=1,
-                    quota_bucket="secondary",
-                    observed_at=attempted_at,
-                )
                 next_attempt = attempted_at + timedelta(hours=6)
-                state.record_request_result(
-                    "comment",
-                    video_id=row["video_id"],
-                    status="retryable_error",
-                    attempted_at=attempted_at,
-                    next_attempt_at=next_attempt,
-                    error_class=type(exc).__name__,
-                    error_message=str(exc),
+                error_code = type(exc).__name__
+                event = pipeline_event(
+                    "youtube.comment.failed",
+                    row["video_id"],
+                    correlation_id=row["correlation_id"],
+                    collected_at=attempted_at,
+                    attempt_count=attempt_count,
+                    comments_status="retryable_error",
+                    next_attempt_at=next_attempt.isoformat(),
+                    error_code=error_code,
+                    error_message=str(exc)[:1000],
                 )
+                with state.transaction():
+                    state.record_api_usage(
+                        endpoint="commentThreads.list",
+                        request_count=1,
+                        resource_count=0,
+                        success_count=0,
+                        error_count=1,
+                        quota_bucket="secondary",
+                        observed_at=attempted_at,
+                    )
+                    state.record_request_result(
+                        "comment",
+                        video_id=row["video_id"],
+                        status="retryable_error",
+                        attempted_at=attempted_at,
+                        next_attempt_at=next_attempt,
+                        error_class=error_code,
+                        error_message=str(exc),
+                    )
+                    state.enqueue_outbox(
+                        worker_name="youtube_comment",
+                        aggregate_id=row["video_id"],
+                        topic=result_topic,
+                        event=event,
+                        created_at=attempted_at,
+                    )
                 summary["errors"] += 1
             finally:
                 summary["processed"] += 1
+                drain_outbox(state, producer)
     print(
         json.dumps(
             finalize_worker_summary(

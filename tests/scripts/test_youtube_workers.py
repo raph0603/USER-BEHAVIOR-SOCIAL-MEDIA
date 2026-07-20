@@ -155,9 +155,7 @@ class YouTubeChannelWorkerTests(unittest.TestCase):
         youtube = FakeChannelYouTube()
         channel_ids = [f"channel-{index}" for index in range(50)]
 
-        statistics = youtube_channel_worker.fetch_channel_statistics(
-            youtube, channel_ids
-        )
+        statistics = youtube_channel_worker.fetch_channel_statistics(youtube, channel_ids)
 
         self.assertEqual(len(youtube.calls), 1)
         self.assertEqual(youtube.calls[0]["part"], "statistics")
@@ -165,17 +163,13 @@ class YouTubeChannelWorkerTests(unittest.TestCase):
 
     def test_channel_batches_never_exceed_fifty(self):
         batches = list(
-            youtube_channel_worker.batched(
-                (f"channel-{index}" for index in range(101)), size=100
-            )
+            youtube_channel_worker.batched((f"channel-{index}" for index in range(101)), size=100)
         )
 
         self.assertEqual([len(batch) for batch in batches], [50, 50, 1])
 
     def test_channel_worker_does_not_open_watch_pages(self):
-        source = (PLAYWRIGHT_DIR / "youtube_channel_worker.py").read_text(
-            encoding="utf-8"
-        )
+        source = (PLAYWRIGHT_DIR / "youtube_channel_worker.py").read_text(encoding="utf-8")
 
         self.assertNotIn("youtube.com/watch", source)
         self.assertIn("channels.list", source)
@@ -215,22 +209,31 @@ class YouTubeDiscoveryWorkerTests(unittest.TestCase):
 
 
 class YouTubeWorkerArchitectureTests(unittest.TestCase):
+    def test_worker_results_are_published_only_through_the_outbox(self):
+        for name in (
+            "youtube_discovery.py",
+            "youtube_metadata_worker.py",
+            "youtube_metrics_worker.py",
+            "youtube_transcript_worker.py",
+            "youtube_comment_worker.py",
+            "youtube_channel_worker.py",
+        ):
+            source = (PLAYWRIGHT_DIR / name).read_text(encoding="utf-8")
+
+            self.assertNotIn("producer.publish(", source, name)
+            self.assertIn("enqueue_outbox(", source, name)
+            self.assertIn("drain_outbox(", source, name)
+
     def test_yt_dlp_worker_never_downloads_media(self):
-        source = (PLAYWRIGHT_DIR / "youtube_metadata_worker.py").read_text(
-            encoding="utf-8"
-        )
+        source = (PLAYWRIGHT_DIR / "youtube_metadata_worker.py").read_text(encoding="utf-8")
 
         self.assertIn('"skip_download": True', source)
         self.assertIn("download=False", source)
         self.assertNotIn("download=True", source)
 
     def test_transcript_and_comment_workers_have_separate_topics(self):
-        transcript = (PLAYWRIGHT_DIR / "youtube_transcript_worker.py").read_text(
-            encoding="utf-8"
-        )
-        comments = (PLAYWRIGHT_DIR / "youtube_comment_worker.py").read_text(
-            encoding="utf-8"
-        )
+        transcript = (PLAYWRIGHT_DIR / "youtube_transcript_worker.py").read_text(encoding="utf-8")
+        comments = (PLAYWRIGHT_DIR / "youtube_comment_worker.py").read_text(encoding="utf-8")
 
         self.assertIn("youtube.transcript.requests", transcript)
         self.assertIn("youtube.transcript.results", transcript)
@@ -242,9 +245,7 @@ class YouTubeWorkerArchitectureTests(unittest.TestCase):
             "user_behavior_lakehouse.py",
             "user_behavior_lakehouse_no_row_checks.py",
         ):
-            source = (ROOT / "orchestrator" / "dags" / name).read_text(
-                encoding="utf-8"
-            )
+            source = (ROOT / "orchestrator" / "dags" / name).read_text(encoding="utf-8")
             for task_id in (
                 "discover_youtube_videos",
                 "enrich_youtube_metadata",

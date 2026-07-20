@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from common.youtube_pipeline import next_metrics_refresh_at, parse_datetime
 from common.youtube_state import YouTubeStateStore
 from engagement import parse_count
-from youtube_pipeline_events import EventProducer, pipeline_event
+from youtube_pipeline_events import EventProducer, drain_outbox, pipeline_event
 
 
 UTC = timezone.utc
@@ -219,15 +219,8 @@ def collect_metrics(
     return updates
 
 
-def _publish(updates: list[dict]) -> int:
-    if not updates or not _env("KAFKA_BOOTSTRAP"):
-        return 0
-    producer = EventProducer(
-        bootstrap_servers=_env("KAFKA_BOOTSTRAP", "kafka:9092"),
-        schema_registry_url=_env("SCHEMA_REGISTRY_URL", "http://schema-registry:8081"),
-        schema_path=_env("SCHEMA_PATH", "/app/schemas/playwright_event.avsc"),
-    )
-    events = [
+def _outbox_events(updates: list[dict]) -> list[dict]:
+    return [
         pipeline_event(
             "youtube.engagement.snapshot",
             update["platform_event_id"],
@@ -248,9 +241,6 @@ def _publish(updates: list[dict]) -> int:
         )
         for update in updates
     ]
-    return producer.publish(
-        _env("YOUTUBE_ENGAGEMENT_TOPIC", "youtube.engagement.snapshots"), events
-    )
 
 
 def _write_updates(path: Path, updates: list[dict]) -> None:
@@ -268,34 +258,61 @@ def main() -> None:
     targets_path = Path(_env("INSIGHT_REFRESH_TARGETS_PATH", "/app/insight-refresh/targets.jsonl"))
     output_path = Path(_env("INSIGHT_REFRESH_OUTPUT_PATH", "/app/insight-refresh/youtube.jsonl"))
     targets = _load_due_targets(targets_path)
-    if not targets:
-        _write_updates(output_path, [])
-        print(
-            json.dumps(
-                {
-                    "event": "youtube_metrics_complete",
-                    "targets": 0,
-                    "observations": 0,
-                    "max_batch_size": MAX_VIDEOS_PER_REQUEST,
-                },
-                sort_keys=True,
-            )
+    state_path = _env(
+        "YOUTUBE_PIPELINE_STATE_DB",
+        "/app/state/youtube-pipeline.sqlite",
+    )
+    topic = _env("YOUTUBE_ENGAGEMENT_TOPIC", "youtube.engagement.snapshots")
+    producer = EventProducer(
+        bootstrap_servers=_env("KAFKA_BOOTSTRAP", "kafka:9092"),
+        schema_registry_url=_env(
+            "SCHEMA_REGISTRY_URL",
+            "http://schema-registry:8081",
+        ),
+        schema_path=_env("SCHEMA_PATH", "/app/schemas/playwright_event.avsc"),
+    )
+    with YouTubeStateStore(state_path) as state:
+        outbox_redrained = drain_outbox(
+            state,
+            producer,
+            include_deferred=True,
         )
-        return
-    api_key = _env("YOUTUBE_API_KEY")
-    if not api_key:
-        raise RuntimeError("YOUTUBE_API_KEY is required for YouTube metrics")
-
-    state_path = _env("YOUTUBE_PIPELINE_STATE_DB")
-    usage_store = YouTubeStateStore(state_path) if state_path else None
-    try:
+        if not targets:
+            _write_updates(output_path, [])
+            print(
+                json.dumps(
+                    {
+                        "event": "youtube_metrics_complete",
+                        "targets": 0,
+                        "observations": 0,
+                        "max_batch_size": MAX_VIDEOS_PER_REQUEST,
+                        "outbox_redrained": outbox_redrained,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return
+        api_key = _env("YOUTUBE_API_KEY")
+        if not api_key:
+            raise RuntimeError("YOUTUBE_API_KEY is required for YouTube metrics")
         youtube = build("youtube", "v3", developerKey=api_key, cache_discovery=False)
-        updates = collect_metrics(targets, youtube=youtube, usage_store=usage_store)
-        _publish(updates)
+        updates = collect_metrics(targets, youtube=youtube, usage_store=state)
         _write_updates(output_path, updates)
-    finally:
-        if usage_store:
-            usage_store.close()
+        events = _outbox_events(updates)
+        with state.transaction():
+            for update, event in zip(updates, events, strict=True):
+                observed_at = parse_datetime(update["metadata_refreshed_at"])
+                if observed_at is None:
+                    raise ValueError("metrics observation is missing metadata_refreshed_at")
+                state.record_metrics_observation(update)
+                state.enqueue_outbox(
+                    worker_name="youtube_metrics",
+                    aggregate_id=update["platform_event_id"],
+                    topic=topic,
+                    event=event,
+                    created_at=observed_at,
+                )
+        outbox_drained = drain_outbox(state, producer)
     print(
         json.dumps(
             {
@@ -303,6 +320,8 @@ def main() -> None:
                 "targets": len(targets),
                 "observations": len(updates),
                 "max_batch_size": MAX_VIDEOS_PER_REQUEST,
+                "outbox_redrained": outbox_redrained,
+                "outbox_drained": outbox_drained,
             },
             sort_keys=True,
         )
