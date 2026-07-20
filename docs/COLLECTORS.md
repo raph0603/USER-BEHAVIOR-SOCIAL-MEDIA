@@ -29,11 +29,30 @@ stable source identity.
 
 ## YouTube
 
-The YouTube collector uses the Data API for video metadata and comment pages.
-The event retains canonical metadata such as publication time, owner channel,
-visibility, category, tags, topics, duration, caption declaration, and
-engagement counters. Source-only details remain in the source metadata
-envelope.
+The scheduled path uses the Data API `search.list` only to discover new video
+IDs. Each query carries its own language and persistent watermark. Continuous
+runs request one page; set `YOUTUBE_SEARCH_BACKFILL_ENABLED=true` only for an
+intentional bounded multi-page backfill.
+
+New IDs are enriched by `youtube_metadata_worker.py` using `yt-dlp` with
+`download=False` and `skip_download=True`. The worker never downloads media.
+It stores the raw response for Bronze reprocessing, publishes normalized
+metadata, and schedules sparse descriptive checks. Concurrency defaults to one
+and is capped at two. Retries use exponential backoff and jitter; explicit
+blocking opens a global cooldown circuit.
+
+Engagement refresh is separate. `insight_refresh.py` calls `videos.list` with
+up to 50 IDs and reads only view, like and comment counts. It does not fetch
+transcripts, text comments, collaborators, subscribers, full metadata or
+watch pages. The due schedule ranges from 30 minutes for a new video to seven
+days for a video older than 30 days, with an optional shorter interval for
+high-growth videos.
+
+Transcript, text-comment and channel-statistic workers consume separate
+request topics. Successful transcripts are not fetched again. Comments stop
+when a persistent known ID is found. Subscriber statistics are deduplicated
+and cached by channel, then refreshed daily for active channels and weekly for
+inactive channels via `channels.list` batches.
 
 Caption selection is explicit and deterministic:
 
@@ -61,11 +80,24 @@ are `not_available`, not a technical failure.
 
 Important settings include:
 
-- `YOUTUBE_SEARCH_LANGUAGES` and `YOUTUBE_SEARCH_QUERIES`;
+- `YOUTUBE_SEARCH_QUERIES_JSON`, `YOUTUBE_SEARCH_OVERLAP_MINUTES` and
+  `YOUTUBE_SEARCH_BACKFILL_MAX_PAGES`;
+- `YOUTUBE_METADATA_BATCH_SIZE`, `YOUTUBE_METADATA_CONCURRENCY`,
+  `YOUTUBE_METADATA_REFRESH_HOURS` and `YOUTUBE_METADATA_BLOCK_COOLDOWN_SECONDS`;
 - `YOUTUBE_TRANSCRIPT_LANGUAGES`;
-- `YOUTUBE_COMMENT_MAX_PAGES`;
+- `YOUTUBE_COMMENT_BATCH_SIZE`, `YOUTUBE_COMMENT_MAX_PAGES` and
+  `YOUTUBE_COMMENT_DAILY_REQUEST_BUDGET`;
+- `YOUTUBE_CHANNEL_BATCH_SIZE`, `YOUTUBE_CHANNEL_DAILY_REQUEST_BUDGET`,
+  `YOUTUBE_CHANNEL_ACTIVE_REFRESH_HOURS` and
+  `YOUTUBE_CHANNEL_INACTIVE_REFRESH_HOURS`;
+- `YOUTUBE_SEARCH_DAILY_REQUEST_BUDGET` and
+  `YOUTUBE_VIDEOS_DAILY_REQUEST_BUDGET`;
 - `YOUTUBE_TRANSCRIPT_MAX_FAILURES`;
 - `YOUTUBE_COLLECTION_TIMEOUT_SECONDS`.
+
+The legacy `YOUTUBE_SEARCH_QUERIES` and `YOUTUBE_SEARCH_LANGUAGES` variables
+remain accepted as positionally paired values; they are never combined as a
+Cartesian product.
 
 ## X
 

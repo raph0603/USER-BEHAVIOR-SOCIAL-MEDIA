@@ -16,7 +16,9 @@ import os
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col,
+    coalesce,
     length,
+    lit,
     regexp_replace,
     size,
     split,
@@ -63,8 +65,10 @@ def _build_spark(app_name: str, warehouse: str) -> SparkSession:
 _HASHTAG_PATTERN = r"#\w+"
 _MENTION_PATTERN = r"@\w+"
 _URL_PATTERN = r"(https?://\S+|www\.\S+)"
-# Basic emoji block ranges (BMP + supplementary)
-_EMOJI_PATTERN = r"[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE00-\uFE0F]"
+# Basic emoji block ranges (BMP + supplementary). Spark evaluates this pattern
+# with ``java.util.regex.Pattern``, whose supplementary-code-point syntax is
+# ``\x{...}`` rather than Python's ``\U........`` escape.
+_EMOJI_PATTERN = r"[\x{1F300}-\x{1FAFF}\u2600-\u27BF\uFE00-\uFE0F]"
 
 
 def compute_post_features(df):
@@ -98,6 +102,14 @@ def compute_post_features(df):
         .withColumn("url_count", url_count)
         .withColumn("emoji_count", emoji_count)
     )
+
+
+def with_author_hash(df):
+    """Keep an explicit author hash, falling back to the privacy-safe user ID."""
+
+    if "author_hash" not in df.columns:
+        return df.withColumn("author_hash", col("user_id"))
+    return df.withColumn("author_hash", coalesce(col("author_hash"), col("user_id")))
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +161,74 @@ _UPSERT_COLUMNS = [
     "emoji_count",
     "feature_version",
 ]
+
+
+def prepare_post_features(df):
+    """Build the deterministic feature projection from the current Silver state."""
+
+    prepared = (
+        df.filter(col("text_for_model").isNotNull())
+        .withColumn("event_date", to_date(col("event_ts")))
+        .transform(with_author_hash)
+        .transform(compute_post_features)
+        .withColumn("feature_version", lit(_FEATURE_VERSION))
+    )
+    return prepared.select(*_UPSERT_COLUMNS)
+
+
+def merge_post_features(df, features_table: str, batch_id: int) -> None:
+    """Idempotently materialize one feature batch into the Iceberg target."""
+
+    if df.rdd.isEmpty():
+        return
+
+    batch_df = df.dropDuplicates(["source", "platform_event_id", "user_id", "url", "event_ts"])
+    temp_view = f"post_features_batch_{batch_id}"
+    batch_df.createOrReplaceTempView(temp_view)
+    batch_spark = batch_df.sparkSession
+
+    columns = ", ".join(_UPSERT_COLUMNS)
+    source_columns = ", ".join(f"s.{name}" for name in _UPSERT_COLUMNS)
+    update_set = ",\n".join(f"t.{name} = s.{name}" for name in _UPSERT_COLUMNS)
+
+    merge_sql = f"""
+    MERGE INTO {features_table} AS t
+    USING {temp_view} AS s
+    ON t.source <=> s.source
+       AND (
+         (
+           s.platform_event_id IS NOT NULL
+           AND t.platform_event_id = s.platform_event_id
+         )
+         OR (
+           s.platform_event_id IS NULL
+           AND t.platform_event_id IS NULL
+           AND t.user_id <=> s.user_id
+           AND t.url <=> s.url
+           AND t.event_ts <=> s.event_ts
+         )
+       )
+    WHEN MATCHED THEN UPDATE SET
+      {update_set}
+    WHEN NOT MATCHED THEN
+      INSERT ({columns}) VALUES ({source_columns})
+    """
+    batch_spark.sql(merge_sql)
+
+
+def refresh_post_features(
+    spark: SparkSession,
+    silver_table: str,
+    features_table: str,
+    batch_id: int,
+) -> None:
+    """Read a consistent Silver snapshot and merge its feature projection."""
+
+    merge_post_features(
+        prepare_post_features(spark.table(silver_table)),
+        features_table,
+        batch_id,
+    )
 
 
 def _ensure_columns(spark: SparkSession, table: str, columns: dict) -> None:
@@ -205,84 +285,44 @@ def main() -> None:
         },
     )
 
-    processing_mode = _env("PROCESSING_MODE", "continuous")
+    processing_mode = _env("PROCESSING_MODE", "availableNow")
     trigger_interval = _env("PROCESSING_TRIGGER", "30 seconds")
     checkpoint = f"s3a://{bucket}/checkpoints/silver/post_features"
 
-    source_stream = (
-        spark.readStream.format("iceberg")
-        .load(silver_table)
-        .filter(col("text_for_model").isNotNull())
-        .withColumn("event_date", to_date(col("event_ts")))
-    )
+    normalized_mode = processing_mode.replace("_", "").lower()
+    if normalized_mode == "availablenow":
+        # ``silver.events`` is a mutable Iceberg current-state table. Reading it
+        # as an append-only stream rejects MERGE overwrite snapshots (or silently
+        # skips them when configured to do so). A batch snapshot plus MERGE is
+        # both safe after Silver updates and idempotent across Airflow retries.
+        refresh_post_features(spark, silver_table, features_table, batch_id=0)
+    elif normalized_mode == "continuous":
+        # A rate stream only schedules refreshes; each callback reads a fresh,
+        # consistent batch snapshot of the mutable Silver table. This preserves
+        # continuous compatibility without skipping Iceberg overwrite snapshots.
+        refresh_post_features(spark, silver_table, features_table, batch_id=0)
 
-    # Add features
-    source_stream = compute_post_features(source_stream)
-    source_stream = source_stream.withColumn("feature_version", col("source").cast("string"))
-    # Overwrite feature_version with constant after we used col("source") for the cast trick
-    from pyspark.sql.functions import lit
-    source_stream = source_stream.withColumn("feature_version", lit(_FEATURE_VERSION))
+        def _refresh_on_tick(_heartbeat_df, epoch_id: int) -> None:
+            refresh_post_features(
+                spark,
+                silver_table,
+                features_table,
+                batch_id=epoch_id + 1,
+            )
 
-    source_stream = source_stream.select(*_UPSERT_COLUMNS)
-
-    def _foreach_batch(df, epoch_id: int):
-        if df.rdd.isEmpty():
-            return
-
-        batch_df = df.dropDuplicates(
-            ["source", "platform_event_id", "user_id", "url", "event_ts"]
-        )
-        temp_view = f"post_features_batch_{epoch_id}"
-        batch_df.createOrReplaceTempView(temp_view)
-        batch_spark = batch_df.sparkSession
-
-        cols = ", ".join(_UPSERT_COLUMNS)
-        s_cols = ", ".join([f"s.{c}" for c in _UPSERT_COLUMNS])
-
-        update_set = ",\n".join(
-            f"t.{c} = s.{c}" for c in _UPSERT_COLUMNS if c not in ("event_date",)
-        )
-
-        merge_sql = f"""
-        MERGE INTO {features_table} AS t
-        USING {temp_view} AS s
-        ON t.event_date = s.event_date
-           AND (
-             (
-               s.platform_event_id IS NOT NULL
-               AND t.platform_event_id = s.platform_event_id
-             )
-             OR (
-               s.platform_event_id IS NULL
-               AND t.user_id = s.user_id
-               AND t.url = s.url
-               AND t.event_ts = s.event_ts
-             )
-           )
-        WHEN MATCHED THEN UPDATE SET
-          {update_set}
-        WHEN NOT MATCHED THEN
-          INSERT ({cols}) VALUES ({s_cols})
-        """
-        batch_spark.sql(merge_sql)
-
-    if processing_mode == "availableNow":
+        heartbeat_stream = spark.readStream.format("rate").option("rowsPerSecond", 1).load()
         query = (
-            source_stream.writeStream.outputMode("append")
-            .option("checkpointLocation", checkpoint)
-            .trigger(availableNow=True)
-            .toTable(features_table)
-        )
-        query.awaitTermination()
-    else:
-        query = (
-            source_stream.writeStream.outputMode("append")
+            heartbeat_stream.writeStream.outputMode("append")
             .option("checkpointLocation", checkpoint)
             .trigger(processingTime=trigger_interval)
-            .foreachBatch(_foreach_batch)
+            .foreachBatch(_refresh_on_tick)
             .start()
         )
         query.awaitTermination()
+    else:
+        raise ValueError(
+            f"PROCESSING_MODE must be 'availableNow' or 'continuous'; received {processing_mode!r}"
+        )
 
 
 if __name__ == "__main__":

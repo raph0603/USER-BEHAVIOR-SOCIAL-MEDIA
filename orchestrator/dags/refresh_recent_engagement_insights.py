@@ -19,13 +19,11 @@ PROJECT_DIR = "/workspace"
 
 
 def schedule_interval() -> timedelta | None:
-    raw_value = os.getenv("INSIGHT_REFRESH_SCHEDULE_MINUTES", "1440").strip()
+    raw_value = os.getenv("INSIGHT_REFRESH_SCHEDULE_MINUTES", "30").strip()
     try:
         minutes = int(raw_value)
     except ValueError as exc:
-        raise ValueError(
-            "INSIGHT_REFRESH_SCHEDULE_MINUTES must be an integer"
-        ) from exc
+        raise ValueError("INSIGHT_REFRESH_SCHEDULE_MINUTES must be an integer") from exc
     return timedelta(minutes=minutes) if minutes > 0 else None
 
 
@@ -75,8 +73,7 @@ with DAG(
     initialize_services = BashOperator(
         task_id="initialize_refresh_services",
         bash_command=docker_compose(
-            "up -d --scale spark-worker=${SPARK_WORKER_COUNT:-4} "
-            "minio spark-master spark-worker"
+            "up -d --scale spark-worker=${SPARK_WORKER_COUNT:-4} minio spark-master spark-worker"
         ),
     )
 
@@ -146,8 +143,8 @@ with DAG(
         execution_timeout=timedelta(minutes=30),
         bash_command=docker_compose(
             "run --rm --no-deps "
-            "-e INSIGHT_REFRESH_SOURCE=youtube "
-            "youtube-collector python /app/insight_refresh.py"
+            "-e PIPELINE_RUN_ID={{ dag.dag_id }}__{{ run_id }} "
+            "youtube-collector python /app/youtube_metrics_worker.py"
         ),
     )
 
@@ -162,7 +159,8 @@ with DAG(
           : > /workspace/data/insight-refresh/x.jsonl
           exit 0
         fi
-        """ + docker_compose(
+        """
+        + docker_compose(
             "run --rm --no-deps "
             "-e INSIGHT_REFRESH_SOURCE=x "
             "-e X_HEADLESS={{ params.x_headless | lower }} "
@@ -180,16 +178,54 @@ with DAG(
           : > /workspace/data/insight-refresh/reddit.jsonl
           exit 0
         fi
-        """ + docker_compose(
+        """
+        + docker_compose(
             "run --rm --no-deps "
             "-e INSIGHT_REFRESH_SOURCE=reddit "
             "reddit-collector python /app/insight_refresh.py"
         ),
     )
 
+    validate_refresh_output = BashOperator(
+        task_id="validate_refresh_output",
+        execution_timeout=timedelta(minutes=5),
+        bash_command=docker_compose(
+            "run --rm --no-deps youtube-collector python /app/validate_insight_refresh.py"
+        ),
+    )
+
+    append_snapshots = BashOperator(
+        task_id="append_engagement_snapshots",
+        execution_timeout=timedelta(minutes=30),
+        bash_command=r"""
+        set -euo pipefail
+        docker exec spark-master /opt/spark/bin/spark-submit \
+          --master spark://spark-master:7077 \
+          --driver-memory 512m \
+          --executor-memory 512m \
+          --conf spark.cores.max=2 \
+          --conf spark.executor.cores=1 \
+          /opt/spark/jobs/batch/engagement_snapshots.py
+        """,
+    )
+
+    compute_velocity = BashOperator(
+        task_id="compute_youtube_velocity_and_virality",
+        execution_timeout=timedelta(minutes=30),
+        bash_command=r"""
+        set -euo pipefail
+        docker exec spark-master /opt/spark/bin/spark-submit \
+          --master spark://spark-master:7077 \
+          --driver-memory 512m \
+          --executor-memory 512m \
+          --conf spark.cores.max=2 \
+          --conf spark.executor.cores=1 \
+          /opt/spark/jobs/batch/youtube_engagement_velocity.py
+        """,
+    )
+
     apply_updates = BashOperator(
-        task_id="merge_refreshed_insights",
-        trigger_rule=TriggerRule.ALL_DONE,
+        task_id="merge_latest_engagement_values",
         execution_timeout=timedelta(minutes=30),
         bash_command=r"""
         set -euo pipefail
@@ -212,5 +248,6 @@ with DAG(
     initialize_services >> verify_services >> acquire_lock
     acquire_lock >> reset_output >> export_targets
     export_targets >> [refresh_youtube, refresh_x, refresh_reddit]
-    [refresh_youtube, refresh_x, refresh_reddit] >> apply_updates
-    apply_updates >> release_lock
+    [refresh_youtube, refresh_x, refresh_reddit] >> validate_refresh_output
+    validate_refresh_output >> append_snapshots
+    append_snapshots >> apply_updates >> compute_velocity >> release_lock

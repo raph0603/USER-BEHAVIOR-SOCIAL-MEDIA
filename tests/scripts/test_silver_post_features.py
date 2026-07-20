@@ -11,12 +11,20 @@ Validates:
 
 import sys
 import os
+import inspect
 import unittest
 from pathlib import Path
 
+import pytest
+
+
+pytestmark = pytest.mark.spark
+
 ROOT = Path(__file__).resolve().parents[2]
-bat_wrapper = str(ROOT / "tests" / "scripts" / "run_python.bat")
-os.environ["PYSPARK_PYTHON"] = bat_wrapper
+if os.name == "nt":
+    os.environ["PYSPARK_PYTHON"] = str(ROOT / "tests" / "scripts" / "run_python.bat")
+else:
+    os.environ["PYSPARK_PYTHON"] = sys.executable
 os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
 # Add the batch jobs folder to the path so we can import the module
@@ -86,9 +94,7 @@ class PostFeatureComputationTests(unittest.TestCase):
         self.assertEqual(row["mention_count"], 2)
 
     def test_url_count(self):
-        df = self._make_df(
-            "Visit https://example.com and http://foo.bar", "visit and"
-        )
+        df = self._make_df("Visit https://example.com and http://foo.bar", "visit and")
         row = spf.compute_post_features(df).collect()[0]
         self.assertEqual(row["url_count"], 2)
 
@@ -113,6 +119,63 @@ class PostFeatureComputationTests(unittest.TestCase):
         """Feature version must be a non-empty string constant."""
         self.assertIsInstance(spf._FEATURE_VERSION, str)
         self.assertTrue(len(spf._FEATURE_VERSION) > 0)
+
+    def test_author_hash_falls_back_to_privacy_safe_user_id(self):
+        df = self.spark.createDataFrame(
+            [("hashed-user",)],
+            schema="user_id STRING",
+        )
+
+        row = spf.with_author_hash(df).collect()[0]
+
+        self.assertEqual(row["author_hash"], "hashed-user")
+
+    def test_existing_author_hash_is_preserved(self):
+        df = self.spark.createDataFrame(
+            [("hashed-user", "source-author")],
+            schema="user_id STRING, author_hash STRING",
+        )
+
+        row = spf.with_author_hash(df).collect()[0]
+
+        self.assertEqual(row["author_hash"], "source-author")
+
+    def test_prepare_post_features_filters_unknown_text_and_sets_version(self):
+        df = self.spark.createDataFrame(
+            [
+                (
+                    "youtube",
+                    "video-1",
+                    "hashed-user",
+                    "https://example.test/video-1",
+                    "2026-07-20T00:00:00Z",
+                    "Hello #Spark",
+                    "hello #spark",
+                    "Hello #Spark",
+                ),
+                (
+                    "youtube",
+                    "video-2",
+                    "hashed-user",
+                    "https://example.test/video-2",
+                    "2026-07-20T00:01:00Z",
+                    "Unavailable",
+                    None,
+                    "Unavailable",
+                ),
+            ],
+            schema=(
+                "source STRING, platform_event_id STRING, user_id STRING, url STRING, "
+                "event_ts STRING, raw_text STRING, text_for_model STRING, clean_text STRING"
+            ),
+        ).withColumn("event_ts", spf.to_timestamp("event_ts"))
+
+        rows = spf.prepare_post_features(df).collect()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["author_hash"], "hashed-user")
+        self.assertEqual(rows[0]["feature_version"], spf._FEATURE_VERSION)
+        self.assertEqual(rows[0]["hashtag_count"], 1)
 
 
 class PostFeaturesSchemaContractTests(unittest.TestCase):
@@ -162,6 +225,25 @@ class PostFeaturesSchemaContractTests(unittest.TestCase):
                 spf._UPSERT_COLUMNS,
                 f"Monitoring-only column leaked into post_features: {col_name}",
             )
+
+    def test_available_now_reads_current_state_as_batch(self):
+        source = inspect.getsource(spf.main)
+
+        self.assertIn("refresh_post_features", source)
+        self.assertNotIn('readStream.format("iceberg")', source)
+        self.assertNotIn(".toTable(features_table)", source)
+
+    def test_merge_identity_includes_source_and_null_safe_fallback(self):
+        source = inspect.getsource(spf.merge_post_features)
+
+        self.assertIn("t.source <=> s.source", source)
+        self.assertIn("t.platform_event_id = s.platform_event_id", source)
+        self.assertIn("t.user_id <=> s.user_id", source)
+        self.assertIn("t.url <=> s.url", source)
+
+    def test_emoji_pattern_uses_java_supplementary_codepoint_syntax(self):
+        self.assertIn(r"\x{1F300}", spf._EMOJI_PATTERN)
+        self.assertNotIn(r"\U0001F300", spf._EMOJI_PATTERN)
 
 
 if __name__ == "__main__":

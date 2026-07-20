@@ -9,6 +9,7 @@ from pyspark.sql.functions import (
     concat_ws,
     coalesce,
     current_timestamp,
+    greatest,
     lit,
     row_number,
     sha2,
@@ -16,14 +17,19 @@ from pyspark.sql.functions import (
 )
 
 
-METRIC_COLUMNS = (
-    "like_count",
-    "comment_count",
-    "reply_count",
-    "view_count",
-    "retweet_count",
-    "bookmark_count",
-    "score",
+METRICS_BY_SOURCE = {
+    "youtube": ("view_count", "like_count", "comment_count"),
+    "x": (
+        "like_count",
+        "reply_count",
+        "view_count",
+        "retweet_count",
+        "bookmark_count",
+    ),
+    "reddit": ("score", "comment_count"),
+}
+METRIC_COLUMNS = tuple(
+    sorted({metric for metrics in METRICS_BY_SOURCE.values() for metric in metrics})
 )
 DERIVED_DIMENSIONS = {
     "engagement_band",
@@ -51,9 +57,7 @@ def _env_int(name: str, default: int, minimum: int = 0) -> int:
 
 def _parse_dimensions(raw_value: str) -> list[str]:
     dimensions = [
-        dimension.strip()
-        for dimension in raw_value.split(",")
-        if dimension.strip()
+        dimension.strip() for dimension in raw_value.split(",") if dimension.strip()
     ] or list(DEFAULT_DIMENSIONS)
     unknown = sorted(set(dimensions) - ALLOWED_DIMENSIONS)
     if unknown:
@@ -115,13 +119,42 @@ def _ensure_columns(spark: SparkSession, table: str, columns: dict[str, str]) ->
 def _distribution(dataframe, dimensions: list[str]) -> list[dict]:
     return [
         row.asDict(recursive=True)
-        for row in (
-            dataframe.groupBy(*dimensions)
-            .count()
-            .orderBy(*dimensions)
-            .collect()
-        )
+        for row in (dataframe.groupBy(*dimensions).count().orderBy(*dimensions).collect())
     ]
+
+
+def _metric_available(dataframe, metric: str):
+    availability_column = f"{metric}_available"
+    if availability_column in dataframe.columns:
+        return coalesce(
+            col(availability_column).cast("boolean"),
+            col(metric).isNotNull(),
+        )
+    return col(metric).isNotNull()
+
+
+def _engagement_expressions(dataframe):
+    totals = []
+    observations = []
+    expected = lit(0)
+    for source, metrics in METRICS_BY_SOURCE.items():
+        expected = when(col("source") == source, lit(len(metrics))).otherwise(expected)
+        for metric in metrics:
+            valid = (
+                (col("source") == source)
+                & _metric_available(dataframe, metric)
+                & col(metric).isNotNull()
+            )
+            totals.append(
+                when(
+                    valid,
+                    greatest(col(metric).cast("long"), lit(0).cast("long")),
+                ).otherwise(lit(0).cast("long"))
+            )
+            observations.append(when(valid, lit(1)).otherwise(lit(0)))
+    total = reduce(lambda left, right: left + right, totals)
+    observed = reduce(lambda left, right: left + right, observations)
+    return total, observed, expected
 
 
 def main() -> None:
@@ -130,14 +163,10 @@ def main() -> None:
         "BALANCE_OUTPUT_TABLE",
         "lakehouse.silver.balanced_events",
     )
-    report_path = Path(
-        _env("BALANCE_REPORT_PATH", "/opt/spark/balancing/report.json")
-    )
+    report_path = Path(_env("BALANCE_REPORT_PATH", "/opt/spark/balancing/report.json"))
     seed = _env_int("BALANCE_SEED", 42, minimum=0)
     requested_target = _env_int("BALANCE_TARGET_PER_GROUP", 0, minimum=0)
-    dimensions = _parse_dimensions(
-        _env("BALANCE_DIMENSIONS", ",".join(DEFAULT_DIMENSIONS))
-    )
+    dimensions = _parse_dimensions(_env("BALANCE_DIMENSIONS", ",".join(DEFAULT_DIMENSIONS)))
 
     spark = _build_spark()
     spark.sparkContext.setLogLevel("WARN")
@@ -147,29 +176,37 @@ def main() -> None:
         {
             "platform_event_id": "STRING",
             "metadata_refreshed_at": "TIMESTAMP",
+            **{metric: "BIGINT" for metric in METRIC_COLUMNS},
+            **{f"{metric}_available": "BOOLEAN" for metric in METRIC_COLUMNS},
         },
     )
 
     source = spark.table(source_table).filter(col("error").isNull())
-    metric_total = reduce(
-        lambda left, right: left + right,
-        [coalesce(col(column), lit(0)) for column in METRIC_COLUMNS],
-    )
+    metric_total, observed_metrics, expected_metrics = _engagement_expressions(source)
+    reply_available = _metric_available(source, "reply_count") & col("reply_count").isNotNull()
     prepared = (
-        source.dropDuplicates(
-            ["source", "platform_event_id", "user_id", "url", "event_ts"]
-        )
+        source.dropDuplicates(["source", "platform_event_id", "user_id", "url", "event_ts"])
         .withColumn("_engagement_total", metric_total)
+        .withColumn("engagement_observed_metrics", observed_metrics.cast("int"))
+        .withColumn(
+            "engagement_coverage",
+            when(
+                expected_metrics > 0,
+                observed_metrics.cast("double") / expected_metrics.cast("double"),
+            ),
+        )
         .withColumn(
             "engagement_band",
-            when(col("_engagement_total") == 0, lit("none"))
+            when(col("engagement_observed_metrics") == 0, lit("unknown"))
+            .when(col("_engagement_total") == 0, lit("none"))
             .when(col("_engagement_total") < 10, lit("low"))
             .when(col("_engagement_total") < 100, lit("medium"))
             .otherwise(lit("high")),
         )
         .withColumn(
             "comment_type",
-            when(coalesce(col("reply_count"), lit(0)) > 0, lit("has_replies"))
+            when(~reply_available, lit("unknown"))
+            .when(col("reply_count") > 0, lit("has_replies"))
             .otherwise(lit("no_replies")),
         )
     )
@@ -198,9 +235,7 @@ def main() -> None:
 
     minimum_group_size = min(row["count"] for row in collected_counts)
     effective_target = (
-        minimum_group_size
-        if requested_target == 0
-        else min(requested_target, minimum_group_size)
+        minimum_group_size if requested_target == 0 else min(requested_target, minimum_group_size)
     )
     constraints = []
     if requested_target and requested_target > minimum_group_size:
@@ -251,10 +286,7 @@ def main() -> None:
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(
-        f"Wrote {total_after} balanced rows to {output_table}; "
-        f"report: {report_path}"
-    )
+    print(f"Wrote {total_after} balanced rows to {output_table}; report: {report_path}")
     spark.stop()
 
 

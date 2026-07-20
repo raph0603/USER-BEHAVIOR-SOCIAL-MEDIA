@@ -20,6 +20,20 @@ from manual_import import (
     summarize_events,
 )
 from navigation import render_navigation
+from youtube_presentation import (
+    build_youtube_display_rows,
+    build_youtube_freshness_table,
+    coverage_summary,
+    format_available_metric,
+    format_timestamp,
+    freshness_warning,
+    metric_is_available,
+    provenance_summary,
+    transcript_lifecycle_status,
+    transcript_retry_warning,
+    transcript_status_presentation,
+    youtube_data_completeness,
+)
 
 
 ENGAGEMENT_LABELS = {
@@ -43,9 +57,7 @@ PROFILE_ENGAGEMENT_COLUMNS = (
     "subreddit_member_count",
 )
 SUMMED_ENGAGEMENT_COLUMNS = tuple(
-    column
-    for column in ENGAGEMENT_COLUMNS
-    if column not in PROFILE_ENGAGEMENT_COLUMNS
+    column for column in ENGAGEMENT_COLUMNS if column not in PROFILE_ENGAGEMENT_COLUMNS
 )
 OPTIONAL_DASHBOARD_COLUMNS = (
     "platform_event_id",
@@ -118,56 +130,6 @@ CONTENT_ANALYTICS_TABLES = {
     "content_stats": ("gold", "content_stats"),
     "user_evolution": ("gold", "user_evolution"),
 }
-TRANSCRIPT_STATUS_PRESENTATION = {
-    "pending": (
-        "info",
-        "Transcript collection is pending for this video.",
-    ),
-    "partial": (
-        "warning",
-        "Only a partial transcript was collected; another attempt may complete it.",
-    ),
-    "not_available": (
-        "info",
-        "YouTube reports that no transcript is available for this video.",
-    ),
-    "disabled": (
-        "info",
-        "Transcripts are disabled for this video.",
-    ),
-    "rate_limited": (
-        "warning",
-        "Transcript collection was rate limited and can be retried after the cooldown.",
-    ),
-    "failed": (
-        "error",
-        "Transcript collection failed and can be retried while attempts remain.",
-    ),
-}
-
-
-def transcript_status_presentation(row):
-    raw_status = row.get("transcript_status")
-    status = "" if raw_status is None or pd.isna(raw_status) else str(raw_status)
-    status = status.strip().lower()
-    transcript = row.get("transcript_text")
-    has_transcript = transcript is not None and not pd.isna(transcript) and bool(
-        str(transcript).strip()
-    )
-    if not status:
-        status = "success" if has_transcript else "pending"
-    if status == "success":
-        return status, "success", "Transcript collected successfully."
-    level, message = TRANSCRIPT_STATUS_PRESENTATION.get(
-        status,
-        ("warning", "Transcript collection returned an unknown status."),
-    )
-    raw_error_code = row.get("error_code")
-    if raw_error_code is not None and not pd.isna(raw_error_code):
-        error_code = str(raw_error_code).strip()
-        if error_code:
-            message = f"{message} Error code: {error_code}."
-    return status, level, message
 
 
 def has_dashboard_value(value):
@@ -187,71 +149,12 @@ def normalized_status(value, default="pending"):
     return str(value).strip().lower()
 
 
-def latest_rows_by_content(dataframe):
-    if dataframe.empty or "content_id" not in dataframe.columns:
-        return pd.DataFrame()
-    latest = dataframe.copy()
-    if "updated_at" in latest.columns:
-        latest = latest.sort_values("updated_at", ascending=False)
-    return latest.drop_duplicates("content_id")
-
-
-def build_youtube_display_rows(youtube_contents, transcripts, content_stats):
-    display_rows = youtube_contents.copy()
-    stat_columns = [
-        column
-        for column in (
-            "content_id",
-            "latest_view_count",
-            "latest_like_count",
-            "latest_comment_count",
-            "latest_reply_count",
-        )
-        if column in content_stats.columns
-    ]
-    if not content_stats.empty and "content_id" in display_rows.columns and stat_columns:
-        display_rows = display_rows.merge(
-            content_stats[stat_columns],
-            on="content_id",
-            how="left",
-        )
-
-    latest_transcripts = latest_rows_by_content(transcripts)
-    if not latest_transcripts.empty:
-        transcript_columns = [
-            column
-            for column in ("content_id", "transcript_status", "transcript_text")
-            if column in latest_transcripts.columns
-        ]
-        latest_transcripts = latest_transcripts[transcript_columns].rename(
-            columns={
-                "transcript_status": "latest_transcript_status",
-                "transcript_text": "latest_transcript_text",
-            }
-        )
-        display_rows = display_rows.merge(
-            latest_transcripts,
-            on="content_id",
-            how="left",
-        )
-
-    if "created_at" in display_rows.columns:
-        display_rows = display_rows.sort_values("created_at", ascending=False)
-    return display_rows
-
-
-def youtube_data_completeness(row):
-    transcript_status = normalized_status(
-        row.get("latest_transcript_status", row.get("transcript_status"))
-    )
-    checks = {
-        "thumbnail": has_dashboard_value(row.get("thumbnail_url")),
-        "metadata": normalized_status(row.get("metadata_status")) == "success",
-        "transcript": transcript_status == "success",
-        "views": has_dashboard_value(row.get("latest_view_count")),
-        "comments": normalized_status(row.get("comments_status")) == "success",
-    }
-    return sum(checks.values()), len(checks), checks
+def positive_env_float(name, default):
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        return float(default)
+    return value if value > 0 else float(default)
 
 
 def render_add_data_panel():
@@ -298,12 +201,8 @@ def render_add_data_panel():
                     imported_events,
                     get_manual_import_config(),
                 )
-                message = (
-                    f"Imported {len(imported_events):,} event(s): "
-                    + ", ".join(
-                        f"{count:,} {source}"
-                        for source, count in published_counts.items()
-                    )
+                message = f"Imported {len(imported_events):,} event(s): " + ", ".join(
+                    f"{count:,} {source}" for source, count in published_counts.items()
                 )
                 if trigger_pipeline:
                     run = AirflowClient().trigger_dag(
@@ -313,10 +212,7 @@ def render_add_data_panel():
                             "record_count": len(imported_events),
                         },
                     )
-                    message += (
-                        " | Pipeline started: "
-                        f"{run.get('dag_run_id', MANUAL_IMPORT_DAG_ID)}"
-                    )
+                    message += f" | Pipeline started: {run.get('dag_run_id', MANUAL_IMPORT_DAG_ID)}"
                 else:
                     message += " | Pipeline not started"
                 st.cache_data.clear()
@@ -372,6 +268,13 @@ def build_engagement_by_source(dataframe):
     for column in ENGAGEMENT_COLUMNS:
         if column not in source_rows.columns:
             source_rows[column] = pd.NA
+        availability_column = f"{column}_available"
+        source_rows[column] = source_rows.apply(
+            lambda row, metric=column, flag=availability_column: (
+                row.get(metric) if metric_is_available(row.get(metric), row.get(flag)) else pd.NA
+            ),
+            axis=1,
+        )
     if "metadata_refreshed_at" not in source_rows.columns:
         source_rows["metadata_refreshed_at"] = pd.NaT
 
@@ -387,8 +290,10 @@ def build_engagement_by_source(dataframe):
     summed = grouped[list(SUMMED_ENGAGEMENT_COLUMNS)].sum(min_count=1)
     profile = grouped[list(PROFILE_ENGAGEMENT_COLUMNS)].agg(latest_known_value)
     metrics = pd.concat([summed, profile], axis=1)
-    metrics = metrics[list(ENGAGEMENT_COLUMNS)].reset_index().rename(
-        columns={"source": "Source", **ENGAGEMENT_LABELS}
+    metrics = (
+        metrics[list(ENGAGEMENT_COLUMNS)]
+        .reset_index()
+        .rename(columns={"source": "Source", **ENGAGEMENT_LABELS})
     )
 
     observed = grouped.agg(
@@ -402,20 +307,16 @@ def build_engagement_by_source(dataframe):
         },
     )
     observed["Metadata coverage"] = (
-        observed["Metadata rows"].astype(str)
-        + "/"
-        + observed["Events"].astype(str)
+        observed["Metadata rows"].astype(str) + "/" + observed["Events"].astype(str)
     )
     observed = observed.reset_index().rename(columns={"source": "Source"})
     raw_summary = observed.merge(metrics, on="Source", how="left")
     display_summary = raw_summary.copy()
-    display_summary["Latest metadata"] = display_summary[
-        "Latest metadata"
-    ].apply(format_datetime_cell)
+    display_summary["Latest metadata"] = display_summary["Latest metadata"].apply(
+        format_datetime_cell
+    )
     for column in ENGAGEMENT_LABELS.values():
-        display_summary[column] = display_summary[column].apply(
-            format_metric_cell
-        )
+        display_summary[column] = display_summary[column].apply(format_metric_cell)
 
     return display_summary[summary_columns], metrics
 
@@ -475,14 +376,16 @@ def deduplicate_youtube_videos(dataframe):
         for column in ("created_at", "metadata_refreshed_at")
         if column in youtube_rows.columns
     ]
-    youtube_rows = youtube_rows.sort_values(
-        sort_columns,
-        ascending=False,
-        na_position="last",
-    ) if sort_columns else youtube_rows
-    return youtube_rows.drop_duplicates("_video_key").drop(
-        columns=["_video_key"]
+    youtube_rows = (
+        youtube_rows.sort_values(
+            sort_columns,
+            ascending=False,
+            na_position="last",
+        )
+        if sort_columns
+        else youtube_rows
     )
+    return youtube_rows.drop_duplicates("_video_key").drop(columns=["_video_key"])
 
 
 def build_analytics_rows(dataframe):
@@ -518,33 +421,24 @@ def build_user_tracking_rows(dataframe):
     if "author_hash" in analytics_rows.columns:
         author_rows = analytics_rows.dropna(subset=["author_hash"]).copy()
         if not author_rows.empty:
-            author_rows["tracked_identifier"] = author_rows[
-                "author_hash"
-            ].astype("string")
+            author_rows["tracked_identifier"] = author_rows["author_hash"].astype("string")
             author_rows["identifier_role"] = "Author"
             tracking_frames.append(author_rows)
 
     if {"source", "owner_channel_id"}.issubset(analytics_rows.columns):
         owner_rows = analytics_rows[
-            (analytics_rows["source"] == "youtube")
-            & analytics_rows["owner_channel_id"].notna()
+            (analytics_rows["source"] == "youtube") & analytics_rows["owner_channel_id"].notna()
         ].copy()
         if not owner_rows.empty:
-            owner_rows["tracked_identifier"] = owner_rows[
-                "owner_channel_id"
-            ].astype("string")
+            owner_rows["tracked_identifier"] = owner_rows["owner_channel_id"].astype("string")
             owner_rows["identifier_role"] = "Owner YouTube"
             tracking_frames.append(owner_rows)
 
-    if {"source", "collaborator_channel_ids"}.issubset(
-        analytics_rows.columns
-    ):
+    if {"source", "collaborator_channel_ids"}.issubset(analytics_rows.columns):
         collaborator_records = []
         youtube_rows = analytics_rows[analytics_rows["source"] == "youtube"]
         for _, row in youtube_rows.iterrows():
-            collaborators = normalize_collaborators(
-                row.get("collaborator_channel_ids")
-            )
+            collaborators = normalize_collaborators(row.get("collaborator_channel_ids"))
             if not collaborators:
                 continue
             for collaborator in collaborators:
@@ -560,9 +454,7 @@ def build_user_tracking_rows(dataframe):
         return pd.DataFrame(columns=[*dataframe.columns, "identifier_role"])
 
     tracking_df = pd.concat(tracking_frames, ignore_index=True)
-    tracking_df["author_hash"] = tracking_df["tracked_identifier"].astype(
-        "string"
-    )
+    tracking_df["author_hash"] = tracking_df["tracked_identifier"].astype("string")
     return tracking_df.drop(columns=["tracked_identifier"])
 
 
@@ -611,9 +503,7 @@ def prepare_python_export(dataframe):
     export_df = dataframe.copy()
     for column in export_df.columns:
         if pd.api.types.is_datetime64_any_dtype(export_df[column]):
-            export_df[column] = export_df[column].dt.strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
-            )
+            export_df[column] = export_df[column].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         elif export_df[column].dtype == "object":
             export_df[column] = export_df[column].map(normalize_export_value)
     return export_df
@@ -635,17 +525,9 @@ def render_python_export(raw_dataframe, analytics_dataframe):
             ],
             horizontal=True,
         )
-        selected_df = (
-            analytics_dataframe
-            if dataset_label == "Analytics rows"
-            else raw_dataframe
-        )
+        selected_df = analytics_dataframe if dataset_label == "Analytics rows" else raw_dataframe
         export_df = prepare_python_export(selected_df)
-        file_slug = (
-            "analytics_rows"
-            if dataset_label == "Analytics rows"
-            else "filtered_events"
-        )
+        file_slug = "analytics_rows" if dataset_label == "Analytics rows" else "filtered_events"
 
         metric_columns = st.columns(3)
         metric_columns[0].metric("Rows", f"{len(export_df):,}")
@@ -713,9 +595,7 @@ st.set_page_config(
 render_navigation()
 
 st.title("Social Media Lakehouse Dashboard")
-st.caption(
-    "Monitoring cleaned events received in the Iceberg Silver table"
-)
+st.caption("Monitoring cleaned events received in the Iceberg Silver table")
 
 
 @st.cache_data(ttl=60, show_spinner="Reading the Iceberg Silver table...")
@@ -736,9 +616,7 @@ def get_recent_collector_runs():
 
 @st.cache_data(ttl=60, show_spinner=False)
 def get_balancing_report():
-    report_path = Path(
-        os.getenv("DASHBOARD_BALANCING_REPORT_PATH", DEFAULT_BALANCING_REPORT_PATH)
-    )
+    report_path = Path(os.getenv("DASHBOARD_BALANCING_REPORT_PATH", DEFAULT_BALANCING_REPORT_PATH))
     if not report_path.is_file():
         return None
     with report_path.open(encoding="utf-8") as report_file:
@@ -808,9 +686,7 @@ def render_airflow_monitoring():
                 text=f"{run['progress']} % complete",
             )
             if run["failed_tasks"]:
-                st.error(
-                    f"{run['failed_tasks']} failed task(s) in this run"
-                )
+                st.error(f"{run['failed_tasks']} failed task(s) in this run")
     else:
         st.success("No Airflow job currently running")
 
@@ -833,9 +709,7 @@ def render_airflow_monitoring():
         schedule_rows = [
             {
                 "Job": run["dag_id"],
-                "Next run": run["next_run"]
-                .astimezone()
-                .strftime("%Y-%m-%d %H:%M:%S"),
+                "Next run": run["next_run"].astimezone().strftime("%Y-%m-%d %H:%M:%S"),
                 "In": run["countdown"],
             }
             for run in next_runs
@@ -856,14 +730,9 @@ def render_airflow_monitoring():
 
     if collector_runs:
         st.subheader("Last collector runs")
-        blocked_runs = [
-            row for row in collector_runs
-            if row["collector_status"] == "blocked"
-        ]
+        blocked_runs = [row for row in collector_runs if row["collector_status"] == "blocked"]
         if blocked_runs:
-            st.warning(
-                f"{len(blocked_runs)} collector block(s) found in recent runs"
-            )
+            st.warning(f"{len(blocked_runs)} collector block(s) found in recent runs")
         collector_rows = [
             {
                 "Started": (
@@ -893,7 +762,6 @@ def render_airflow_monitoring():
         f"Last check: "
         f"{status['checked_at'].astimezone().strftime('%H:%M:%S')}"
     )
-
 
 
 config = get_iceberg_config()
@@ -959,28 +827,21 @@ else:
 analytics_df = build_analytics_rows(df_filtered)
 
 
-
 def render_overview_summary():
     total_records = len(analytics_df)
     latest_activity = analytics_df["created_at"].max()
     unique_identifiers = analytics_df["author_hash"].dropna().nunique()
     avg_text_words = analytics_df["text_len_words"].mean() if total_records else 0
-    missing_timestamps_pct = (
-        analytics_df["created_at"].isna().mean() * 100 if total_records else 0
-    )
+    missing_timestamps_pct = analytics_df["created_at"].isna().mean() * 100 if total_records else 0
     pipeline_error_pct = (
-        analytics_df["error"].fillna("").str.strip().ne("").mean() * 100
-        if total_records
-        else 0
+        analytics_df["error"].fillna("").str.strip().ne("").mean() * 100 if total_records else 0
     )
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Events", f"{total_records:,}")
     c2.metric(
         "Last activity",
-        latest_activity.strftime("%Y-%m-%d %H:%M")
-        if pd.notna(latest_activity)
-        else "N/A",
+        latest_activity.strftime("%Y-%m-%d %H:%M") if pd.notna(latest_activity) else "N/A",
     )
     c3.metric("Unique identifiers", f"{unique_identifiers:,}")
     c4.metric("Average length", f"{avg_text_words:.1f} words")
@@ -997,9 +858,7 @@ def render_engagement_metadata():
     ):
         metric.metric(label, format_engagement_total(analytics_df[column]))
 
-    engagement_by_source, engagement_by_source_metrics = (
-        build_engagement_by_source(analytics_df)
-    )
+    engagement_by_source, engagement_by_source_metrics = build_engagement_by_source(analytics_df)
     st.dataframe(
         engagement_by_source,
         width="stretch",
@@ -1018,9 +877,7 @@ def render_engagement_metadata():
         "known value instead of a sum."
     )
 
-    st.caption(
-        "Note: YouTube metrics are grouped by video before aggregation."
-    )
+    st.caption("Note: YouTube metrics are grouped by video before aggregation.")
 
     common_engagement_columns = [
         "like_count",
@@ -1030,10 +887,7 @@ def render_engagement_metadata():
     ]
     engagement_chart_data = (
         engagement_by_source_metrics.rename(
-            columns={
-                ENGAGEMENT_LABELS[column]: column
-                for column in common_engagement_columns
-            }
+            columns={ENGAGEMENT_LABELS[column]: column for column in common_engagement_columns}
         )
         .melt(
             id_vars="Source",
@@ -1043,9 +897,7 @@ def render_engagement_metadata():
         )
         .dropna(subset=["value"])
     )
-    engagement_chart_data["metric"] = engagement_chart_data["metric"].map(
-        ENGAGEMENT_LABELS
-    )
+    engagement_chart_data["metric"] = engagement_chart_data["metric"].map(ENGAGEMENT_LABELS)
 
     if not engagement_chart_data.empty:
         fig_engagement = px.bar(
@@ -1065,18 +917,16 @@ def render_youtube_authors():
     if youtube_df.empty:
         st.info("No YouTube event in the current selection.")
     else:
-        youtube_df["collaborator_count"] = youtube_df[
-            "collaborator_channel_ids"
-        ].apply(collaborator_count)
-        youtube_df["collaborators"] = youtube_df[
-            "collaborator_channel_ids"
-        ].apply(format_collaborators)
+        youtube_df["collaborator_count"] = youtube_df["collaborator_channel_ids"].apply(
+            collaborator_count
+        )
+        youtube_df["collaborators"] = youtube_df["collaborator_channel_ids"].apply(
+            format_collaborators
+        )
 
         known_collaborators = youtube_df["collaborator_count"].dropna()
         videos_with_collaborators = (
-            int((known_collaborators > 0).sum())
-            if not known_collaborators.empty
-            else 0
+            f"{int((known_collaborators > 0).sum()):,}" if not known_collaborators.empty else "N/A"
         )
         distinct_collaborator_ids = sorted(
             {
@@ -1094,39 +944,34 @@ def render_youtube_authors():
         )
         yt_metrics[2].metric(
             "With collaborators",
-            f"{videos_with_collaborators:,}",
+            videos_with_collaborators,
         )
         yt_metrics[3].metric(
             "Unique collaborators",
-            f"{len(distinct_collaborator_ids):,}",
+            (f"{len(distinct_collaborator_ids):,}" if not known_collaborators.empty else "N/A"),
         )
 
-        youtube_author_rows = (
-            youtube_df.sort_values("created_at", ascending=False)
+        youtube_author_rows = youtube_df.sort_values("created_at", ascending=False)[
             [
-                [
-                    "created_at",
-                    "text",
-                    "owner_channel_id",
-                    "collaborator_count",
-                    "collaborators",
-                    "url",
-                ]
+                "created_at",
+                "text",
+                "owner_channel_id",
+                "collaborator_count",
+                "collaborators",
+                "url",
             ]
-            .head(100)
+        ].head(100)
+        youtube_author_rows["created_at"] = youtube_author_rows["created_at"].dt.strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
         )
-        youtube_author_rows["created_at"] = youtube_author_rows[
-            "created_at"
-        ].dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-        youtube_author_rows["created_at"] = youtube_author_rows[
-            "created_at"
-        ].fillna("N/A")
-        youtube_author_rows["text"] = (
-            youtube_author_rows["text"].fillna("").str.slice(0, 180)
+        youtube_author_rows["created_at"] = youtube_author_rows["created_at"].fillna("N/A")
+        youtube_author_rows["text"] = youtube_author_rows["text"].fillna("").str.slice(0, 180)
+        youtube_author_rows["owner_channel_id"] = youtube_author_rows["owner_channel_id"].apply(
+            format_optional_text
         )
-        youtube_author_rows["owner_channel_id"] = youtube_author_rows[
-            "owner_channel_id"
-        ].apply(format_optional_text)
+        youtube_author_rows["collaborator_count"] = youtube_author_rows["collaborator_count"].apply(
+            format_available_metric
+        )
         st.dataframe(
             youtube_author_rows,
             width="stretch",
@@ -1135,10 +980,7 @@ def render_youtube_authors():
                 "created_at": "Timestamp",
                 "text": "Title",
                 "owner_channel_id": "Owner channel ID",
-                "collaborator_count": st.column_config.NumberColumn(
-                    "Collaborators",
-                    format="%d",
-                ),
+                "collaborator_count": st.column_config.TextColumn("Collaborators"),
                 "collaborators": "Collaborator channel IDs",
                 "url": st.column_config.LinkColumn("URL"),
             },
@@ -1176,11 +1018,7 @@ def render_source_activity():
 
     if not df_time.empty:
         df_time["date"] = df_time["created_at"].dt.date
-        time_counts = (
-            df_time.groupby(["date", "source"])
-            .size()
-            .reset_index(name="records")
-        )
+        time_counts = df_time.groupby(["date", "source"]).size().reset_index(name="records")
         fig_time = px.line(
             time_counts,
             x="date",
@@ -1234,12 +1072,8 @@ def render_balancing_report():
         if constraints:
             st.warning("Constraints: " + " | ".join(constraints))
 
-        before_distribution = pd.DataFrame(
-            balancing_report.get("distribution_before", [])
-        )
-        after_distribution = pd.DataFrame(
-            balancing_report.get("distribution_after", [])
-        )
+        before_distribution = pd.DataFrame(balancing_report.get("distribution_before", []))
+        after_distribution = pd.DataFrame(balancing_report.get("distribution_after", []))
         if not before_distribution.empty and not after_distribution.empty:
             dimensions = balancing_report.get("dimensions", [])
             before_distribution["dataset"] = "Before"
@@ -1249,9 +1083,13 @@ def render_balancing_report():
                 ignore_index=True,
             )
             if dimensions:
-                distribution["group"] = distribution[dimensions].astype(str).agg(
-                    " | ".join,
-                    axis=1,
+                distribution["group"] = (
+                    distribution[dimensions]
+                    .astype(str)
+                    .agg(
+                        " | ".join,
+                        axis=1,
+                    )
                 )
             else:
                 distribution["group"] = "all"
@@ -1270,9 +1108,7 @@ def render_balancing_report():
             fig_balance.update_layout(xaxis_tickangle=-45)
             st.plotly_chart(fig_balance, width="stretch")
 
-            distribution_table = distribution[
-                [*dimensions, "dataset", "count"]
-            ].rename(
+            distribution_table = distribution[[*dimensions, "dataset", "count"]].rename(
                 columns={
                     "source": "Source",
                     "engagement_band": "Engagement",
@@ -1370,9 +1206,7 @@ def render_identifier_tracking():
                 .rename(f"total_{column}")
             )
             averages = (
-                user_tracking_df.groupby("author_hash")[column]
-                .mean()
-                .rename(f"avg_{column}")
+                user_tracking_df.groupby("author_hash")[column].mean().rename(f"avg_{column}")
             )
             user_activity = user_activity.merge(
                 totals,
@@ -1385,9 +1219,7 @@ def render_identifier_tracking():
             )
 
         total_columns = [f"total_{column}" for column in ENGAGEMENT_COLUMNS]
-        user_activity["total_engagement"] = (
-            user_activity[total_columns].fillna(0).sum(axis=1)
-        )
+        user_activity["total_engagement"] = user_activity[total_columns].fillna(0).sum(axis=1)
         user_activity["avg_engagement_per_event"] = (
             user_activity["total_engagement"] / user_activity["events"]
         )
@@ -1465,9 +1297,7 @@ def render_identifier_tracking():
             column_config={
                 "Events": st.column_config.NumberColumn(format="%d"),
                 "Active days": st.column_config.NumberColumn(format="%d"),
-                "Reply rate (%)": st.column_config.NumberColumn(
-                    format="%.1f"
-                ),
+                "Reply rate (%)": st.column_config.NumberColumn(format="%.1f"),
                 "Likes": st.column_config.NumberColumn(format="%d"),
                 "Views": st.column_config.NumberColumn(format="%d"),
                 "Replies": st.column_config.NumberColumn(format="%d"),
@@ -1481,8 +1311,7 @@ def render_identifier_tracking():
         if selector_options:
             selector_labels = {
                 row.author_hash: (
-                    f"{row.author_display} - {int(row.events)} event(s) - "
-                    f"{row.roles}"
+                    f"{row.author_display} - {int(row.events)} event(s) - {row.roles}"
                 )
                 for row in top_users.itertuples()
             }
@@ -1491,9 +1320,7 @@ def render_identifier_tracking():
                 options=selector_options,
                 format_func=selector_labels.get,
             )
-            selected_user = user_activity[
-                user_activity["author_hash"] == selected_author
-            ].iloc[0]
+            selected_user = user_activity[user_activity["author_hash"] == selected_author].iloc[0]
             selected_events = user_tracking_df[
                 user_tracking_df["author_hash"] == selected_author
             ].copy()
@@ -1521,13 +1348,9 @@ def render_identifier_tracking():
                 f"{selected_user.avg_engagement_per_event:.1f}",
             )
 
-            dated_user_events = selected_events.dropna(
-                subset=["created_at"]
-            ).copy()
+            dated_user_events = selected_events.dropna(subset=["created_at"]).copy()
             if not dated_user_events.empty:
-                dated_user_events["date"] = dated_user_events[
-                    "created_at"
-                ].dt.date
+                dated_user_events["date"] = dated_user_events["created_at"].dt.date
                 daily_user_progress = (
                     dated_user_events.groupby("date")
                     .agg(
@@ -1553,18 +1376,12 @@ def render_identifier_tracking():
                     )
                 progress_chart = daily_user_progress.melt(
                     id_vars="date",
-                    value_vars=[
-                        f"cumulative_{column}"
-                        for column in cumulative_columns
-                    ],
+                    value_vars=[f"cumulative_{column}" for column in cumulative_columns],
                     var_name="metric",
                     value_name="value",
                 )
                 progress_chart["metric"] = progress_chart["metric"].replace(
-                    {
-                        f"cumulative_{column}": label
-                        for column, label in cumulative_columns.items()
-                    }
+                    {f"cumulative_{column}": label for column, label in cumulative_columns.items()}
                 )
                 fig_user_progress = px.line(
                     progress_chart,
@@ -1599,12 +1416,10 @@ def render_identifier_tracking():
                     "url",
                 ]
             ].copy()
-            selected_recent["created_at"] = selected_recent[
-                "created_at"
-            ].dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-            selected_recent["text"] = (
-                selected_recent["text"].fillna("").str.slice(0, 180)
+            selected_recent["created_at"] = selected_recent["created_at"].dt.strftime(
+                "%Y-%m-%d %H:%M:%S UTC"
             )
+            selected_recent["text"] = selected_recent["text"].fillna("").str.slice(0, 180)
             st.dataframe(
                 selected_recent,
                 width="stretch",
@@ -1646,6 +1461,15 @@ def prepare_optional_table(dataframe):
         "event_ts",
         "created_at",
         "observed_at",
+        "snapshot_at",
+        "latest_snapshot_at",
+        "last_discovered_at",
+        "last_enriched_at",
+        "last_attempt_at",
+        "next_attempt_at",
+        "collected_at",
+        "updated_at",
+        "recovered_at",
         "retrieved_at",
         "prediction_ts",
     ):
@@ -1684,6 +1508,7 @@ def prepare_optional_table(dataframe):
         "topic_freshness_hours",
         "confidence",
         "virality_score",
+        "attempt_count",
     ):
         if column in prepared.columns:
             prepared[column] = pd.to_numeric(prepared[column], errors="coerce")
@@ -1704,8 +1529,7 @@ def render_model_pipeline():
     st.subheader("Model pipeline")
     tables, errors = get_model_pipeline_tables()
     prepared_tables = {
-        label: prepare_optional_table(dataframe)
-        for label, dataframe in tables.items()
+        label: prepare_optional_table(dataframe) for label, dataframe in tables.items()
     }
 
     feature_df = prepared_tables["post_features"]
@@ -1743,8 +1567,7 @@ def render_model_pipeline():
         feature_metrics[1].metric(
             "Average words",
             f"{feature_df['text_len_words'].mean():.1f}"
-            if "text_len_words" in feature_df.columns
-            and feature_df["text_len_words"].notna().any()
+            if "text_len_words" in feature_df.columns and feature_df["text_len_words"].notna().any()
             else "N/A",
         )
         feature_metrics[2].metric(
@@ -1753,7 +1576,9 @@ def render_model_pipeline():
         )
         feature_metrics[3].metric(
             "Posts with mentions",
-            format_count((feature_df.get("mention_count", pd.Series(dtype=float)).fillna(0) > 0).sum()),
+            format_count(
+                (feature_df.get("mention_count", pd.Series(dtype=float)).fillna(0) > 0).sum()
+            ),
         )
 
         feature_columns = [
@@ -1798,15 +1623,13 @@ def render_model_pipeline():
         snapshot_metrics[1].metric(
             "Latest observation",
             snapshot_df["observed_at"].max().strftime("%Y-%m-%d %H:%M")
-            if "observed_at" in snapshot_df.columns
-            and pd.notna(snapshot_df["observed_at"].max())
+            if "observed_at" in snapshot_df.columns and pd.notna(snapshot_df["observed_at"].max())
             else "N/A",
         )
         snapshot_metrics[2].metric(
             "Median age",
             f"{snapshot_df['age_minutes'].median():.0f} min"
-            if "age_minutes" in snapshot_df.columns
-            and snapshot_df["age_minutes"].notna().any()
+            if "age_minutes" in snapshot_df.columns and snapshot_df["age_minutes"].notna().any()
             else "N/A",
         )
 
@@ -1897,8 +1720,7 @@ def render_model_pipeline():
         prediction_metrics[1].metric(
             "Average confidence",
             f"{prediction_df['confidence'].mean():.2f}"
-            if "confidence" in prediction_df.columns
-            and prediction_df["confidence"].notna().any()
+            if "confidence" in prediction_df.columns and prediction_df["confidence"].notna().any()
             else "N/A",
         )
         prediction_metrics[2].metric(
@@ -2020,7 +1842,9 @@ def filter_content_rows(contents):
 
     if user_filter and "author_id_hash" in filtered.columns:
         filtered = filtered[
-            filtered["author_id_hash"].fillna("").str.contains(
+            filtered["author_id_hash"]
+            .fillna("")
+            .str.contains(
                 user_filter,
                 case=False,
                 regex=False,
@@ -2034,9 +1858,7 @@ def filter_content_rows(contents):
                     filtered[column].fillna("").astype("string"),
                     sep=" ",
                 )
-        filtered = filtered[
-            searchable.str.contains(keyword_filter, case=False, regex=False)
-        ]
+        filtered = filtered[searchable.str.contains(keyword_filter, case=False, regex=False)]
     if date_column and filtered[date_column].notna().any():
         min_date = filtered[date_column].min().date()
         max_date = filtered[date_column].max().date()
@@ -2126,8 +1948,7 @@ def fetch_reddit_community_from_old_html(subreddit):
             headers={
                 "User-Agent": os.getenv(
                     "REDDIT_USER_AGENT",
-                    "Mozilla/5.0 Chrome/124 Safari/537.36 "
-                    "user-behavior-lakehouse/1.0",
+                    "Mozilla/5.0 Chrome/124 Safari/537.36 user-behavior-lakehouse/1.0",
                 )
             },
             timeout=int(os.getenv("DASHBOARD_REDDIT_LOOKUP_TIMEOUT_SECONDS", "10")),
@@ -2317,11 +2138,7 @@ def render_content_analytics():
     transcript_count = len(transcripts)
     if "transcript_status" in transcripts.columns:
         transcript_count = int(
-            transcripts["transcript_status"]
-            .astype("string")
-            .str.lower()
-            .eq("success")
-            .sum()
+            transcripts["transcript_status"].astype("string").str.lower().eq("success").sum()
         )
     metric_columns[2].metric("Transcripts", format_count(transcript_count))
     metric_columns[3].metric("Content stats", format_count(len(content_stats)))
@@ -2347,9 +2164,7 @@ def render_content_analytics():
             "latest_comment_count",
             "latest_reply_count",
         ]
-        available_stats = [
-            column for column in stat_columns if column in content_stats.columns
-        ]
+        available_stats = [column for column in stat_columns if column in content_stats.columns]
         display_rows = filtered_contents.copy()
         if not content_stats.empty and available_stats:
             display_rows = display_rows.merge(
@@ -2402,10 +2217,7 @@ def render_content_analytics():
                 reddit_contents.groupby("subreddit", dropna=False)
                 .agg(
                     posts=("content_id", "count"),
-                    **{
-                        column: (column, "first")
-                        for column in REDDIT_COMMUNITY_COLUMNS
-                    },
+                    **{column: (column, "first") for column in REDDIT_COMMUNITY_COLUMNS},
                 )
                 .reset_index()
                 .sort_values("posts", ascending=False)
@@ -2468,6 +2280,15 @@ def render_content_analytics():
                 youtube_contents,
                 transcripts,
                 content_stats,
+                engagement_snapshots,
+            )
+            enrichment_stale_hours = positive_env_float(
+                "DASHBOARD_YOUTUBE_ENRICHMENT_STALE_HOURS",
+                168,
+            )
+            snapshot_stale_hours = positive_env_float(
+                "DASHBOARD_YOUTUBE_SNAPSHOT_STALE_HOURS",
+                24,
             )
             st.caption("YouTube videos")
             card_columns = st.columns(3)
@@ -2480,42 +2301,98 @@ def render_content_analytics():
                         else:
                             st.caption("No thumbnail")
                         st.markdown(f"**{format_optional_text(video_row.get('title'))}**")
-                        channel = format_optional_text(
-                            video_row.get("youtube_channel_name")
-                        )
+                        channel = format_optional_text(video_row.get("youtube_channel_name"))
                         if channel != "N/A":
                             st.caption(channel)
-                        complete_count, complete_total, checks = (
-                            youtube_data_completeness(video_row)
+                        complete_count, complete_total, checks = youtube_data_completeness(
+                            video_row
                         )
                         st.progress(
                             complete_count / complete_total,
                             text=f"Data completeness {complete_count}/{complete_total}",
                         )
-                        transcript_status = normalized_status(
-                            video_row.get(
-                                "latest_transcript_status",
-                                video_row.get("transcript_status"),
+                        transcript_status = transcript_lifecycle_status(video_row)
+                        st.caption(
+                            " | ".join(
+                                [
+                                    "Views: "
+                                    + format_available_metric(
+                                        video_row.get("latest_view_count"),
+                                        video_row.get("latest_view_count_available"),
+                                    ),
+                                    "Likes: "
+                                    + format_available_metric(
+                                        video_row.get("latest_like_count"),
+                                        video_row.get("latest_like_count_available"),
+                                    ),
+                                    "Comments: "
+                                    + format_available_metric(
+                                        video_row.get("latest_comment_count"),
+                                        video_row.get("latest_comment_count_available"),
+                                    ),
+                                    f"Transcript: {transcript_status.replace('_', ' ')}",
+                                ]
                             )
                         )
                         st.caption(
                             " | ".join(
                                 [
-                                    f"Views: {format_count(video_row.get('latest_view_count'))}",
-                                    f"Comments: {format_count(video_row.get('latest_comment_count'))}",
-                                    f"Transcript: {transcript_status.replace('_', ' ')}",
+                                    "Discovered: "
+                                    + format_timestamp(video_row.get("last_discovered_at")),
+                                    "Enriched: "
+                                    + format_timestamp(video_row.get("last_enriched_at")),
+                                    "Snapshot: "
+                                    + format_timestamp(video_row.get("latest_snapshot_at")),
                                 ]
                             )
                         )
-                        missing = [
-                            label
-                            for label, available in checks.items()
-                            if not available
-                        ]
+                        st.caption("Coverage: " + coverage_summary(video_row))
+                        st.caption("Provenance: " + provenance_summary(video_row))
+                        st.caption(
+                            "Transcript attempts: "
+                            + format_available_metric(
+                                video_row.get("latest_transcript_attempt_count")
+                            )
+                            + " | Last: "
+                            + format_timestamp(video_row.get("latest_transcript_last_attempt_at"))
+                            + " | Next: "
+                            + format_timestamp(video_row.get("latest_transcript_next_attempt_at"))
+                        )
+                        missing = [label for label, available in checks.items() if not available]
                         if missing:
                             st.caption("Missing: " + ", ".join(missing))
                         else:
                             st.success("Complete data available.")
+
+                        warnings = [
+                            freshness_warning(
+                                "Metadata enrichment",
+                                video_row.get("last_enriched_at"),
+                                stale_after_hours=enrichment_stale_hours,
+                            ),
+                            freshness_warning(
+                                "Engagement snapshot",
+                                video_row.get("latest_snapshot_at"),
+                                stale_after_hours=snapshot_stale_hours,
+                            ),
+                            transcript_retry_warning(video_row),
+                        ]
+                        for warning in warnings:
+                            if warning:
+                                st.warning(warning)
+
+            with st.expander("YouTube freshness and coverage", expanded=True):
+                freshness_table = build_youtube_freshness_table(
+                    youtube_display,
+                    enrichment_stale_hours=enrichment_stale_hours,
+                    snapshot_stale_hours=snapshot_stale_hours,
+                )
+                st.dataframe(
+                    freshness_table,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={"URL": st.column_config.LinkColumn("URL")},
+                )
 
             selected_index = st.selectbox(
                 "YouTube video",
@@ -2533,16 +2410,73 @@ def render_content_analytics():
             if video_transcripts.empty:
                 st.info("Transcript collection has not been attempted for this video.")
             else:
-                if "updated_at" in video_transcripts.columns:
+                transcript_sort_columns = [
+                    column
+                    for column in ("last_attempt_at", "updated_at")
+                    if column in video_transcripts.columns
+                ]
+                if transcript_sort_columns:
                     video_transcripts = video_transcripts.sort_values(
-                        "updated_at",
+                        transcript_sort_columns,
                         ascending=False,
+                        na_position="last",
                     )
                 transcript_row = video_transcripts.iloc[0]
                 status, level, message = transcript_status_presentation(transcript_row)
-                st.caption(f"Transcript status: {status.replace('_', ' ')}")
-                if status != "success":
+                st.caption(f"Transcript lifecycle: {status.replace('_', ' ')}")
+                if status != "available":
                     getattr(st, level)(message)
+                transcript_detail_columns = [
+                    column
+                    for column in (
+                        "requested_language_code",
+                        "obtained_language_code",
+                        "transcript_lifecycle_status",
+                        "generation_type",
+                        "is_generated",
+                        "is_translated",
+                        "provider",
+                        "attempt_count",
+                        "last_attempt_at",
+                        "next_attempt_at",
+                        "error_code",
+                        "content_version",
+                    )
+                    if column in video_transcripts.columns
+                ]
+                transcript_details = video_transcripts[transcript_detail_columns].copy()
+                for column in (
+                    "requested_language_code",
+                    "obtained_language_code",
+                    "generation_type",
+                    "is_generated",
+                    "is_translated",
+                    "provider",
+                    "error_code",
+                    "content_version",
+                ):
+                    if column in transcript_details.columns:
+                        transcript_details[column] = transcript_details[column].apply(
+                            format_optional_text
+                        )
+                if "transcript_lifecycle_status" in transcript_details.columns:
+                    transcript_details["transcript_lifecycle_status"] = video_transcripts.apply(
+                        transcript_lifecycle_status, axis=1
+                    )
+                for column in ("last_attempt_at", "next_attempt_at"):
+                    if column in transcript_details.columns:
+                        transcript_details[column] = transcript_details[column].apply(
+                            format_timestamp
+                        )
+                if "attempt_count" in transcript_details.columns:
+                    transcript_details["attempt_count"] = transcript_details["attempt_count"].apply(
+                        format_available_metric
+                    )
+                st.dataframe(
+                    transcript_details,
+                    width="stretch",
+                    hide_index=True,
+                )
                 transcript = transcript_row.get("transcript_text")
                 transcript_text = "" if pd.isna(transcript) else str(transcript)
                 if transcript_text.strip():
@@ -2570,9 +2504,7 @@ def render_content_analytics():
                 st.info("No user identifier available in user evolution yet.")
                 return
             selected_user = st.selectbox("User", users)
-            user_rows = user_evolution[
-                user_evolution["user_id_hash"] == selected_user
-            ].copy()
+            user_rows = user_evolution[user_evolution["user_id_hash"] == selected_user].copy()
             st.dataframe(user_rows, width="stretch", hide_index=True)
             if "event_date" in user_rows.columns and not user_rows.empty:
                 chart_rows = user_rows.melt(
@@ -2676,40 +2608,36 @@ def render_recent_events():
     recent_df = analytics_df.copy()
     recent_df["text"] = recent_df["text"].fillna("").str.strip().str.slice(0, 240)
     recent_df["url"] = recent_df["url"].fillna("N/A")
-    recent_df["author_hash"] = (
-        recent_df["author_hash"].fillna("N/A").str.slice(0, 12)
-    )
+    recent_df["author_hash"] = recent_df["author_hash"].fillna("N/A").str.slice(0, 12)
     recent_df = recent_df.sort_values("created_at", ascending=False)
-    recent_df["created_at"] = recent_df["created_at"].dt.strftime(
+    recent_df["created_at"] = recent_df["created_at"].dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    recent_df["created_at"] = recent_df["created_at"].fillna("N/A")
+    recent_df["metadata_refreshed_at"] = recent_df["metadata_refreshed_at"].dt.strftime(
         "%Y-%m-%d %H:%M:%S UTC"
     )
-    recent_df["created_at"] = recent_df["created_at"].fillna("N/A")
-    recent_df["metadata_refreshed_at"] = recent_df[
-        "metadata_refreshed_at"
-    ].dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-    recent_df["metadata_refreshed_at"] = recent_df[
-        "metadata_refreshed_at"
-    ].fillna("N/A")
-    recent_df["platform_event_id"] = recent_df["platform_event_id"].apply(
-        format_optional_text
-    )
+    recent_df["metadata_refreshed_at"] = recent_df["metadata_refreshed_at"].fillna("N/A")
+    recent_df["platform_event_id"] = recent_df["platform_event_id"].apply(format_optional_text)
     recent_df["error"] = recent_df["error"].fillna("")
-    recent_df["owner_channel_id"] = recent_df["owner_channel_id"].apply(
-        format_optional_text
-    )
-    recent_df["collaborators"] = recent_df["collaborator_channel_ids"].apply(
-        format_collaborators
-    )
+    recent_df["owner_channel_id"] = recent_df["owner_channel_id"].apply(format_optional_text)
+    recent_df["collaborators"] = recent_df["collaborator_channel_ids"].apply(format_collaborators)
+    for column in ENGAGEMENT_COLUMNS:
+        availability_column = f"{column}_available"
+        recent_df[column] = recent_df.apply(
+            lambda row, metric=column, flag=availability_column: (
+                format_available_metric(row.get(metric), row.get(flag))
+            ),
+            axis=1,
+        )
     recent_df = recent_df[
-            [
-                "source",
-                "created_at",
-                "author_hash",
-                "platform_event_id",
-                "metadata_refreshed_at",
-                "owner_channel_id",
-                "collaborators",
-                "text",
+        [
+            "source",
+            "created_at",
+            "author_hash",
+            "platform_event_id",
+            "metadata_refreshed_at",
+            "owner_channel_id",
+            "collaborators",
+            "text",
             *ENGAGEMENT_COLUMNS,
             "url",
             "error",
@@ -2730,7 +2658,7 @@ def render_recent_events():
             "collaborators": "Collaborator channel IDs",
             "text": "Cleaned content",
             **{
-                column: st.column_config.NumberColumn(label, format="%d")
+                column: st.column_config.TextColumn(label)
                 for column, label in ENGAGEMENT_LABELS.items()
             },
             "url": st.column_config.LinkColumn("URL"),
@@ -2738,7 +2666,17 @@ def render_recent_events():
         },
     )
 
-overview_tab, engagement_tab, authors_tab, tracking_tab, content_tab, model_tab, quality_tab, events_tab = st.tabs(
+
+(
+    overview_tab,
+    engagement_tab,
+    authors_tab,
+    tracking_tab,
+    content_tab,
+    model_tab,
+    quality_tab,
+    events_tab,
+) = st.tabs(
     [
         "Overview",
         "Engagement",

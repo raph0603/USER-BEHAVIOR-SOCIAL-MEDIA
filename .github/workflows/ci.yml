@@ -13,52 +13,19 @@ permissions:
 jobs:
   pr-validation:
     name: pr-validation
+    uses: ./.github/workflows/validation.yml
+
+  required-pr-validation:
+    name: pr-validation
+    if: ${{ always() }}
+    needs: pr-validation
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements-test.txt
-
-      - name: Install validation dependencies
-        run: python -m pip install --requirement requirements-test.txt
-
-      - name: Lint Python sources
-        run: python -m ruff check .
-
-      - name: Compile Python sources
-        run: >-
-          python -m compileall -q
-          common dashboard ml orchestrator playwright
-          scripts spark tests
-
-      - name: Validate Avro schemas
-        shell: python
+      - name: Report reusable validation result
+        env:
+          VALIDATION_RESULT: ${{ needs.pr-validation.result }}
         run: |
-          import json
-          from pathlib import Path
-
-          schemas = sorted(Path("schemas").glob("*.avsc"))
-          if not schemas:
-              raise SystemExit("No Avro schemas found")
-          for schema in schemas:
-              json.loads(schema.read_text(encoding="utf-8"))
-              print(f"validated {schema}")
-
-      - name: Validate Compose configuration
-        run: |
-          docker compose --env-file .env.example config --quiet
-          docker compose --env-file .env.example \
-            -f docker-compose.yml -f deployment/compose.bundle.yaml config --quiet
-
-      - name: Run non-Spark test suite
-        run: >-
-          python -m pytest
-          --ignore=tests/scripts/test_engagement_snapshots.py
-          --ignore=tests/scripts/test_silver_post_features.py
+          if [ "$VALIDATION_RESULT" != "success" ]; then
+            echo "Reusable validation failed with result: $VALIDATION_RESULT"
+            exit 1
+          fi

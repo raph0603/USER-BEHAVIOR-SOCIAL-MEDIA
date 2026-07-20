@@ -7,6 +7,9 @@ addopts = [
 ]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "spark: tests that require a local JVM-backed PySpark runtime",
+]
 
 [tool.ruff]
 target-version = "py310"
@@ -15,6 +18,9 @@ extend-exclude = [
     "annotation_marketing/*.jsonl",
     "data",
 ]
+
+[tool.ruff.format]
+line-ending = "lf"
 
 [tool.ruff.lint]
 # Keep the first repository-wide lint gate focused on runtime-breaking errors.

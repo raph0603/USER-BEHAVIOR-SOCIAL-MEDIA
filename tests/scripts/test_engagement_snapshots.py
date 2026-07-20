@@ -15,17 +15,30 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
+
+pytestmark = pytest.mark.spark
+
 ROOT = Path(__file__).resolve().parents[2]
-bat_wrapper = str(ROOT / "tests" / "scripts" / "run_python.bat")
-os.environ["PYSPARK_PYTHON"] = bat_wrapper
-os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
+os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
 
 BATCH_PATH = ROOT / "spark" / "jobs" / "batch"
 sys.path.insert(0, str(BATCH_PATH))
 
 from pyspark.sql import SparkSession
+from pyspark.sql.types import (
+    DoubleType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
 
 import engagement_snapshots as es
+import youtube_engagement_velocity as velocity
 
 
 class EngagementSnapshotTests(unittest.TestCase):
@@ -101,6 +114,51 @@ class EngagementSnapshotTests(unittest.TestCase):
         self.assertEqual(row["view_count"], 5000)
         self.assertEqual(row["score"], 12)
 
+    def test_known_zero_is_preserved_and_marked_available(self):
+        row = es.build_snapshots_from_updates(
+            self.spark,
+            [self._make_update(view_count=0, like_count=0, comment_count=0)],
+        ).collect()[0]
+
+        self.assertEqual(row["view_count"], 0)
+        self.assertTrue(row["view_count_available"])
+        self.assertTrue(row["like_count_available"])
+        self.assertIsNone(row["engagement_rate"])
+
+    def test_missing_metric_is_not_coalesced_to_zero(self):
+        row = es.build_snapshots_from_updates(
+            self.spark,
+            [self._make_update(like_count=None, like_count_available=False)],
+        ).collect()[0]
+
+        self.assertIsNone(row["like_count"])
+        self.assertFalse(row["like_count_available"])
+        self.assertIsNone(row["engagement_rate"])
+
+    def test_counter_decrease_does_not_create_negative_delta(self):
+        first = es.build_snapshots_from_updates(self.spark, [self._make_update()])
+        second = es.build_snapshots_from_updates(
+            self.spark,
+            [
+                self._make_update(
+                    metadata_refreshed_at="2026-06-01T12:00:00",
+                    view_count=900,
+                )
+            ],
+            previous_snapshots=first,
+        ).collect()[0]
+
+        self.assertIsNone(second["views_delta"])
+        self.assertIsNone(second["views_per_hour"])
+
+    def test_observation_identity_is_deterministic_for_replay(self):
+        update = self._make_update()
+        first = es.build_snapshots_from_updates(self.spark, [update]).collect()[0]
+        replay = es.build_snapshots_from_updates(self.spark, [update]).collect()[0]
+
+        self.assertEqual(first["observation_id"], replay["observation_id"])
+        self.assertEqual(len(first["observation_id"]), 64)
+
     def test_none_returns_none_for_empty_updates(self):
         result = es.build_snapshots_from_updates(self.spark, [])
         self.assertIsNone(result)
@@ -140,6 +198,22 @@ class EngagementSnapshotSchemaContractTests(unittest.TestCase):
             "retweet_count",
             "bookmark_count",
             "score",
+            "observation_id",
+            "views_delta",
+            "likes_delta",
+            "comments_delta",
+            "views_per_hour",
+            "likes_per_hour",
+            "comments_per_hour",
+            "like_rate",
+            "comment_rate",
+            "engagement_rate",
+            "views_acceleration",
+            "metrics_refresh_status",
+            "producer_name",
+            "producer_run_id",
+            "coverage_json",
+            "view_count_available",
             "snapshot_date",
         }
         for col_name in required:
@@ -165,6 +239,115 @@ class EngagementSnapshotSchemaContractTests(unittest.TestCase):
         source = insight_path.read_text(encoding="utf-8")
         self.assertIn("metadata_refreshed_at", source)
         self.assertIn("lakehouse.silver.events", source)
+
+    def test_snapshot_write_uses_insert_only_merge(self):
+        source = (ROOT / "spark" / "jobs" / "batch" / "engagement_snapshots.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('dropDuplicates(["observation_id"])', source)
+        self.assertIn("MERGE INTO lakehouse.silver.engagement_snapshots", source)
+        self.assertIn("WHEN NOT MATCHED THEN", source)
+        self.assertNotIn("WHEN MATCHED THEN", source)
+        self.assertNotIn('join(existing_ids, ["observation_id"], "left_anti")', source)
+        self.assertNotIn("DELETE FROM lakehouse.silver.engagement_snapshots", source)
+
+    def test_snapshot_migration_preserves_a_backup_for_duplicate_cleanup(self):
+        source = (
+            ROOT / "spark" / "jobs" / "maintenance" / "migrate_engagement_snapshots.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('mode.add_argument("--dry-run"', source)
+        self.assertIn('mode.add_argument("--apply"', source)
+        self.assertIn("validated_staging_switch", source)
+        self.assertIn("engagement_snapshots_backup_", source)
+        self.assertNotIn("DROP TABLE", source)
+
+
+class YouTubeVelocityAvailabilityTests(unittest.TestCase):
+    SNAPSHOT_SCHEMA = StructType(
+        [
+            StructField("source", StringType(), False),
+            StructField("platform_event_id", StringType(), False),
+            StructField("observed_at", TimestampType(), False),
+            StructField("view_count", LongType(), True),
+            StructField("like_count", LongType(), True),
+            StructField("comment_count", LongType(), True),
+            StructField("views_delta", LongType(), True),
+            StructField("likes_delta", LongType(), True),
+            StructField("comments_delta", LongType(), True),
+            StructField("views_per_hour", DoubleType(), True),
+            StructField("likes_per_hour", DoubleType(), True),
+            StructField("comments_per_hour", DoubleType(), True),
+            StructField("like_rate", DoubleType(), True),
+            StructField("comment_rate", DoubleType(), True),
+            StructField("engagement_rate", DoubleType(), True),
+            StructField("views_acceleration", DoubleType(), True),
+        ]
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.spark = (
+            SparkSession.builder.appName("YouTubeVelocityAvailabilityTests")
+            .master("local[1]")
+            .config("spark.sql.shuffle.partitions", "1")
+            .getOrCreate()
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.spark.stop()
+
+    def _snapshot(self, **overrides):
+        row = {
+            "source": "youtube",
+            "platform_event_id": "video-1",
+            "observed_at": datetime(2026, 7, 20, 1, 0, 0),
+            "view_count": 100,
+            "like_count": 10,
+            "comment_count": 1,
+            "views_delta": 10,
+            "likes_delta": 1,
+            "comments_delta": 1,
+            "views_per_hour": 10.0,
+            "likes_per_hour": 1.0,
+            "comments_per_hour": 1.0,
+            "like_rate": 0.1,
+            "comment_rate": 0.01,
+            "engagement_rate": 0.11,
+            "views_acceleration": 2.0,
+        }
+        row.update(overrides)
+        return row
+
+    def test_unknown_input_keeps_virality_unknown(self):
+        snapshots = self.spark.createDataFrame(
+            [self._snapshot(engagement_rate=None)],
+            schema=self.SNAPSHOT_SCHEMA,
+        )
+
+        row = velocity.build_latest_velocity(snapshots, threshold=8.0).collect()[0]
+
+        self.assertIsNone(row["virality_score"])
+        self.assertIsNone(row["is_viral"])
+
+    def test_known_zero_inputs_produce_a_real_zero_score(self):
+        snapshots = self.spark.createDataFrame(
+            [
+                self._snapshot(
+                    views_per_hour=0.0,
+                    engagement_rate=0.0,
+                    views_acceleration=0.0,
+                )
+            ],
+            schema=self.SNAPSHOT_SCHEMA,
+        )
+
+        row = velocity.build_latest_velocity(snapshots, threshold=8.0).collect()[0]
+
+        self.assertEqual(row["virality_score"], 0.0)
+        self.assertFalse(row["is_viral"])
 
 
 if __name__ == "__main__":

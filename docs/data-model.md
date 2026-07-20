@@ -6,15 +6,20 @@
 raw Kafka topics
   -> privacy cleaning, validation, and source DLQs
   -> clean Kafka topics
-  -> lakehouse.bronze.events
-  -> post-commit Kafka handoff
+  -> lakehouse.bronze.event_log (immutable history)
+  -> lakehouse.bronze.events (current projection)
+  -> committed-row Kafka handoff
   -> lakehouse.silver.events
+  -> lakehouse.silver.applied_events
+  -> reconciliation and quality
   -> analytical Silver and Gold tables
 ```
 
-Bronze is the first durable Iceberg layer. Because privacy cleaning occurs
-before Bronze, it contains canonical, redacted events plus a sanitized source
-payload. It does not contain untouched source responses or unhashed source
+Bronze is the first durable Iceberg layer. `bronze.event_log` is the replay
+source and preserves every distinct committed event; `bronze.events` is the
+compatible current-state projection. Because privacy cleaning occurs before
+Bronze, both contain canonical, redacted events plus a sanitized source
+payload. They do not contain untouched source responses or unhashed source
 identities.
 
 Silver keeps the canonical event contract, native timestamps and partitions,
@@ -37,8 +42,11 @@ the video title or description.
 
 | Table | Purpose | Primary writer | Main readers |
 |---|---|---|---|
-| `lakehouse.bronze.events` | Durable privacy-cleaned canonical events | `kafka_to_iceberg_bronze.py` | Silver stream, maintenance |
+| `lakehouse.bronze.event_log` | Immutable privacy-cleaned event journal, insert-only by `event_id` | `kafka_to_iceberg_bronze.py` | Handoff, reconciliation, analytics replay |
+| `lakehouse.bronze.events` | Compatible current Bronze projection | `kafka_to_iceberg_bronze.py` | Monitoring, legacy readers |
+| `lakehouse.bronze.ingress_dlq` | Protected invalid-input evidence with Kafka coordinates | `kafka_to_iceberg_bronze.py` | Operations, quality |
 | `lakehouse.silver.events` | Canonical monitoring and downstream events | `bronze_to_silver_from_kafka.py` | Dashboard, analytics, exports |
+| `lakehouse.silver.applied_events` | Insert-only proof that each journal event reached Silver | Silver merge and reconciliation | Reconciliation, quality, analytics history |
 | `lakehouse.silver.contents` | Root posts and videos | `content_analytics.py` | Dashboard, content aggregates |
 | `lakehouse.silver.interactions` | Actual comments and replies | `content_analytics.py` | Dashboard, content aggregates |
 | `lakehouse.silver.engagement_snapshots` | Append-only engagement observations | Analytics and refresh jobs | Delayed labels, dashboard |
@@ -50,6 +58,10 @@ the video title or description.
 | `lakehouse.gold.user_evolution` | Daily anonymized user activity | `content_analytics.py` | Dashboard and reporting |
 | `lakehouse.gold.model_predictions` | Versioned classifier outputs | Inference service | Evaluation and reporting |
 | `lakehouse.gold.training_examples` | Versioned labeled examples | Dataset build job | Model training |
+| `lakehouse.gold.dataset_manifests` | Deterministic dataset identity, source snapshots, filters, coverage, and distributions | `build_training_dataset.py` | Training, audit, export |
+| `lakehouse.monitoring.external_api_usage` | Unit-based quota, cache, retry, error, latency, circuit, and reserve evidence | `youtube_api_usage.py` | Operations, dashboard |
+| `lakehouse.monitoring.pipeline_health` | Worker/outbox health and Bronze/Silver lag | `youtube_api_usage.py` | Operations, dashboard |
+| `lakehouse.monitoring.data_quality_results` | Persisted configurable rule outcomes and severities | `lakehouse_quality.py` | Operations, audit |
 
 ## Content graph
 
@@ -79,4 +91,5 @@ than as evidence that the base event stream is empty.
 
 For field-level definitions and compatibility rules, see
 [DATA_SCHEMA.md](DATA_SCHEMA.md). For sequencing and delivery guarantees, see
-[ARCHITECTURE.md](ARCHITECTURE.md).
+[ARCHITECTURE.md](ARCHITECTURE.md). Migration, replay, and rollback procedures
+are in [PIPELINE_RELIABILITY.md](PIPELINE_RELIABILITY.md).

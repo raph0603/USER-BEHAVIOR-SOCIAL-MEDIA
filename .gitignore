@@ -35,6 +35,7 @@ pytest-cache-files-*/
 .coverage
 .coverage.*
 htmlcov/
+tests/e2e/.artifacts/
 .code-review-graph/
 .a[g]ents/
 PROJECT.md

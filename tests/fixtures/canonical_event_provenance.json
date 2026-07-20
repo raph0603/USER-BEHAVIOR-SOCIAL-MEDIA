@@ -1,0 +1,35 @@
+{
+  "input": {
+    "user_id": "channel-hash-1",
+    "url": "https://www.youtube.com/watch?v=video-1",
+    "title": "Known zero and unknown metric",
+    "timestamp": "2026-07-20T00:00:00+00:00",
+    "published_at": "2026-07-20T00:00:00+00:00",
+    "collected_at": "2026-07-20T01:00:00+00:00",
+    "source": "youtube",
+    "platform_event_id": "video-1",
+    "event_type": "youtube.engagement.snapshot",
+    "event_version": "1.0",
+    "view_count": 0,
+    "like_count": null,
+    "metadata_status": "success",
+    "transcript_lifecycle_status": "unavailable",
+    "comments_status": "pending",
+    "collector_version": "fixture-1",
+    "source_payload_version": "2",
+    "raw_source_payload": "{\"fixture\":\"opaque\"}"
+  },
+  "producer": {
+    "producer_name": "youtube_metrics_worker",
+    "producer_run_id": "fixture-run-1",
+    "collection_method": "youtube_data_api",
+    "api_endpoint": "videos.list"
+  },
+  "expected_coverage": {
+    "view_count": true,
+    "like_count": false,
+    "metadata": true,
+    "transcript": false,
+    "comments": false
+  }
+}

@@ -1,4 +1,4 @@
-"""Turn raw exported events into a training-ready dataset.
+"""Turn lakehouse examples or an explicit manual export into model features.
 
 Pipeline: load -> clean text -> drop empty/duplicate -> static content features
 -> per-source viral label -> one-hot source -> save parquet.
@@ -11,6 +11,7 @@ Design choices:
   then label the top `VIRAL_QUANTILE` as viral.
 - Engagement columns are the LABEL source, never features (avoids leakage).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -47,11 +48,16 @@ ENGAGEMENT_METRICS = {
 # PRE-LAUNCH property of the author (known before the post spreads), so it is a
 # legitimate feature, not leakage. Each platform names it differently but they
 # mean the same thing (how big the author's audience is); we unify them into one.
-CHANNEL_AUDIENCE_COLS = ["subscriber_count", "follower_count", "subreddit_member_count"]
+CHANNEL_AUDIENCE_COLS = [
+    "audience_count",
+    "subscriber_count",
+    "follower_count",
+    "subreddit_member_count",
+]
 
 _URL = re.compile(r"https?://\S+|www\.\S+", re.I)
 _SPACED_SCHEME = re.compile(r"(https?://)\s+", re.I)  # crawler sometimes inserts a space after //
-_REDACTION = re.compile(r"<[A-Z_]+>")                 # <PHONE>, <EMAIL>, ...
+_REDACTION = re.compile(r"<[A-Z_]+>")  # <PHONE>, <EMAIL>, ...
 _MENTION = re.compile(r"@\w+")
 _WS = re.compile(r"\s+")
 
@@ -71,10 +77,16 @@ _STALE_DERIVED = ["text_len_chars", "text_len_words", "has_question"]
 
 
 def load_events(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path)
+    df = pd.read_parquet(path) if path.is_dir() or path.suffix == ".parquet" else pd.read_csv(path)
     df = df.drop(columns=[c for c in _STALE_DERIVED if c in df.columns])
     df["source"] = df["source"].astype("string").str.strip().str.lower()
-    df["clean_text"] = df["text"].map(clean_text)
+    official = "label_value" in df.columns
+    if official and "dataset_version" not in df.columns:
+        raise ValueError("Official lakehouse input with label_value must include dataset_version")
+    text_column = "text_for_model" if official else "text"
+    if text_column not in df.columns:
+        raise ValueError(f"Training input is missing required text column: {text_column}")
+    df["clean_text"] = df[text_column].map(clean_text)
     return df
 
 
@@ -101,9 +113,10 @@ def add_text_features(df: pd.DataFrame) -> pd.DataFrame:
 def add_channel_features(df: pd.DataFrame) -> pd.DataFrame:
     """Unified channel/author audience-size features (best-effort).
 
-    Coalesces the per-platform audience columns into one number, then exposes:
-    - chan_log_audience: log1p of the audience size (0 when unknown)
-    - chan_has_audience: 1 if the audience size is known (>0), else 0
+    Coalesces the per-platform audience columns into one nullable number, then exposes:
+    - chan_log_audience: log1p of the audience size (null when unknown)
+    - chan_has_audience: 1 if the audience size is known, including a real zero
+    - chan_audience_is_zero: 1 only for an observed zero
     If none of the source columns are present (older exports), skip silently-ish
     so the rest of the pipeline is unchanged.
     """
@@ -116,14 +129,39 @@ def add_channel_features(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     df = df.copy()
-    # Columns are mutually exclusive per platform; max() picks whichever applies.
-    audience = (
-        df[present].apply(pd.to_numeric, errors="coerce").fillna(0.0).clip(lower=0).max(axis=1)
-    )
+    numeric = df[present].apply(pd.to_numeric, errors="coerce").clip(lower=0)
+    availability = pd.DataFrame(index=df.index)
+    for column in present:
+        flag = f"{column}_available"
+        if column == "audience_count" and "audience_available" in df.columns:
+            flag = "audience_available"
+        if flag in df.columns:
+            availability[column] = (
+                df[flag]
+                .map(
+                    lambda value: value
+                    if isinstance(value, (bool, np.bool_))
+                    else str(value).strip().lower() in {"1", "true", "yes"}
+                    if pd.notna(value)
+                    else False
+                )
+                .astype(bool)
+            )
+        else:
+            availability[column] = numeric[column].notna()
+        availability[column] &= numeric[column].notna()
+    known = availability.any(axis=1)
+    audience = numeric.where(availability).max(axis=1, skipna=True).where(known)
     df["chan_log_audience"] = np.log1p(audience)
-    df["chan_has_audience"] = (audience > 0).astype(int)
-    have = int((audience > 0).sum())
-    print(f"[channel] audience from {present}: {have}/{len(df)} rows have a known (>0) audience")
+    df["chan_has_audience"] = known.astype(int)
+    df["chan_audience_available"] = known.astype(int)
+    df["chan_audience_is_zero"] = (known & audience.eq(0)).astype(int)
+    have = int(known.sum())
+    known_zero = int((known & audience.eq(0)).sum())
+    print(
+        f"[channel] audience from {present}: {have}/{len(df)} rows are known "
+        f"({known_zero} observed zeros)"
+    )
     return df
 
 
@@ -163,21 +201,37 @@ def add_viral_label(df: pd.DataFrame, quantile: float = VIRAL_QUANTILE) -> pd.Da
         threshold = score.loc[valid].quantile(quantile)
 
         df.loc[score.loc[valid].index, "engagement_score"] = score.loc[valid]
-        df.loc[score.loc[valid].index, "viral"] = (
-            score.loc[valid] >= threshold
-        ).astype(int)
+        df.loc[score.loc[valid].index, "viral"] = (score.loc[valid] >= threshold).astype(int)
 
     return df
 
 
-def build(input_path: Path, output_path: Path, quantile: float = VIRAL_QUANTILE) -> pd.DataFrame:
+def build(
+    input_path: Path,
+    output_path: Path,
+    quantile: float = VIRAL_QUANTILE,
+    *,
+    expected_dataset_version: str | None = None,
+) -> pd.DataFrame:
     df = load_events(input_path)
     df = filter_rows(df)
     df = add_text_features(df)
     df = add_role_features(df)
     df = add_topic_features(df)
     df = add_channel_features(df)
-    df = add_viral_label(df, quantile)
+    if "label_value" in df.columns:
+        versions = sorted(df["dataset_version"].dropna().astype(str).unique())
+        if len(versions) != 1:
+            raise ValueError("Official lakehouse input must contain exactly one dataset_version")
+        if expected_dataset_version and versions[0] != expected_dataset_version:
+            raise ValueError(f"Expected dataset {expected_dataset_version}, received {versions[0]}")
+        labels = df["label_value"].map({"viral": 1, "not_viral": 0})
+        if labels.isna().any():
+            invalid = sorted(df.loc[labels.isna(), "label_value"].astype(str).unique())
+            raise ValueError(f"Unsupported official label values: {invalid}")
+        df["viral"] = labels.astype("Int64")
+    else:
+        df = add_viral_label(df, quantile)
     unlabeled = int(df["viral"].isna().sum())
     if unlabeled:
         print(
@@ -202,13 +256,21 @@ def _report(df: pd.DataFrame) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build the training dataset from exported events.")
+    parser = argparse.ArgumentParser(
+        description="Build model features from an official lakehouse Parquet dataset or manual export."
+    )
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--quantile", type=float, default=VIRAL_QUANTILE)
+    parser.add_argument("--dataset-version")
     args = parser.parse_args()
 
-    df = build(args.input, args.output, args.quantile)
+    df = build(
+        args.input,
+        args.output,
+        args.quantile,
+        expected_dataset_version=args.dataset_version,
+    )
     _report(df)
     print(f"Saved -> {args.output}")
 

@@ -179,6 +179,32 @@ def release_pipeline_lock_command() -> str:
     """
 
 
+def verify_pipeline_lock_command() -> str:
+    """Fail unless the current DAG run still owns the shared writer lock."""
+
+    return rf"""
+    set -euo pipefail
+    OWNER="${{AIRFLOW_CTX_DAG_ID}}/${{AIRFLOW_CTX_DAG_RUN_ID}}"
+    LOCK_DIR={LOCK_DIR}
+    LOCK_GUARD={LOCK_GUARD}
+    docker exec \
+      -e LOCK_OWNER="$OWNER" \
+      -e LOCK_DIR="$LOCK_DIR" \
+      -e LOCK_GUARD="$LOCK_GUARD" \
+      spark-master /bin/bash -lc '
+        set -euo pipefail
+        exec 9>"$LOCK_GUARD"
+        flock -x 9
+        CURRENT_OWNER=$(cat "$LOCK_DIR/owner" 2>/dev/null || true)
+        if [[ "$CURRENT_OWNER" != "$LOCK_OWNER" ]]; then
+          echo "Pipeline lock ownership check failed" >&2
+          exit 1
+        fi
+      '
+    echo "Verified shared pipeline lock for $OWNER"
+    """
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)

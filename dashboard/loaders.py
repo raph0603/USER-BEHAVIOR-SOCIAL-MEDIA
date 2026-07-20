@@ -2,7 +2,7 @@ import os
 from urllib.parse import urlparse
 
 import duckdb
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 
 
 DEFAULT_TABLE_PATH = "s3://lakehouse/warehouse/silver/events"
@@ -26,6 +26,19 @@ AUTHOR_METADATA_COLUMNS = (
     "owner_channel_id",
     "collaborator_channel_ids",
 )
+YOUTUBE_FRESHNESS_COLUMNS = (
+    "event_type",
+    "collected_at",
+    "metadata_collected_at",
+    "last_metadata_refresh_at",
+    "transcript_lifecycle_status",
+    "transcript_requested_language_code",
+    "transcript_obtained_language_code",
+    "transcript_provider",
+    "transcript_attempt_count",
+    "transcript_last_attempt_at",
+    "transcript_next_attempt_at",
+)
 OPTIONAL_ENGAGEMENT_COLUMNS = (
     "comment_count",
     "reply_count",
@@ -36,13 +49,28 @@ OPTIONAL_ENGAGEMENT_COLUMNS = (
     "subscriber_count",
     "subreddit_member_count",
 )
+PROVENANCE_COLUMNS = (
+    "event_id",
+    "observation_id",
+    "observed_at",
+    "producer_name",
+    "producer_run_id",
+    "payload_fingerprint",
+    "collection_method",
+    "api_endpoint",
+    "provenance_json",
+    "coverage_json",
+)
+AVAILABILITY_COLUMNS = tuple(f"{column}_available" for column in ENGAGEMENT_COLUMNS) + (
+    "metadata_available",
+    "transcript_available",
+    "comments_available",
+)
 
 
 def _select_silver_events(connection, table_path, optional_columns=None):
     optional_columns = optional_columns or []
-    metadata_columns = "".join(
-        f"            {column},\n" for column in optional_columns
-    )
+    metadata_columns = "".join(f"            {column},\n" for column in optional_columns)
     return connection.execute(
         f"""
         SELECT
@@ -102,18 +130,16 @@ def get_iceberg_config():
         "unsafe_version_guessing": os.getenv(
             "DASHBOARD_ICEBERG_UNSAFE_VERSION_GUESSING",
             "true",
-        ).strip().lower()
+        )
+        .strip()
+        .lower()
         in {"1", "true", "yes", "on"},
     }
 
 
 def iceberg_table_path(config, namespace, table_name):
     warehouse_path = config.get("warehouse_path") or DEFAULT_WAREHOUSE_PATH
-    return (
-        f"{warehouse_path.rstrip('/')}/"
-        f"{namespace.strip('/')}/"
-        f"{table_name.strip('/')}"
-    )
+    return f"{warehouse_path.rstrip('/')}/{namespace.strip('/')}/{table_name.strip('/')}"
 
 
 def _connect_iceberg(config):
@@ -163,7 +189,10 @@ def load_iceberg_data(config=None):
         connection = _connect_iceberg(config)
         optional_columns = [
             *AUTHOR_METADATA_COLUMNS,
+            *YOUTUBE_FRESHNESS_COLUMNS,
             *OPTIONAL_ENGAGEMENT_COLUMNS,
+            *PROVENANCE_COLUMNS,
+            *AVAILABILITY_COLUMNS,
             "raw_text",
             "clean_text",
             "text_for_model",
@@ -178,16 +207,12 @@ def load_iceberg_data(config=None):
                 break
             except Exception as author_metadata_exc:
                 missing_columns = [
-                    column
-                    for column in optional_columns
-                    if column in str(author_metadata_exc)
+                    column for column in optional_columns if column in str(author_metadata_exc)
                 ]
                 if not missing_columns:
                     raise
                 optional_columns = [
-                    column
-                    for column in optional_columns
-                    if column not in missing_columns
+                    column for column in optional_columns if column not in missing_columns
                 ]
     except Exception as exc:
         raise RuntimeError(
@@ -223,6 +248,48 @@ def load_iceberg_data(config=None):
         errors="coerce",
         utc=True,
     )
+    for column in (
+        "collected_at",
+        "metadata_collected_at",
+        "last_metadata_refresh_at",
+        "transcript_last_attempt_at",
+        "transcript_next_attempt_at",
+    ):
+        if column not in df.columns:
+            df[column] = pd.NaT
+        df[column] = pd.to_datetime(df[column], errors="coerce", utc=True)
+    for column in YOUTUBE_FRESHNESS_COLUMNS:
+        if column in {
+            "collected_at",
+            "metadata_collected_at",
+            "last_metadata_refresh_at",
+            "transcript_last_attempt_at",
+            "transcript_next_attempt_at",
+            "transcript_attempt_count",
+        }:
+            continue
+        if column not in df.columns:
+            df[column] = pd.NA
+        df[column] = df[column].astype("string")
+    if "transcript_attempt_count" not in df.columns:
+        df["transcript_attempt_count"] = pd.NA
+    df["transcript_attempt_count"] = pd.to_numeric(
+        df["transcript_attempt_count"],
+        errors="coerce",
+    ).astype("Int64")
+    if "observed_at" not in df.columns:
+        df["observed_at"] = pd.NaT
+    df["observed_at"] = pd.to_datetime(df["observed_at"], errors="coerce", utc=True)
+    for column in PROVENANCE_COLUMNS:
+        if column == "observed_at":
+            continue
+        if column not in df.columns:
+            df[column] = pd.NA
+        df[column] = df[column].astype("string")
+    for column in AVAILABILITY_COLUMNS:
+        if column not in df.columns:
+            df[column] = pd.NA
+        df[column] = df[column].astype("boolean")
     df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce", utc=True)
     for column in ENGAGEMENT_COLUMNS:
         if column not in df.columns:
@@ -255,9 +322,7 @@ def load_iceberg_table(table_path, config=None, limit=None):
             parameters,
         ).fetchdf()
     except Exception as exc:
-        raise RuntimeError(
-            f"Unable to read Iceberg table `{table_path}`: {exc}"
-        ) from exc
+        raise RuntimeError(f"Unable to read Iceberg table `{table_path}`: {exc}") from exc
     finally:
         if connection is not None:
             connection.close()

@@ -26,6 +26,7 @@ from cleaning import clean_text, invalid_reason, prepare_text_for_model
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from event_contract import EVENT_COLUMNS, spark_struct_type
+from pipeline.reliability import fail_on_data_loss_option
 
 
 def _env(name: str, default: str) -> str:
@@ -84,9 +85,9 @@ def _registered_avro_schemas(registry_url: str, subject: str) -> list[tuple[int,
 def _decode_confluent_avro(metadata, registry_url: str, subject: str):
     """Decode each record with the writer schema identified by its wire header."""
 
-    framed = (
-        metadata.withColumn("_schema_id", expr("conv(hex(substring(value, 2, 4)), 16, 10)").cast("int"))
-        .withColumn("_avro_value", expr("substring(value, 6, length(value) - 5)"))
+    schema_id_column = expr("conv(hex(substring(value, 2, 4)), 16, 10)").cast("int")
+    framed = metadata.withColumn("_schema_id", schema_id_column).withColumn(
+        "_avro_value", expr("substring(value, 6, length(value) - 5)")
     )
     registered_schemas = _registered_avro_schemas(registry_url, subject)
     known_schema_ids = [schema_id for schema_id, _ in registered_schemas]
@@ -120,10 +121,7 @@ def _decode_confluent_avro(metadata, registry_url: str, subject: str):
             "_decode_error",
             when(
                 ~col("_schema_id").isin(known_schema_ids),
-                expr(
-                    "concat('unregistered_schema_id:', "
-                    "cast(_schema_id as string))"
-                ),
+                expr("concat('unregistered_schema_id:', cast(_schema_id as string))"),
             ).otherwise(lit(None).cast("string")),
         )
     )
@@ -132,9 +130,7 @@ def _decode_confluent_avro(metadata, registry_url: str, subject: str):
 def main() -> None:
     platform = _env("PLATFORM", "").strip().lower()
     if platform not in {"youtube", "x", "reddit"}:
-        raise ValueError(
-            f"Unsupported PLATFORM={platform!r}; expected youtube, x or reddit"
-        )
+        raise ValueError(f"Unsupported PLATFORM={platform!r}; expected youtube, x or reddit")
 
     kafka_bootstrap = _env("KAFKA_BOOTSTRAP", "kafka:9092")
     source_topic = _env(
@@ -160,12 +156,29 @@ def main() -> None:
     spark = _build_spark(f"collector-event-cleaning-{platform}")
     spark.sparkContext.setLogLevel("WARN")
 
+    fail_on_data_loss = fail_on_data_loss_option(
+        os.getenv("KAFKA_FAIL_ON_DATA_LOSS", "true"),
+        allow_data_loss=os.getenv("ALLOW_KAFKA_DATA_LOSS", "false"),
+    )
+    if fail_on_data_loss == "false":
+        print(
+            json.dumps(
+                {
+                    "level": "warning",
+                    "event": "kafka_data_loss_override",
+                    "stage": f"clean_{platform}",
+                    "topics": [source_topic],
+                },
+                sort_keys=True,
+            )
+        )
+
     raw = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", kafka_bootstrap)
         .option("subscribe", source_topic)
         .option("startingOffsets", starting_offsets)
-        .option("failOnDataLoss", "false")
+        .option("failOnDataLoss", fail_on_data_loss)
         .load()
     )
 
@@ -184,24 +197,25 @@ def main() -> None:
         )
     elif value_format == "json":
         event_schema = spark_struct_type()
-        decoded = metadata.select(
-            "_kafka_topic",
-            "_kafka_partition",
-            "_kafka_offset",
-            from_json(col("value").cast("string"), event_schema).alias("data"),
-        ).select("_kafka_topic", "_kafka_partition", "_kafka_offset", "data.*").withColumn(
-            "_decode_error",
-            lit(None).cast("string"),
+        decoded = (
+            metadata.select(
+                "_kafka_topic",
+                "_kafka_partition",
+                "_kafka_offset",
+                from_json(col("value").cast("string"), event_schema).alias("data"),
+            )
+            .select("_kafka_topic", "_kafka_partition", "_kafka_offset", "data.*")
+            .withColumn(
+                "_decode_error",
+                lit(None).cast("string"),
+            )
         )
     else:
         raise ValueError(
-            f"Unsupported CLEAN_SOURCE_VALUE_FORMAT={value_format!r}; "
-            "expected avro or json"
+            f"Unsupported CLEAN_SOURCE_VALUE_FORMAT={value_format!r}; expected avro or json"
         )
 
-    decoded = decoded.filter(
-        (col("source") == lit(platform)) | col("_decode_error").isNotNull()
-    )
+    decoded = decoded.filter((col("source") == lit(platform)) | col("_decode_error").isNotNull())
     protected = (
         decoded.withColumn(
             "user_id",
@@ -235,9 +249,7 @@ def main() -> None:
 
     clean_payload = validated.filter(col("_invalid_reason").isNull()).select(
         col("user_id").cast("string").alias("key"),
-        to_json(
-            struct(*EVENT_COLUMNS, lit("clean").alias("stage"))
-        ).alias("value"),
+        to_json(struct(*EVENT_COLUMNS, lit("clean").alias("stage"))).alias("value"),
     )
 
     dlq_payload = validated.filter(col("_invalid_reason").isNotNull()).select(
