@@ -44,9 +44,9 @@ try:
 except ModuleNotFoundError as exc:
     if not (exc.name or "").startswith("pyspark"):
         raise
-    DataFrame = Any
-    SparkSession = Any
-    Window = None
+    DataFrame = Any  # type: ignore[misc,assignment]
+    SparkSession = Any  # type: ignore[misc,assignment]
+    Window = None  # type: ignore[misc,assignment]
 
 
 def _env(name: str, default: str) -> str:
@@ -116,6 +116,8 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.contents (
   metadata_status STRING,
   transcript_status STRING,
   comments_status STRING,
+  last_discovered_at TIMESTAMP,
+  last_enriched_at TIMESTAMP,
   canonical_metadata STRING,
   source_specific_metadata STRING,
   raw_text STRING,
@@ -326,7 +328,22 @@ CREATE TABLE IF NOT EXISTS lakehouse.gold.content_stats (
   latest_reply_count BIGINT,
   latest_retweet_count BIGINT,
   latest_bookmark_count BIGINT,
-  latest_snapshot_at TIMESTAMP
+  latest_snapshot_at TIMESTAMP,
+  latest_snapshot_observation_id STRING,
+  latest_snapshot_producer_name STRING,
+  latest_snapshot_producer_run_id STRING,
+  latest_snapshot_collection_method STRING,
+  latest_snapshot_api_endpoint STRING,
+  latest_snapshot_provenance_json STRING,
+  latest_snapshot_coverage_json STRING,
+  latest_view_count_available BOOLEAN,
+  latest_like_count_available BOOLEAN,
+  latest_comment_count_available BOOLEAN,
+  latest_reply_count_available BOOLEAN,
+  latest_retweet_count_available BOOLEAN,
+  latest_bookmark_count_available BOOLEAN,
+  last_discovered_at TIMESTAMP,
+  last_enriched_at TIMESTAMP
 )
 USING iceberg
 PARTITIONED BY (event_date)
@@ -419,6 +436,8 @@ CONTENT_COLUMNS = [
     "metadata_status",
     "transcript_status",
     "comments_status",
+    "last_discovered_at",
+    "last_enriched_at",
     "canonical_metadata",
     "source_specific_metadata",
     "raw_text",
@@ -548,6 +567,21 @@ CONTENT_STATS_COLUMNS = [
     "latest_retweet_count",
     "latest_bookmark_count",
     "latest_snapshot_at",
+    "latest_snapshot_observation_id",
+    "latest_snapshot_producer_name",
+    "latest_snapshot_producer_run_id",
+    "latest_snapshot_collection_method",
+    "latest_snapshot_api_endpoint",
+    "latest_snapshot_provenance_json",
+    "latest_snapshot_coverage_json",
+    "latest_view_count_available",
+    "latest_like_count_available",
+    "latest_comment_count_available",
+    "latest_reply_count_available",
+    "latest_retweet_count_available",
+    "latest_bookmark_count_available",
+    "last_discovered_at",
+    "last_enriched_at",
 ]
 
 USER_EVOLUTION_COLUMNS = [
@@ -566,6 +600,7 @@ USER_EVOLUTION_COLUMNS = [
 
 
 OPTIONAL_EVENT_COLUMNS = {
+    "event_type": "STRING",
     "event_id": "STRING",
     "observation_id": "STRING",
     "observed_at": "STRING",
@@ -578,6 +613,7 @@ OPTIONAL_EVENT_COLUMNS = {
     "provenance_json": "STRING",
     "coverage_json": "STRING",
     "metadata_refreshed_at": "TIMESTAMP",
+    "metadata_collected_at": "STRING",
     "owner_channel_id": "STRING",
     "subreddit": "STRING",
     "subreddit_title": "STRING",
@@ -791,6 +827,23 @@ def normalize_events(events: DataFrame) -> DataFrame:
         )
         .withColumn("observed_at", to_timestamp(col("observed_at")))
         .withColumn(
+            "event_observed_at",
+            coalesce(
+                to_timestamp(col("collected_at")),
+                col("observed_at"),
+                col("metadata_refreshed_at"),
+                col("event_ts"),
+            ),
+        )
+        .withColumn(
+            "event_metadata_at",
+            coalesce(
+                to_timestamp(col("metadata_collected_at")),
+                col("metadata_refreshed_at"),
+                col("event_observed_at"),
+            ),
+        )
+        .withColumn(
             "observation_id",
             coalesce(
                 col("observation_id"),
@@ -929,6 +982,26 @@ def build_contents(events: DataFrame) -> DataFrame:
             first("metadata_status", ignorenulls=True).alias("metadata_status"),
             first("transcript_status", ignorenulls=True).alias("transcript_status"),
             first("comments_status", ignorenulls=True).alias("comments_status"),
+            spark_max(
+                when(
+                    (col("source") == "youtube")
+                    & (col("event_type") == "youtube.discovery.discovered"),
+                    col("event_observed_at"),
+                )
+            ).alias("last_discovered_at"),
+            spark_max(
+                when(
+                    (col("source") == "youtube")
+                    & (
+                        col("event_type").isin(
+                            "youtube.metadata.observed",
+                            "youtube.metadata.changed",
+                        )
+                        | (lower(coalesce(col("metadata_status"), lit(""))) == "success")
+                    ),
+                    col("event_metadata_at"),
+                )
+            ).alias("last_enriched_at"),
             first("canonical_metadata", ignorenulls=True).alias("canonical_metadata"),
             first("source_specific_metadata", ignorenulls=True).alias("source_specific_metadata"),
             first("content_raw_text", ignorenulls=True).alias("raw_text"),
@@ -1135,7 +1208,10 @@ def build_content_stats(contents: DataFrame, interactions: DataFrame, snapshots:
         spark_sum("score").cast("bigint").alias("total_score"),
     )
 
-    latest_window = Window.partitionBy("content_id").orderBy(col("snapshot_at").desc_nulls_last())
+    latest_window = Window.partitionBy("content_id").orderBy(
+        col("snapshot_at").desc_nulls_last(),
+        col("observation_id").desc_nulls_last(),
+    )
     latest_snapshots = (
         snapshots.withColumn("_rank", row_number().over(latest_window))
         .filter(col("_rank") == 1)
@@ -1158,6 +1234,19 @@ def build_content_stats(contents: DataFrame, interactions: DataFrame, snapshots:
                 col("retweet_count").alias("latest_retweet_count"),
                 col("bookmark_count").alias("latest_bookmark_count"),
                 col("snapshot_at").alias("latest_snapshot_at"),
+                col("observation_id").alias("latest_snapshot_observation_id"),
+                col("producer_name").alias("latest_snapshot_producer_name"),
+                col("producer_run_id").alias("latest_snapshot_producer_run_id"),
+                col("collection_method").alias("latest_snapshot_collection_method"),
+                col("api_endpoint").alias("latest_snapshot_api_endpoint"),
+                col("provenance_json").alias("latest_snapshot_provenance_json"),
+                col("coverage_json").alias("latest_snapshot_coverage_json"),
+                col("view_count_available").alias("latest_view_count_available"),
+                col("like_count_available").alias("latest_like_count_available"),
+                col("comment_count_available").alias("latest_comment_count_available"),
+                col("reply_count_available").alias("latest_reply_count_available"),
+                col("retweet_count_available").alias("latest_retweet_count_available"),
+                col("bookmark_count_available").alias("latest_bookmark_count_available"),
             ),
             "content_id",
             "left",
@@ -1250,6 +1339,8 @@ def _create_tables(spark: SparkSession) -> None:
             "metadata_status": "STRING",
             "transcript_status": "STRING",
             "comments_status": "STRING",
+            "last_discovered_at": "TIMESTAMP",
+            "last_enriched_at": "TIMESTAMP",
             "canonical_metadata": "STRING",
             "source_specific_metadata": "STRING",
             "raw_text": "STRING",
@@ -1345,6 +1436,27 @@ def _create_tables(spark: SparkSession) -> None:
             "recovered_at": "TIMESTAMP",
             "content_version": "STRING",
             "updated_at": "TIMESTAMP",
+        },
+    )
+    _ensure_columns(
+        spark,
+        CONTENT_STATS_TABLE,
+        {
+            "latest_snapshot_observation_id": "STRING",
+            "latest_snapshot_producer_name": "STRING",
+            "latest_snapshot_producer_run_id": "STRING",
+            "latest_snapshot_collection_method": "STRING",
+            "latest_snapshot_api_endpoint": "STRING",
+            "latest_snapshot_provenance_json": "STRING",
+            "latest_snapshot_coverage_json": "STRING",
+            "latest_view_count_available": "BOOLEAN",
+            "latest_like_count_available": "BOOLEAN",
+            "latest_comment_count_available": "BOOLEAN",
+            "latest_reply_count_available": "BOOLEAN",
+            "latest_retweet_count_available": "BOOLEAN",
+            "latest_bookmark_count_available": "BOOLEAN",
+            "last_discovered_at": "TIMESTAMP",
+            "last_enriched_at": "TIMESTAMP",
         },
     )
     spark.sql(

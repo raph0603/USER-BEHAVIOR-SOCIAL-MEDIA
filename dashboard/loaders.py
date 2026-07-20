@@ -2,7 +2,7 @@ import os
 from urllib.parse import urlparse
 
 import duckdb
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 
 
 DEFAULT_TABLE_PATH = "s3://lakehouse/warehouse/silver/events"
@@ -25,6 +25,19 @@ AUTHOR_METADATA_COLUMNS = (
     "metadata_refreshed_at",
     "owner_channel_id",
     "collaborator_channel_ids",
+)
+YOUTUBE_FRESHNESS_COLUMNS = (
+    "event_type",
+    "collected_at",
+    "metadata_collected_at",
+    "last_metadata_refresh_at",
+    "transcript_lifecycle_status",
+    "transcript_requested_language_code",
+    "transcript_obtained_language_code",
+    "transcript_provider",
+    "transcript_attempt_count",
+    "transcript_last_attempt_at",
+    "transcript_next_attempt_at",
 )
 OPTIONAL_ENGAGEMENT_COLUMNS = (
     "comment_count",
@@ -176,6 +189,7 @@ def load_iceberg_data(config=None):
         connection = _connect_iceberg(config)
         optional_columns = [
             *AUTHOR_METADATA_COLUMNS,
+            *YOUTUBE_FRESHNESS_COLUMNS,
             *OPTIONAL_ENGAGEMENT_COLUMNS,
             *PROVENANCE_COLUMNS,
             *AVAILABILITY_COLUMNS,
@@ -234,6 +248,35 @@ def load_iceberg_data(config=None):
         errors="coerce",
         utc=True,
     )
+    for column in (
+        "collected_at",
+        "metadata_collected_at",
+        "last_metadata_refresh_at",
+        "transcript_last_attempt_at",
+        "transcript_next_attempt_at",
+    ):
+        if column not in df.columns:
+            df[column] = pd.NaT
+        df[column] = pd.to_datetime(df[column], errors="coerce", utc=True)
+    for column in YOUTUBE_FRESHNESS_COLUMNS:
+        if column in {
+            "collected_at",
+            "metadata_collected_at",
+            "last_metadata_refresh_at",
+            "transcript_last_attempt_at",
+            "transcript_next_attempt_at",
+            "transcript_attempt_count",
+        }:
+            continue
+        if column not in df.columns:
+            df[column] = pd.NA
+        df[column] = df[column].astype("string")
+    if "transcript_attempt_count" not in df.columns:
+        df["transcript_attempt_count"] = pd.NA
+    df["transcript_attempt_count"] = pd.to_numeric(
+        df["transcript_attempt_count"],
+        errors="coerce",
+    ).astype("Int64")
     if "observed_at" not in df.columns:
         df["observed_at"] = pd.NaT
     df["observed_at"] = pd.to_datetime(df["observed_at"], errors="coerce", utc=True)

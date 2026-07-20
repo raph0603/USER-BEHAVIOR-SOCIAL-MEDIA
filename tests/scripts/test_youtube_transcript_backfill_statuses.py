@@ -305,17 +305,34 @@ class YouTubeTranscriptBackfillIntegrationContractTests(unittest.TestCase):
         )
 
     def test_dashboard_distinguishes_transcript_statuses(self):
-        source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
+        app_source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
+        presentation_source = (ROOT / "dashboard" / "youtube_presentation.py").read_text(
+            encoding="utf-8"
+        )
         for value in (
-            "TRANSCRIPT_STATUS_PRESENTATION",
+            "TRANSCRIPT_LIFECYCLE_PRESENTATION",
+            "pending",
+            "available",
+            "unavailable",
+            "disabled",
             "rate_limited",
+            "blocked",
+            "retryable_error",
+            "permanent_error",
+            "LEGACY_TRANSCRIPT_STATUS_MAP",
             "not_available",
+        ):
+            with self.subTest(value=value):
+                self.assertIn(value, presentation_source)
+
+        for value in (
             "Transcript collection has not been attempted",
+            "Transcript lifecycle",
             "Data completeness",
             "thumbnail_url",
         ):
             with self.subTest(value=value):
-                self.assertIn(value, source)
+                self.assertIn(value, app_source)
 
 
 if __name__ == "__main__":

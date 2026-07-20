@@ -30,6 +30,8 @@ class ContentAnalyticsContractTests(unittest.TestCase):
             "youtube_channel_id",
             "thumbnail_url",
             "text_for_model",
+            "last_discovered_at",
+            "last_enriched_at",
         ):
             with self.subTest(column=column):
                 self.assertIn(column, ca.CONTENT_COLUMNS)
@@ -68,6 +70,12 @@ class ContentAnalyticsContractTests(unittest.TestCase):
             "interaction_count",
             "unique_interacting_users",
             "latest_snapshot_at",
+            "latest_snapshot_observation_id",
+            "latest_snapshot_provenance_json",
+            "latest_snapshot_coverage_json",
+            "latest_view_count_available",
+            "last_discovered_at",
+            "last_enriched_at",
         ):
             with self.subTest(column=column):
                 self.assertIn(column, ca.CONTENT_STATS_COLUMNS)
@@ -83,6 +91,16 @@ class ContentAnalyticsContractTests(unittest.TestCase):
             with self.subTest(column=column):
                 self.assertIn(column, ca.USER_EVOLUTION_COLUMNS)
                 self.assertIn(column, ca.CREATE_USER_EVOLUTION_SQL)
+
+    def test_youtube_freshness_uses_typed_worker_events(self):
+        source = (ROOT / "spark" / "jobs" / "batch" / "content_analytics.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"youtube.discovery.discovered"', source)
+        self.assertIn('"youtube.metadata.observed"', source)
+        self.assertIn('"youtube.metadata.changed"', source)
+        self.assertIn('col("observation_id").desc_nulls_last()', source)
 
     def test_nullable_source_columns_are_declared(self):
         for column in (
