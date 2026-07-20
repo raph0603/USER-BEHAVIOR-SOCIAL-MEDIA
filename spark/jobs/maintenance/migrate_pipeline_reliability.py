@@ -28,6 +28,10 @@ from batch.youtube_transcripts import (
     ensure_transcript_table,
 )
 from event_contract import BRONZE_COLUMNS, BRONZE_EVENT_LOG_COLUMNS
+from maintenance.lakehouse_quality import (
+    RESULTS_TABLE as DATA_QUALITY_RESULTS_TABLE,
+    ensure_quality_results_table,
+)
 from pipeline.silver_merge import (
     APPLIED_EVENT_COLUMNS,
     APPLIED_EVENTS_TABLE,
@@ -198,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         "silver_rows": spark.table(SILVER_TABLE).count() if silver_exists else 0,
         "event_log_exists": spark.catalog.tableExists(EVENT_LOG_TABLE),
         "applied_events_exists": spark.catalog.tableExists(APPLIED_EVENTS_TABLE),
+        "data_quality_results_exists": spark.catalog.tableExists(DATA_QUALITY_RESULTS_TABLE),
         "transcript_table_exists": transcript_exists,
         "transcript_rows": (spark.table(TRANSCRIPT_TABLE).count() if transcript_exists else 0),
         "bronze_snapshot_id": (
@@ -221,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
     ensure_bronze_tables(spark)
     ensure_silver_tables(spark)
     ensure_transcript_table(spark)
+    ensure_quality_results_table(spark)
     journal_rows = _historical_journal_rows(spark)
     journal_candidates = journal_rows.count()
     if journal_candidates:
@@ -238,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         "applied_candidates": applied_candidates,
         "event_log_rows_after": spark.table(EVENT_LOG_TABLE).count(),
         "applied_events_rows_after": spark.table(APPLIED_EVENTS_TABLE).count(),
+        "data_quality_results_exists_after": spark.catalog.tableExists(DATA_QUALITY_RESULTS_TABLE),
         "transcript_rows_after": spark.table(TRANSCRIPT_TABLE).count(),
         "transcript_lifecycle_rows_after": spark.table(TRANSCRIPT_TABLE)
         .filter("transcript_lifecycle_status IS NOT NULL")

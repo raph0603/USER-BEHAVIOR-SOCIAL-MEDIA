@@ -1,0 +1,166 @@
+{
+  "schema_version": "v1",
+  "profiles": {
+    "standard": {
+      "allow_empty": false,
+      "empty_severity": "error",
+      "fail_severities": [
+        "error"
+      ]
+    },
+    "no_row_checks": {
+      "allow_empty": true,
+      "empty_severity": "warning",
+      "fail_severities": [
+        "error"
+      ]
+    }
+  },
+  "rules": [
+    {
+      "id": "bronze_event_log_schema",
+      "kind": "schema",
+      "severity": "error",
+      "table": "lakehouse.bronze.event_log",
+      "required_columns": {
+        "event_id": "string",
+        "source": "string",
+        "platform_event_id": "string",
+        "payload_fingerprint": "string",
+        "ingested_at": "timestamp"
+      }
+    },
+    {
+      "id": "bronze_ingress_dlq_schema",
+      "kind": "schema",
+      "severity": "warning",
+      "table": "lakehouse.bronze.ingress_dlq",
+      "required_columns": {
+        "dlq_id": "string",
+        "kafka_topic": "string",
+        "kafka_partition": "int",
+        "kafka_offset": "bigint",
+        "category": "string",
+        "payload_fingerprint": "string",
+        "protected_payload": "string",
+        "failed_at": "timestamp"
+      }
+    },
+    {
+      "id": "silver_applied_events_schema",
+      "kind": "schema",
+      "severity": "error",
+      "table": "lakehouse.silver.applied_events",
+      "required_columns": {
+        "event_id": "string",
+        "source": "string",
+        "applied_at": "timestamp",
+        "silver_run_id": "string"
+      }
+    },
+    {
+      "id": "bronze_event_id_unique",
+      "kind": "unique_key",
+      "severity": "error",
+      "table": "lakehouse.bronze.event_log",
+      "columns": [
+        "event_id"
+      ],
+      "max_duplicates": 0
+    },
+    {
+      "id": "silver_applied_event_id_unique",
+      "kind": "unique_key",
+      "severity": "error",
+      "table": "lakehouse.silver.applied_events",
+      "columns": [
+        "event_id"
+      ],
+      "max_duplicates": 0
+    },
+    {
+      "id": "bronze_event_log_partitions",
+      "kind": "partitions",
+      "severity": "info",
+      "table": "lakehouse.bronze.event_log",
+      "min_partitions": 1
+    },
+    {
+      "id": "silver_applied_events_partitions",
+      "kind": "partitions",
+      "severity": "info",
+      "table": "lakehouse.silver.applied_events",
+      "min_partitions": 1
+    },
+    {
+      "id": "bronze_event_log_not_empty",
+      "kind": "table_empty",
+      "severity": "error",
+      "table": "lakehouse.bronze.event_log",
+      "min_rows": 1
+    },
+    {
+      "id": "silver_applied_events_not_empty",
+      "kind": "table_empty",
+      "severity": "error",
+      "table": "lakehouse.silver.applied_events",
+      "min_rows": 1
+    },
+    {
+      "id": "bronze_identity_complete",
+      "kind": "completeness",
+      "severity": "error",
+      "table": "lakehouse.bronze.event_log",
+      "columns": [
+        "event_id",
+        "payload_fingerprint",
+        "source",
+        "ingested_at"
+      ],
+      "min_rate": 1.0
+    },
+    {
+      "id": "silver_application_coverage",
+      "kind": "volume_ratio",
+      "severity": "error",
+      "upstream_table": "lakehouse.bronze.event_log",
+      "downstream_table": "lakehouse.silver.applied_events",
+      "min_ratio": 1.0,
+      "max_ratio": 1.0
+    },
+    {
+      "id": "bronze_event_log_freshness",
+      "kind": "freshness",
+      "severity": "warning",
+      "table": "lakehouse.bronze.event_log",
+      "timestamp_column": "ingested_at",
+      "max_age_minutes": 120
+    },
+    {
+      "id": "silver_applied_events_freshness",
+      "kind": "freshness",
+      "severity": "warning",
+      "table": "lakehouse.silver.applied_events",
+      "timestamp_column": "applied_at",
+      "max_age_minutes": 180
+    },
+    {
+      "id": "bronze_event_log_orphan_files",
+      "kind": "orphan_files",
+      "severity": "warning",
+      "table": "lakehouse.bronze.event_log",
+      "max_orphans": 0,
+      "sample_limit": 20,
+      "max_objects": 1000000
+    },
+    {
+      "id": "silver_applied_events_orphan_files",
+      "kind": "orphan_files",
+      "severity": "warning",
+      "table": "lakehouse.silver.applied_events",
+      "max_orphans": 0,
+      "sample_limit": 20,
+      "max_objects": 1000000
+    }
+  ]
+}
