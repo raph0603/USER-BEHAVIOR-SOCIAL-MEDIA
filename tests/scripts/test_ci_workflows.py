@@ -12,6 +12,17 @@ def test_branch_workflows_call_the_shared_validation_suite():
         assert "uses: ./.github/workflows/validation.yml" in source
 
 
+def test_pull_request_workflow_reports_the_required_aggregate_status():
+    source = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    gate = source.split("  required-pr-validation:", maxsplit=1)[1]
+
+    assert "\n    name: pr-validation\n" in gate
+    assert "\n    if: ${{ always() }}\n" in gate
+    assert "\n    needs: pr-validation\n" in gate
+    assert "VALIDATION_RESULT: ${{ needs.pr-validation.result }}" in gate
+    assert 'if [ "$VALIDATION_RESULT" != "success" ]; then' in gate
+
+
 def test_validation_suite_separates_all_required_gates():
     source = (WORKFLOWS / "validation.yml").read_text(encoding="utf-8")
 

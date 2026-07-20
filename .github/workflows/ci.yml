@@ -14,3 +14,18 @@ jobs:
   pr-validation:
     name: pr-validation
     uses: ./.github/workflows/validation.yml
+
+  required-pr-validation:
+    name: pr-validation
+    if: ${{ always() }}
+    needs: pr-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report reusable validation result
+        env:
+          VALIDATION_RESULT: ${{ needs.pr-validation.result }}
+        run: |
+          if [ "$VALIDATION_RESULT" != "success" ]; then
+            echo "Reusable validation failed with result: $VALIDATION_RESULT"
+            exit 1
+          fi
