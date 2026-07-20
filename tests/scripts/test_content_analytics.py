@@ -132,21 +132,19 @@ class ContentAnalyticsContractTests(unittest.TestCase):
 
 class ContentAnalyticsIntegrationTextTests(unittest.TestCase):
     def test_airflow_dag_runs_content_analytics(self):
-        source = (
-            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py"
-        ).read_text(encoding="utf-8")
+        source = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("build_content_analytics_command", source)
         self.assertIn("content_analytics.py", source)
         self.assertIn("update_content_analytics", source)
 
     def test_airflow_dag_uses_the_independent_transcript_worker(self):
-        source = (
-            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py"
-        ).read_text(encoding="utf-8")
-        requirements = (ROOT / "playwright" / "requirements.txt").read_text(
+        source = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(
             encoding="utf-8"
         )
+        requirements = (ROOT / "playwright" / "requirements.txt").read_text(encoding="utf-8")
 
         self.assertIn("youtube_transcript_worker.py", source)
         self.assertIn("process_youtube_transcript_requests", source)
@@ -156,26 +154,21 @@ class ContentAnalyticsIntegrationTextTests(unittest.TestCase):
         self.assertIn("youtube-transcript-api==1.2.4", requirements)
 
     def test_airflow_dag_backfills_youtube_thumbnails_without_api_quota(self):
-        source = (
-            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py"
-        ).read_text(encoding="utf-8")
-        no_checks_source = (
-            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse_no_row_checks.py"
-        ).read_text(encoding="utf-8")
+        source = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(
+            encoding="utf-8"
+        )
 
-        for dag_source in (source, no_checks_source):
-            with self.subTest(dag_source=dag_source[:40]):
-                self.assertIn("build_youtube_thumbnails_command", dag_source)
-                self.assertIn("youtube_thumbnail_backfill.py", dag_source)
-                self.assertIn("backfill_youtube_thumbnails", dag_source)
-                self.assertIn(
-                    "append_youtube_metadata_versions >> backfill_youtube_thumbnails",
-                    dag_source,
-                )
-                self.assertIn(
-                    "backfill_youtube_thumbnails >> update_content_analytics",
-                    dag_source,
-                )
+        self.assertIn("build_youtube_thumbnails_command", source)
+        self.assertIn("youtube_thumbnail_backfill.py", source)
+        self.assertIn("backfill_youtube_thumbnails", source)
+        self.assertIn(
+            "append_youtube_metadata_versions >> backfill_youtube_thumbnails",
+            source,
+        )
+        self.assertIn(
+            "backfill_youtube_thumbnails >> update_content_analytics",
+            source,
+        )
 
     def test_dashboard_surfaces_content_explorer(self):
         source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")

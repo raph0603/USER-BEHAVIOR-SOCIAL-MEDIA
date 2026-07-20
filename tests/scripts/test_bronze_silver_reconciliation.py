@@ -54,13 +54,9 @@ class ReconciliationReportTests(unittest.TestCase):
 
 class ReconciliationCommandTests(unittest.TestCase):
     def test_repair_reuses_the_streaming_silver_merge(self):
-        source = (
-            ROOT
-            / "spark"
-            / "jobs"
-            / "maintenance"
-            / "reconcile_bronze_silver.py"
-        ).read_text(encoding="utf-8")
+        source = (ROOT / "spark" / "jobs" / "maintenance" / "reconcile_bronze_silver.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn('choices=("check", "repair")', source)
         self.assertIn('join(applied_ids, ["event_id"], "left_anti")', source)
@@ -70,11 +66,7 @@ class ReconciliationCommandTests(unittest.TestCase):
 
     def test_migration_is_additive_and_has_explicit_modes(self):
         source = (
-            ROOT
-            / "spark"
-            / "jobs"
-            / "maintenance"
-            / "migrate_pipeline_reliability.py"
+            ROOT / "spark" / "jobs" / "maintenance" / "migrate_pipeline_reliability.py"
         ).read_text(encoding="utf-8")
 
         self.assertIn('mode.add_argument("--dry-run"', source)
@@ -86,30 +78,34 @@ class ReconciliationCommandTests(unittest.TestCase):
         self.assertNotIn("DELETE FROM", source)
 
     def test_both_lakehouse_dags_reconcile_before_analytics(self):
-        dags = (
-            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py",
-            ROOT
-            / "orchestrator"
-            / "dags"
-            / "user_behavior_lakehouse_no_row_checks.py",
+        dags_dir = ROOT / "orchestrator" / "dags"
+        source = (dags_dir / "lakehouse_dag_factory.py").read_text(encoding="utf-8")
+        wrappers = (
+            (dags_dir / "user_behavior_lakehouse.py").read_text(encoding="utf-8"),
+            (dags_dir / "user_behavior_lakehouse_no_row_checks.py").read_text(encoding="utf-8"),
         )
 
-        for dag in dags:
-            with self.subTest(dag=dag.name):
-                source = dag.read_text(encoding="utf-8")
-                self.assertIn('task_id="reconcile_bronze_silver"', source)
-                self.assertIn("reconcile_bronze_silver.py", source)
-                self.assertIn("--mode repair", source)
-                self.assertIn("event_log_v1", source)
-                self.assertIn("applied_events_v1", source)
-                reconciliation_dependency = source.index(
-                    "reconcile_bronze_silver >> [append_youtube_metadata_versions"
-                )
-                analytics_dependency = source.index(
-                    "backfill_youtube_thumbnails >> update_content_analytics"
-                )
-                self.assertLess(reconciliation_dependency, analytics_dependency)
-                self.assertIn("BRONZE_INGRESS_DLQ_TOPIC", source)
+        for wrapper in wrappers:
+            with self.subTest():
+                self.assertIn("build_lakehouse_dag(", wrapper)
+
+        self.assertIn('task_id="reconcile_bronze_silver"', source)
+        self.assertIn("reconcile_bronze_silver.py", source)
+        self.assertIn("--mode repair", source)
+        self.assertIn("event_log_v1", source)
+        self.assertIn("applied_events_v1", source)
+        reconciliation_dependency = source.index(
+            "start_silver_stream >> verify_silver_recovery_lock >> reconcile_bronze_silver"
+        )
+        quality_dependency = source.index(
+            "[wait_bronze, wait_silver] >> validate_lakehouse_quality"
+        )
+        analytics_dependency = source.index(
+            "backfill_youtube_thumbnails >> update_content_analytics"
+        )
+        self.assertLess(reconciliation_dependency, quality_dependency)
+        self.assertLess(quality_dependency, analytics_dependency)
+        self.assertIn("BRONZE_INGRESS_DLQ_TOPIC", source)
 
 
 if __name__ == "__main__":

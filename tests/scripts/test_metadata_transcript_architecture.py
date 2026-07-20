@@ -263,8 +263,7 @@ class AvroCompatibilityTests(unittest.TestCase):
     def test_online_cleaning_uses_the_post_migration_checkpoint(self):
         paths = (
             ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py",
-            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py",
-            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse_no_row_checks.py",
+            ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py",
         )
 
         for path in paths:
@@ -599,7 +598,7 @@ class PipelineHandoffTests(unittest.TestCase):
         check = (ROOT / "tests" / "spark" / "lakehouse" / "lakehouse_check.py").read_text(
             encoding="utf-8"
         )
-        dag = (ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py").read_text(
+        dag = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(
             encoding="utf-8"
         )
 

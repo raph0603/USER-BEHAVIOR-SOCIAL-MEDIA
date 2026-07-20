@@ -241,22 +241,20 @@ class YouTubeWorkerArchitectureTests(unittest.TestCase):
         self.assertIn("youtube.comment.results", comments)
 
     def test_lakehouse_dags_use_independent_youtube_tasks(self):
-        for name in (
-            "user_behavior_lakehouse.py",
-            "user_behavior_lakehouse_no_row_checks.py",
+        source = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(
+            encoding="utf-8"
+        )
+        for task_id in (
+            "discover_youtube_videos",
+            "enrich_youtube_metadata",
+            "process_youtube_transcript_requests",
+            "process_youtube_comment_requests",
+            "refresh_youtube_channel_statistics",
+            "append_youtube_metadata_versions",
+            "persist_youtube_api_usage",
         ):
-            source = (ROOT / "orchestrator" / "dags" / name).read_text(encoding="utf-8")
-            for task_id in (
-                "discover_youtube_videos",
-                "enrich_youtube_metadata",
-                "process_youtube_transcript_requests",
-                "process_youtube_comment_requests",
-                "refresh_youtube_channel_statistics",
-                "append_youtube_metadata_versions",
-                "persist_youtube_api_usage",
-            ):
-                self.assertIn(f'task_id="{task_id}"', source)
-            self.assertNotIn('task_id="collect_youtube_api_events"', source)
+            self.assertIn(f'task_id="{task_id}"', source)
+        self.assertNotIn('task_id="collect_youtube_api_events"', source)
 
 
 if __name__ == "__main__":

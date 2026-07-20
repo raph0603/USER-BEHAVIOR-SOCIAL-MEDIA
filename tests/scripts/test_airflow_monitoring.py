@@ -78,9 +78,7 @@ class AirflowMonitoringTests(unittest.TestCase):
             session=FakeSession(responses),
         )
 
-        status = client.load_status(
-            now=datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc)
-        )
+        status = client.load_status(now=datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc))
 
         self.assertEqual(status["active_runs"][0]["progress"], 50)
         self.assertEqual(status["active_runs"][0]["completed_tasks"], 2)
@@ -118,13 +116,8 @@ class AirflowMonitoringTests(unittest.TestCase):
             (
                 "/dags/user_behavior_lakehouse/dagRuns/scheduled__run/"
                 "taskInstances/collect_x_playwright_events/logs/1"
-            ): (
-                "Collector soft-blocked: x collection blocked: "
-                "temporarily limited"
-            ),
-            "/dags/user_behavior_lakehouse_no_row_checks/dagRuns": {
-                "dag_runs": []
-            },
+            ): ("Collector soft-blocked: x collection blocked: temporarily limited"),
+            "/dags/user_behavior_lakehouse_no_row_checks/dagRuns": {"dag_runs": []},
         }
         client = MONITORING.AirflowClient(
             config={
@@ -143,15 +136,15 @@ class AirflowMonitoringTests(unittest.TestCase):
         self.assertIn("temporarily limited", rows[0]["message"])
 
     def test_crawler_configuration_caps_youtube_at_fifty_events_per_run(self):
-        configuration_source = (
-            ROOT / "dashboard" / "pages" / "1_Configuration.py"
-        ).read_text(encoding="utf-8")
-        crawler_source = (
-            ROOT / "orchestrator" / "dags" / "crawler_configuration.py"
-        ).read_text(encoding="utf-8")
-        dag_source = (
-            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py"
-        ).read_text(encoding="utf-8")
+        configuration_source = (ROOT / "dashboard" / "pages" / "1_Configuration.py").read_text(
+            encoding="utf-8"
+        )
+        crawler_source = (ROOT / "orchestrator" / "dags" / "crawler_configuration.py").read_text(
+            encoding="utf-8"
+        )
+        dag_source = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(
+            encoding="utf-8"
+        )
 
         for source in (configuration_source, crawler_source):
             with self.subTest():
@@ -163,7 +156,10 @@ class AirflowMonitoringTests(unittest.TestCase):
         self.assertIn('"max_events_per_source": 1000', crawler_source)
         self.assertIn('"reddit_comment_scan_limit": 1000', configuration_source)
         self.assertIn('"reddit_comment_scan_limit": 1000', crawler_source)
-        self.assertIn('"Maximum videos",\n            min_value=1,\n            max_value=50', configuration_source)
+        self.assertIn(
+            '"Maximum videos",\n            min_value=1,\n            max_value=50',
+            configuration_source,
+        )
         self.assertIn("maximum=50", dag_source)
         self.assertIn("max_value=5000", configuration_source)
         self.assertIn("maximum=5000", dag_source)

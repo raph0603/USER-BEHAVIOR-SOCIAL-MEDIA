@@ -24,13 +24,9 @@ class SecurityHardeningTests(unittest.TestCase):
 
     def test_x_cdp_proxy_requires_and_propagates_access_token(self):
         proxy = (ROOT / "scripts" / "x_cdp_proxy.py").read_text(encoding="utf-8")
-        starter = (ROOT / "scripts" / "start_x_browser.ps1").read_text(
-            encoding="utf-8"
-        )
+        starter = (ROOT / "scripts" / "start_x_browser.ps1").read_text(encoding="utf-8")
         producer = (ROOT / "playwright" / "producer.py").read_text(encoding="utf-8")
-        insight_refresh = (ROOT / "playwright" / "insight_refresh.py").read_text(
-            encoding="utf-8"
-        )
+        insight_refresh = (ROOT / "playwright" / "insight_refresh.py").read_text(encoding="utf-8")
 
         self.assertIn("hmac.compare_digest", proxy)
         self.assertIn("--access-token", proxy)
@@ -44,9 +40,7 @@ class SecurityHardeningTests(unittest.TestCase):
 
     def test_resilient_stack_generates_local_airflow_secrets(self):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-        script = (ROOT / "scripts" / "ensure_resilient_stack.ps1").read_text(
-            encoding="utf-8"
-        )
+        script = (ROOT / "scripts" / "ensure_resilient_stack.ps1").read_text(encoding="utf-8")
         env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
 
         self.assertIn("AIRFLOW_ADMIN_PASSWORD", compose)
@@ -79,23 +73,16 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertNotIn("YOUTUBE_API_KEY=${YOUTUBE_API_KEY}", compose)
 
     def test_youtube_collection_is_bounded(self):
-        producer = (ROOT / "playwright" / "producer.py").read_text(
+        producer = (ROOT / "playwright" / "producer.py").read_text(encoding="utf-8")
+        source = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(
             encoding="utf-8"
         )
-        for dag_name in (
-            "user_behavior_lakehouse.py",
-            "user_behavior_lakehouse_no_row_checks.py",
-        ):
-            source = (
-                ROOT / "orchestrator" / "dags" / dag_name
-            ).read_text(encoding="utf-8")
-            with self.subTest(dag=dag_name):
-                self.assertIn("timed_docker_compose", source)
-                self.assertIn("YOUTUBE_COLLECTION_TIMEOUT_SECONDS", source)
-                self.assertIn("label=com.docker.compose.project", source)
-                self.assertIn("label=com.docker.compose.service={service}", source)
-                self.assertIn("xargs -r docker stop", source)
-                self.assertIn("execution_timeout=timedelta", source)
+        self.assertIn("timed_docker_compose", source)
+        self.assertIn("YOUTUBE_COLLECTION_TIMEOUT_SECONDS", source)
+        self.assertIn("label=com.docker.compose.project", source)
+        self.assertIn("label=com.docker.compose.service={service}", source)
+        self.assertIn("xargs -r docker stop", source)
+        self.assertIn("execution_timeout=timedelta", source)
 
         self.assertIn("YOUTUBE_COMMENT_MAX_PAGES", producer)
         self.assertIn("YOUTUBE_TRANSCRIPT_MAX_FAILURES", producer)

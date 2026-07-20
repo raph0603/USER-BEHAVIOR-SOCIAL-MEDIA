@@ -55,26 +55,38 @@ class PipelineLockTests(unittest.TestCase):
     def test_lock_commands_use_atomic_guard_and_owner_state(self):
         acquire_command = PIPELINE_LOCK.acquire_pipeline_lock_command()
         release_command = PIPELINE_LOCK.release_pipeline_lock_command()
+        verify_command = PIPELINE_LOCK.verify_pipeline_lock_command()
 
         self.assertIn("flock -x 9", acquire_command)
         self.assertIn("pipeline_lock.py", acquire_command)
         self.assertIn("terminal:", acquire_command)
         self.assertIn("PIPELINE_LOCK_STALE_GRACE_SECONDS", acquire_command)
         self.assertIn("flock -x 9", release_command)
+        self.assertIn("flock -x 9", verify_command)
+        self.assertIn('CURRENT_OWNER" != "$LOCK_OWNER', verify_command)
+        self.assertNotIn("rm -rf", verify_command)
 
     def test_dags_import_shared_lock_implementation(self):
         for dag_name in (
-            "user_behavior_lakehouse.py",
-            "user_behavior_lakehouse_no_row_checks.py",
+            "lakehouse_dag_factory.py",
             "iceberg_parquet_compaction.py",
         ):
             with self.subTest(dag_name=dag_name):
-                source = (
-                    ROOT / "orchestrator" / "dags" / dag_name
-                ).read_text(encoding="utf-8")
+                source = (ROOT / "orchestrator" / "dags" / dag_name).read_text(encoding="utf-8")
                 self.assertIn("from pipeline_lock import", source)
                 self.assertNotIn(
                     "def acquire_pipeline_lock_command()",
+                    source,
+                )
+
+        for dag_name in (
+            "user_behavior_lakehouse.py",
+            "user_behavior_lakehouse_no_row_checks.py",
+        ):
+            with self.subTest(dag_name=dag_name):
+                source = (ROOT / "orchestrator" / "dags" / dag_name).read_text(encoding="utf-8")
+                self.assertIn(
+                    "from lakehouse_dag_factory import build_lakehouse_dag",
                     source,
                 )
 

@@ -247,19 +247,16 @@ class YouTubeTranscriptBackfillIntegrationContractTests(unittest.TestCase):
         self.assertIn("YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS", source)
 
     def test_both_dags_forward_retry_settings(self):
-        for name in (
-            "user_behavior_lakehouse.py",
-            "user_behavior_lakehouse_no_row_checks.py",
-        ):
-            source = (ROOT / "orchestrator" / "dags" / name).read_text(encoding="utf-8")
-            with self.subTest(name=name):
-                self.assertIn("YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS", source)
-                self.assertIn(
-                    "YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS",
-                    source,
-                )
-                self.assertIn("YOUTUBE_TRANSCRIPT_BACKFILL_STOP_ON_RATE_LIMIT", source)
-                self.assertIn("YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE", source)
+        source = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS", source)
+        self.assertIn(
+            "YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS",
+            source,
+        )
+        self.assertIn("YOUTUBE_TRANSCRIPT_BACKFILL_STOP_ON_RATE_LIMIT", source)
+        self.assertIn("YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE", source)
 
     def test_backfill_runtime_settings_are_exposed_to_airflow(self):
         env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
@@ -278,10 +275,17 @@ class YouTubeTranscriptBackfillIntegrationContractTests(unittest.TestCase):
                 self.assertIn(f"{name}: ${{{name}:-{default}}}", compose)
 
     def test_no_row_checks_dag_is_scheduled_and_refreshes_content_analytics(self):
-        source = (
+        wrapper = (
             ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse_no_row_checks.py"
         ).read_text(encoding="utf-8")
-        self.assertIn('"LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES",\n        "60"', source)
+        source = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'schedule_environment_variable="LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES"',
+            wrapper,
+        )
+        self.assertIn("schedule_default_minutes=60", wrapper)
         self.assertIn(
             "append_youtube_metadata_versions >> backfill_youtube_thumbnails",
             source,

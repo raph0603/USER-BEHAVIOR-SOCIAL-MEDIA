@@ -19,6 +19,7 @@ COPY common/ /workspace/common/
 COPY schemas/ /workspace/schemas/
 COPY scripts/ /workspace/scripts/
 COPY tests/spark/ /workspace/tests/spark/
+COPY tests/airflow/ /workspace/tests/airflow/
 COPY orchestrator/airflow/ /workspace/orchestrator/airflow/
 
 RUN mkdir -p /opt/airflow/logs /workspace/data/collector-state /workspace/data/insight-refresh /workspace/data/balancing /workspace/data/x-runtime
