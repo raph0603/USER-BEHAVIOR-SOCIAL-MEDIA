@@ -13,6 +13,7 @@ import unicodedata
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from xml.etree import ElementTree
 from urllib.parse import (
     parse_qs,
@@ -51,7 +52,11 @@ from common.collection import (
     safe_json_dumps,
     utc_now,
 )
-from common.transcripts import fetch_transcript
+from common.transcripts import (
+    fetch_transcript,
+    legacy_transcript_status,
+    transcript_lifecycle_status,
+)
 from engagement import extract_x_followers, extract_x_metric, parse_count
 import youtube_authors
 from youtube_authors import fetch_youtube_collaborators
@@ -104,7 +109,7 @@ def _http_error_status(exc: Exception) -> int | None:
     response = getattr(exc, "resp", None)
     status = getattr(response, "status", None)
     try:
-        return int(status)
+        return int(status) if status is not None else None
     except (TypeError, ValueError):
         return None
 
@@ -222,9 +227,7 @@ def _ensure_schema_registered(
             last_error = str(exc)
         time.sleep(2)
 
-    raise RuntimeError(
-        f"Schema registration failed for {topic}: {last_error}"
-    )
+    raise RuntimeError(f"Schema registration failed for {topic}: {last_error}")
 
 
 def _clean_text(value: str | None) -> str:
@@ -345,7 +348,7 @@ def _parse_reddit_sidebar_count(lines: list[str], labels: tuple[str, ...]) -> in
 
 
 def _extract_reddit_subreddit_about_json(subreddit: str) -> dict:
-    info = {
+    info: dict[str, Any] = {
         "subreddit_title": None,
         "subreddit_description": None,
         "subreddit_created_at": None,
@@ -360,8 +363,7 @@ def _extract_reddit_subreddit_about_json(subreddit: str) -> dict:
             headers={
                 "User-Agent": _env_str(
                     "REDDIT_USER_AGENT",
-                    "Mozilla/5.0 Chrome/124 Safari/537.36 "
-                    "user-behavior-lakehouse/1.0",
+                    "Mozilla/5.0 Chrome/124 Safari/537.36 user-behavior-lakehouse/1.0",
                 )
             },
             timeout=_env_int("REDDIT_COMMUNITY_ABOUT_TIMEOUT_SECONDS", 15),
@@ -377,10 +379,14 @@ def _extract_reddit_subreddit_about_json(subreddit: str) -> dict:
     created_utc = data.get("created_utc")
     if created_utc is not None:
         try:
-            info["subreddit_created_at"] = datetime.fromtimestamp(
-                float(created_utc),
-                timezone.utc,
-            ).date().isoformat()
+            info["subreddit_created_at"] = (
+                datetime.fromtimestamp(
+                    float(created_utc),
+                    timezone.utc,
+                )
+                .date()
+                .isoformat()
+            )
         except (TypeError, ValueError, OSError):
             info["subreddit_created_at"] = None
 
@@ -396,7 +402,7 @@ def _extract_reddit_subreddit_about_json(subreddit: str) -> dict:
 
 
 def _extract_reddit_subreddit_old_html(subreddit: str) -> dict:
-    info = {
+    info: dict[str, Any] = {
         "subreddit_title": None,
         "subreddit_description": None,
         "subreddit_created_at": None,
@@ -412,8 +418,7 @@ def _extract_reddit_subreddit_old_html(subreddit: str) -> dict:
             headers={
                 "User-Agent": _env_str(
                     "REDDIT_USER_AGENT",
-                    "Mozilla/5.0 Chrome/124 Safari/537.36 "
-                    "user-behavior-lakehouse/1.0",
+                    "Mozilla/5.0 Chrome/124 Safari/537.36 user-behavior-lakehouse/1.0",
                 )
             },
             timeout=_env_int("REDDIT_COMMUNITY_OLD_HTML_TIMEOUT_SECONDS", 15),
@@ -506,10 +511,11 @@ def _extract_reddit_subreddit_info(context, subreddit: str) -> dict:
 
         for index, normalized_line in enumerate(normalized_lines):
             line = lines[index]
-            if (
-                not info["subreddit_visibility"]
-                and normalized_line in {"public", "private", "restricted"}
-            ):
+            if not info["subreddit_visibility"] and normalized_line in {
+                "public",
+                "private",
+                "restricted",
+            }:
                 info["subreddit_visibility"] = line
                 break
 
@@ -528,8 +534,7 @@ def _extract_reddit_subreddit_info(context, subreddit: str) -> dict:
 
         for index, normalized_line in enumerate(normalized_lines):
             if (
-                "weekly visitors" in normalized_line
-                or "visiteur" in normalized_line
+                "weekly visitors" in normalized_line or "visiteur" in normalized_line
             ) and index > 0:
                 info["subreddit_weekly_visitors"] = parse_count(lines[index - 1])
             if (
@@ -538,26 +543,23 @@ def _extract_reddit_subreddit_info(context, subreddit: str) -> dict:
             ) and index > 0:
                 info["subreddit_weekly_contributions"] = parse_count(lines[index - 1])
 
-        info["subreddit_weekly_visitors"] = (
-            info["subreddit_weekly_visitors"]
-            or _parse_reddit_sidebar_count(
-                lines,
-                ("weekly visitors", "weekly active", "visiteur"),
-            )
+        info["subreddit_weekly_visitors"] = info[
+            "subreddit_weekly_visitors"
+        ] or _parse_reddit_sidebar_count(
+            lines,
+            ("weekly visitors", "weekly active", "visiteur"),
         )
-        info["subreddit_weekly_contributions"] = (
-            info["subreddit_weekly_contributions"]
-            or _parse_reddit_sidebar_count(
-                lines,
-                ("weekly contributions", "contributions hebdomadaires"),
-            )
+        info["subreddit_weekly_contributions"] = info[
+            "subreddit_weekly_contributions"
+        ] or _parse_reddit_sidebar_count(
+            lines,
+            ("weekly contributions", "contributions hebdomadaires"),
         )
-        info["subreddit_member_count"] = (
-            info["subreddit_member_count"]
-            or _parse_reddit_sidebar_count(
-                lines,
-                ("subscribers", "abonnes", "membres"),
-            )
+        info["subreddit_member_count"] = info[
+            "subreddit_member_count"
+        ] or _parse_reddit_sidebar_count(
+            lines,
+            ("subscribers", "abonnes", "membres"),
         )
     except (PlaywrightTimeoutError, PlaywrightError) as exc:
         LOGGER.warning("Could not collect Reddit community info for %s: %s", subreddit, exc)
@@ -580,9 +582,7 @@ def _extract_reddit_comment_event(
     body_locator = comment.locator(".usertext-body .md")
     try:
         text = (
-            _clean_text(body_locator.first.inner_text(timeout=1500))
-            if body_locator.count()
-            else ""
+            _clean_text(body_locator.first.inner_text(timeout=1500)) if body_locator.count() else ""
         )
     except (PlaywrightTimeoutError, PlaywrightError) as exc:
         LOGGER.debug("Skipping Reddit comment %s without readable text: %s", comment_id, exc)
@@ -593,27 +593,15 @@ def _extract_reddit_comment_event(
     author_locator = comment.locator("a.author")
     try:
         author = (
-            author_locator.first.inner_text(timeout=1500)
-            if author_locator.count()
-            else "anonymous"
+            author_locator.first.inner_text(timeout=1500) if author_locator.count() else "anonymous"
         )
     except (PlaywrightTimeoutError, PlaywrightError) as exc:
-        LOGGER.debug(
-            "Using anonymous author for Reddit comment %s: %s", comment_id, exc
-        )
+        LOGGER.debug("Using anonymous author for Reddit comment %s: %s", comment_id, exc)
         author = "anonymous"
     time_locator = comment.locator("time")
-    timestamp = (
-        time_locator.first.get_attribute("datetime")
-        if time_locator.count()
-        else None
-    )
+    timestamp = time_locator.first.get_attribute("datetime") if time_locator.count() else None
     permalink_locator = comment.locator("a.bylink")
-    href = (
-        permalink_locator.first.get_attribute("href")
-        if permalink_locator.count()
-        else ""
-    )
+    href = permalink_locator.first.get_attribute("href") if permalink_locator.count() else ""
     comment_url = urljoin(fallback_url, href) if href else fallback_url
     comment_url = comment_url.replace(
         "https://old.reddit.com",
@@ -623,9 +611,7 @@ def _extract_reddit_comment_event(
     subreddit = post_match.group(1) if post_match else None
     conversation_id = post_match.group(2) if post_match else None
     parent_id = comment.get_attribute("data-parent") or ""
-    parent_interaction_id = (
-        parent_id.removeprefix("t1_") if parent_id.startswith("t1_") else None
-    )
+    parent_interaction_id = parent_id.removeprefix("t1_") if parent_id.startswith("t1_") else None
     try:
         depth = int(comment.get_attribute("data-depth") or 0) + 1
     except (TypeError, ValueError):
@@ -666,7 +652,7 @@ def _extract_reddit_comment_event(
 
 def _extract_reddit_feed_event(entry, subreddit_info: dict | None = None) -> dict | None:
     namespace = {"atom": "http://www.w3.org/2005/Atom"}
-    entry_id = (entry.findtext("atom:id", default="", namespaces=namespace) or "")
+    entry_id = entry.findtext("atom:id", default="", namespaces=namespace) or ""
     link = entry.find("atom:link", namespace)
     url = link.get("href", "") if link is not None else entry_id
     match = re.search(r"/comments/[^/]+/[^/]+/([A-Za-z0-9_]+)/?", url)
@@ -753,14 +739,11 @@ def _collect_reddit_feed_events(
             last_error = exc
             if attempt < attempts:
                 print(
-                    f"Reddit RSS fallback retry {attempt}/{attempts} "
-                    f"for {subreddit}: {exc}",
+                    f"Reddit RSS fallback retry {attempt}/{attempts} for {subreddit}: {exc}",
                     flush=True,
                 )
                 time.sleep(wait_seconds)
-    raise RuntimeError(
-        f"Reddit RSS fallback failed for {subreddit}: {last_error}"
-    )
+    raise RuntimeError(f"Reddit RSS fallback failed for {subreddit}: {last_error}")
 
 
 def _hash_identity(value: str | None, fallback: str | None = None) -> str:
@@ -795,8 +778,7 @@ class ProcessedState:
             """
         )
         current_columns = {
-            row[1]
-            for row in self.connection.execute("PRAGMA table_info(processed_events)")
+            row[1] for row in self.connection.execute("PRAGMA table_info(processed_events)")
         }
         migrations = {
             "collection_status": "TEXT",
@@ -850,9 +832,7 @@ class ProcessedState:
                 and status == STATUS_PARTIAL
                 and event.get("comments_error_code") == "comment_page_limit_reached"
             )
-            if not bounded_comment_page and not (
-                status and is_terminal_status(status)
-            ):
+            if not bounded_comment_page and not (status and is_terminal_status(status)):
                 return False
         return True
 
@@ -981,9 +961,7 @@ def _bootstrap_state_from_kafka(
 
         state.mark_many(source, processed_events)
         terminal_ids = {
-            event["event_id"]
-            for event in processed_events
-            if state._is_terminal_event(event)
+            event["event_id"] for event in processed_events if state._is_terminal_event(event)
         }
         print(f"Bootstrapped {len(terminal_ids)} terminal {source} IDs from Kafka")
     finally:
@@ -1001,8 +979,8 @@ def _search_youtube_video_ids(
     relevance_language: str,
     order: str,
 ) -> list[str]:
-    video_ids = []
-    page_token = None
+    video_ids: list[str] = []
+    page_token: str | None = None
 
     def video_id_from_item(item) -> str | None:
         if not isinstance(item, dict):
@@ -1017,25 +995,26 @@ def _search_youtube_video_ids(
 
     while len(video_ids) < max_results:
         try:
-            response = youtube.search().list(
-                part="id",
-                q=search_query,
-                type="video",
-                relevanceLanguage=relevance_language or None,
-                order=order,
-                maxResults=min(50, max_results - len(video_ids)),
-                pageToken=page_token,
-            ).execute()
+            response = (
+                youtube.search()
+                .list(
+                    part="id",
+                    q=search_query,
+                    type="video",
+                    relevanceLanguage=relevance_language or None,
+                    order=order,
+                    maxResults=min(50, max_results - len(video_ids)),
+                    pageToken=page_token,
+                )
+                .execute()
+            )
         except HttpError as exc:
             if _is_auth_or_quota_block(exc):
                 raise _soft_block("youtube", str(exc)) from exc
             raise
         video_ids.extend(
             video_id
-            for video_id in (
-                video_id_from_item(item)
-                for item in response.get("items", [])
-            )
+            for video_id in (video_id_from_item(item) for item in response.get("items", []))
             if video_id
         )
         page_token = response.get("nextPageToken")
@@ -1048,10 +1027,14 @@ def _search_youtube_video_ids(
 def _fetch_video_metadata(youtube, video_id: str) -> OperationResult[dict]:
     started_at = utc_now()
     try:
-        response = youtube.videos().list(
-            part="snippet,statistics,contentDetails,status,topicDetails",
-            id=video_id,
-        ).execute()
+        response = (
+            youtube.videos()
+            .list(
+                part="snippet,statistics,contentDetails,status,topicDetails",
+                id=video_id,
+            )
+            .execute()
+        )
         items = response.get("items", [])
         if not items:
             return OperationResult.unavailable(
@@ -1096,17 +1079,21 @@ def _fetch_youtube_comments(
     max_pages: int,
 ) -> OperationResult[list[dict]]:
     started_at = utc_now()
-    pages = []
-    page_token = None
+    pages: list[dict] = []
+    page_token: str | None = None
     while max_pages <= 0 or len(pages) < max_pages:
         try:
-            response = youtube.commentThreads().list(
-                part="snippet,replies",
-                videoId=video_id,
-                maxResults=100,
-                pageToken=page_token,
-                textFormat="plainText",
-            ).execute()
+            response = (
+                youtube.commentThreads()
+                .list(
+                    part="snippet,replies",
+                    videoId=video_id,
+                    maxResults=100,
+                    pageToken=page_token,
+                    textFormat="plainText",
+                )
+                .execute()
+            )
             pages.append(response)
             page_token = response.get("nextPageToken")
             if not page_token:
@@ -1173,9 +1160,12 @@ def _preferred_youtube_transcript_languages(metadata: dict) -> list[str]:
     """Use Vietnamese captions for Vietnamese videos and English otherwise."""
 
     snippet = metadata.get("snippet") or {}
-    language = str(
-        snippet.get("defaultLanguage") or snippet.get("defaultAudioLanguage") or ""
-    ).strip().casefold().replace("_", "-")
+    language = (
+        str(snippet.get("defaultLanguage") or snippet.get("defaultAudioLanguage") or "")
+        .strip()
+        .casefold()
+        .replace("_", "-")
+    )
     if language == "vi" or language.startswith("vi-") or "vietnam" in language:
         return ["vi"]
     return ["en"]
@@ -1199,10 +1189,7 @@ def _completed_at(result: OperationResult) -> str | None:
 def _terminal_collection_status(*results: OperationResult) -> str:
     if all(
         result.is_terminal
-        or (
-            result.status == STATUS_PARTIAL
-            and result.error_code == "comment_page_limit_reached"
-        )
+        or (result.status == STATUS_PARTIAL and result.error_code == "comment_page_limit_reached")
         for result in results
     ):
         return STATUS_SUCCESS
@@ -1232,6 +1219,13 @@ def _youtube_video_event(
     status = metadata.get("status") or {}
     topic_details = metadata.get("topicDetails") or {}
     transcript = transcript_result.payload
+    requested_language_code = _preferred_youtube_transcript_languages(metadata)[0]
+    lifecycle_status = transcript_lifecycle_status(
+        transcript_result.status,
+        error_code=transcript_result.error_code,
+        has_text=bool(transcript and transcript.text.strip()),
+        attempt_count=attempt_count,
+    )
     thumbnails = snippet.get("thumbnails") or {}
     low_thumbnail = thumbnails.get("default") or {}
     thumbnail_url = low_thumbnail.get("url")
@@ -1304,9 +1298,7 @@ def _youtube_video_event(
         "parent_interaction_id": None,
         "transcript_text": transcript.text if transcript else None,
         "transcript_segments_json": transcript.segments_json if transcript else None,
-        "duration_seconds": _parse_youtube_duration_seconds(
-            content_details.get("duration")
-        ),
+        "duration_seconds": _parse_youtube_duration_seconds(content_details.get("duration")),
         "has_auto_captions": transcript.is_generated if transcript else None,
         "collaborator_channel_ids": collaborator_channel_ids,
         "like_count": parse_count(statistics.get("likeCount")),
@@ -1324,7 +1316,8 @@ def _youtube_video_event(
             transcript_result,
         ),
         "metadata_status": metadata_result.status,
-        "transcript_status": transcript_result.status,
+        "transcript_lifecycle_status": lifecycle_status,
+        "transcript_status": legacy_transcript_status(lifecycle_status),
         "comments_status": comments_result.status,
         "storage_status": "pending",
         "error_code": error_code,
@@ -1340,22 +1333,31 @@ def _youtube_video_event(
         "comments_error_message": comments_result.error_message,
         "transcript_language": transcript.language if transcript else None,
         "transcript_language_code": transcript.language_code if transcript else None,
+        "transcript_requested_language": requested_language_code,
+        "transcript_requested_language_code": requested_language_code,
+        "transcript_obtained_language": transcript.language if transcript else None,
+        "transcript_obtained_language_code": (transcript.language_code if transcript else None),
         "transcript_source_language": transcript.source_language if transcript else None,
         "transcript_source_language_code": (
             transcript.source_language_code if transcript else None
         ),
         "transcript_is_generated": transcript.is_generated if transcript else None,
         "transcript_is_translated": transcript.is_translated if transcript else None,
+        "transcript_generation_type": (transcript.generation_type if transcript else None),
+        "transcript_provider": transcript.source if transcript else "youtube_transcript_api",
         "transcript_source": transcript.source if transcript else None,
-        "transcript_selection_strategy": (
-            transcript.selection_strategy if transcript else None
-        ),
+        "transcript_selection_strategy": (transcript.selection_strategy if transcript else None),
         "transcript_segment_count": transcript.segment_count if transcript else None,
         "transcript_available_languages": available_languages,
         "transcript_covered_duration_seconds": (
             transcript.covered_duration_seconds if transcript else None
         ),
         "transcript_collected_at": _completed_at(transcript_result),
+        "transcript_attempt_count": transcript_result.attempt_count,
+        "transcript_last_attempt_at": _completed_at(transcript_result),
+        "transcript_next_attempt_at": None,
+        "transcript_recovered_at": None,
+        "transcript_content_version": (transcript.content_version if transcript else None),
         "transcript_error_code": transcript_result.error_code,
         "transcript_error_message": transcript_result.error_message,
         "canonical_metadata": safe_json_dumps(canonical_metadata),
@@ -1424,6 +1426,7 @@ def _youtube_comment_events(
             "collection_status": STATUS_SUCCESS,
             "metadata_status": STATUS_SUCCESS,
             "transcript_status": STATUS_DISABLED,
+            "transcript_lifecycle_status": "disabled",
             "comments_status": STATUS_DISABLED,
             "storage_status": "pending",
             "attempt_count": attempt_count,
@@ -1460,7 +1463,7 @@ def _youtube_comment_events(
 
     for page in comments_result.payload or []:
         for thread in page.get("items") or []:
-            top_level = ((thread.get("snippet") or {}).get("topLevelComment") or {})
+            top_level = (thread.get("snippet") or {}).get("topLevelComment") or {}
             top_event = build(top_level, video_id, 1, "youtube_comment")
             if top_event is not None:
                 top_event["reply_count"] = parse_count(
@@ -1484,9 +1487,7 @@ def _prepare_event(event: dict) -> dict:
 
     prepared = dict(event)
     source = str(prepared["source"]).lower()
-    platform_event_id = str(
-        prepared.get("platform_event_id") or prepared.get("event_id")
-    )
+    platform_event_id = str(prepared.get("platform_event_id") or prepared.get("event_id"))
     now = isoformat_utc(utc_now())
     prepared["event_id"] = platform_event_id
     prepared["platform_event_id"] = platform_event_id
@@ -1500,13 +1501,9 @@ def _prepare_event(event: dict) -> dict:
 
     if not prepared.get("content_id"):
         if source == "reddit":
-            conversation_id = str(
-                prepared.get("conversation_id") or platform_event_id
-            )
+            conversation_id = str(prepared.get("conversation_id") or platform_event_id)
             root_content_id = canonical_content_id(source, conversation_id)
-            parent_platform_id = str(
-                prepared.get("parent_interaction_id") or conversation_id
-            )
+            parent_platform_id = str(prepared.get("parent_interaction_id") or conversation_id)
             depth = max(1, int(prepared.get("depth") or 1))
             relationship = ContentRelationship.child(
                 source=source,
@@ -1532,6 +1529,10 @@ def _prepare_event(event: dict) -> dict:
     prepared.setdefault("collection_status", STATUS_SUCCESS)
     prepared.setdefault("metadata_status", STATUS_SUCCESS)
     prepared.setdefault("transcript_status", STATUS_DISABLED)
+    prepared.setdefault(
+        "transcript_lifecycle_status",
+        transcript_lifecycle_status(prepared.get("transcript_status")),
+    )
     prepared.setdefault("comments_status", STATUS_DISABLED)
     prepared.setdefault("storage_status", "pending")
     prepared.setdefault("attempt_count", 1)
@@ -1612,10 +1613,7 @@ def _x_is_authenticated(page) -> bool:
 
 
 def _x_has_auth_cookies(context) -> bool:
-    cookie_names = {
-        cookie["name"]
-        for cookie in context.cookies("https://x.com")
-    }
+    cookie_names = {cookie["name"] for cookie in context.cookies("https://x.com")}
     return {"auth_token", "ct0"}.issubset(cookie_names)
 
 
@@ -1701,10 +1699,7 @@ def _click_x_form_submit(page) -> bool:
             normalized_label = re.sub(r"\s+", " ", label).lower()
             if normalized_label not in {"next", "continue", "log in"}:
                 continue
-            if any(
-                blocked in normalized_label
-                for blocked in ("phone", "google", "apple")
-            ):
+            if any(blocked in normalized_label for blocked in ("phone", "google", "apple")):
                 continue
             if button.is_visible(timeout=1000):
                 button.scroll_into_view_if_needed(timeout=3000)
@@ -1840,10 +1835,13 @@ def _raise_if_x_direct_login_requires_phone(page) -> None:
 
 
 def _x_password_input(page):
-    return _x_active_login_scope(page).locator(
-        'input[autocomplete="current-password"], input[name="password"], '
-        'input[type="password"]'
-    ).first
+    return (
+        _x_active_login_scope(page)
+        .locator(
+            'input[autocomplete="current-password"], input[name="password"], input[type="password"]'
+        )
+        .first
+    )
 
 
 def _wait_for_x_login_step_after_identifier(page, timeout_seconds: int = 20) -> None:
@@ -1859,8 +1857,7 @@ def _wait_for_x_login_step_after_identifier(page, timeout_seconds: int = 20) -> 
     raise RuntimeError(
         _write_x_login_debug_artifacts(
             page,
-            "X direct login submitted the email but did not advance before "
-            "the timeout",
+            "X direct login submitted the email but did not advance before the timeout",
         )
     )
 
@@ -1889,8 +1886,7 @@ def _login_to_x_directly(page) -> bool:
 
     scope = _x_active_login_scope(page)
     identifier_input = scope.locator(
-        'input[autocomplete="username"], input[name="text"], '
-        'input[type="text"]'
+        'input[autocomplete="username"], input[name="text"], input[type="text"]'
     ).first
     if identifier_input.count() == 0:
         raise RuntimeError(
@@ -1919,8 +1915,7 @@ def _login_to_x_directly(page) -> bool:
         raise RuntimeError(
             _write_x_login_debug_artifacts(
                 page,
-                "X direct login needs an additional verification step before "
-                "the password field",
+                "X direct login needs an additional verification step before the password field",
             )
         )
 
@@ -1971,8 +1966,7 @@ def _login_to_x_with_google(page) -> None:
         raise RuntimeError(
             _write_x_login_debug_artifacts(
                 page,
-                "The Google login button was not found on X or did not open "
-                "the Google login flow",
+                "The Google login button was not found on X or did not open the Google login flow",
             )
         )
 
@@ -2006,9 +2000,7 @@ def _login_to_x_with_google(page) -> None:
                 if account.count() == 0:
                     account = candidate.get_by_text(google_email, exact=False).first
             else:
-                account = candidate.locator(
-                    '[data-identifier], [data-email]'
-                ).first
+                account = candidate.locator("[data-identifier], [data-email]").first
 
             if account is not None and account.count() > 0:
                 try:
@@ -2146,10 +2138,7 @@ def _ensure_x_cdp_endpoint(
             print(f"Waiting for X CDP control endpoint at {cdp_url}: {exc}")
             time.sleep(3)
 
-    raise RuntimeError(
-        f"X CDP control endpoint did not become ready at {cdp_url}: "
-        f"{last_error}"
-    )
+    raise RuntimeError(f"X CDP control endpoint did not become ready at {cdp_url}: {last_error}")
 
 
 def _x_cdp_url() -> str:
@@ -2157,9 +2146,7 @@ def _x_cdp_url() -> str:
     if port_file_value:
         port_file = Path(port_file_value)
         if not port_file.is_file():
-            raise FileNotFoundError(
-                f"X CDP runtime port file not found: {port_file}."
-            )
+            raise FileNotFoundError(f"X CDP runtime port file not found: {port_file}.")
         try:
             port = int(port_file.read_text(encoding="utf-8").strip())
         except ValueError as exc:
@@ -2237,9 +2224,7 @@ def _load_x_full_tweet_text(context, tweet_url: str, fallback_text: str) -> str:
         article = detail_page.locator('article[data-testid="tweet"]').first
         article.wait_for(state="visible", timeout=15000)
 
-        show_more = article.locator(
-            '[data-testid="tweet-text-show-more-link"]'
-        )
+        show_more = article.locator('[data-testid="tweet-text-show-more-link"]')
         if show_more.count():
             show_more.first.click(timeout=3000)
             detail_page.wait_for_timeout(500)
@@ -2309,8 +2294,7 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
 
             for query in queries:
                 search_url = (
-                    f"https://x.com/search?q={quote(query, safe='')}"
-                    "&src=typed_query&f=live"
+                    f"https://x.com/search?q={quote(query, safe='')}&src=typed_query&f=live"
                 )
                 query_ready = False
                 for attempt in range(1, search_retries + 1):
@@ -2368,9 +2352,7 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
 
                             text_locator = article.locator('[data-testid="tweetText"]')
                             text = (
-                                _clean_text(
-                                    text_locator.first.inner_text(timeout=1000)
-                                )
+                                _clean_text(text_locator.first.inner_text(timeout=1000))
                                 if text_locator.count()
                                 else ""
                             )
@@ -2382,9 +2364,7 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                                 tweet_url,
                                 text,
                             )
-                            user_locator = article.locator(
-                                'div[data-testid="User-Name"]'
-                            )
+                            user_locator = article.locator('div[data-testid="User-Name"]')
                             user_text = (
                                 user_locator.first.inner_text(timeout=1000)
                                 if user_locator.count()
@@ -2395,9 +2375,7 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                                 user_text,
                             )
                             screen_name = (
-                                screen_name_match.group(1)
-                                if screen_name_match
-                                else "anonymous"
+                                screen_name_match.group(1) if screen_name_match else "anonymous"
                             )
                             time_locator = article.locator("time")
                             timestamp = (
@@ -2441,9 +2419,7 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                                         article,
                                         "bookmark",
                                     ),
-                                    "follower_count": extract_x_followers(
-                                        article
-                                    ),
+                                    "follower_count": extract_x_followers(article),
                                 }
                             )
                             seen_ids.add(status_id)
@@ -2487,9 +2463,7 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
         if _is_auth_or_quota_block(exc):
             raise _soft_block("x", str(exc)) from exc
         if _env_bool("X_FAIL_ON_ERROR", True):
-            raise RuntimeError(
-                f"X online collection failed: {exc}"
-            ) from exc
+            raise RuntimeError(f"X online collection failed: {exc}") from exc
         print(
             f"X online collection explicitly ignored by configuration: {exc}",
             flush=True,
@@ -2523,8 +2497,8 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
         max_events if max_events > 0 else 0,
     )
     wait_ms = _env_int("REDDIT_WAIT_MS", 750)
-    events = []
-    candidates = {}
+    events: list[dict] = []
+    candidates: dict[str, dict] = {}
     discovered_comments = 0
 
     with sync_playwright() as playwright:
@@ -2539,8 +2513,8 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
 
         for subreddit in subreddits:
             subreddit_info = _extract_reddit_subreddit_info(context, subreddit)
-            listing_url = f"https://old.reddit.com/r/{subreddit}/comments/?limit=100"
-            visited_pages = set()
+            listing_url: str | None = f"https://old.reddit.com/r/{subreddit}/comments/?limit=100"
+            visited_pages: set[str] = set()
             scanned_comments = 0
 
             while listing_url and scanned_comments < scan_limit:
@@ -2562,15 +2536,13 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                         flush=True,
                     )
                     try:
-                        fallback_events, fallback_discovered = (
-                            _collect_reddit_feed_events(
-                                subreddit,
-                                state,
-                                keywords,
-                                keyword_match_mode,
-                                scan_limit,
-                                subreddit_info,
-                            )
+                        fallback_events, fallback_discovered = _collect_reddit_feed_events(
+                            subreddit,
+                            state,
+                            keywords,
+                            keyword_match_mode,
+                            scan_limit,
+                            subreddit_info,
                         )
                     except RuntimeError:
                         if candidates or discovered_comments > 0:
@@ -2593,17 +2565,14 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                     if response.status in {401, 403, 429}:
                         raise _soft_block(
                             "reddit",
-                            f"listing is unavailable for {subreddit}: "
-                            f"HTTP {response.status}",
+                            f"listing is unavailable for {subreddit}: HTTP {response.status}",
                         )
                     raise RuntimeError(
-                        "Reddit listing did not load "
-                        f"for {subreddit}: HTTP {response.status}"
+                        f"Reddit listing did not load for {subreddit}: HTTP {response.status}"
                     )
-                subreddit_member_count = (
-                    _extract_reddit_subreddit_members(page)
-                    or subreddit_info.get("subreddit_member_count")
-                )
+                subreddit_member_count = _extract_reddit_subreddit_members(
+                    page
+                ) or subreddit_info.get("subreddit_member_count")
                 comments = page.locator("div.thing.comment")
                 page_comment_count = min(
                     comments.count(),
@@ -2613,32 +2582,28 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                 scanned_comments += page_comment_count
 
                 for index in range(page_comment_count):
-                    event = _extract_reddit_comment_event(
+                    comment_event = _extract_reddit_comment_event(
                         comments.nth(index),
                         listing_url,
                         subreddit_member_count,
                         subreddit_info,
                     )
-                    if event is None or state.contains(
+                    if comment_event is None or state.contains(
                         "reddit",
-                        event["event_id"],
+                        comment_event["event_id"],
                     ):
                         continue
                     if not _matches_keywords(
-                        event["title"],
+                        comment_event["title"],
                         keywords,
                         keyword_match_mode,
                     ):
                         continue
-                    candidates[event["event_id"]] = event
+                    candidates[comment_event["event_id"]] = comment_event
 
                 next_link = page.locator("span.next-button a")
-                next_href = (
-                    next_link.first.get_attribute("href")
-                    if next_link.count()
-                    else None
-                )
-                listing_url = urljoin(listing_url, next_href) if next_href else None
+                next_href = next_link.first.get_attribute("href") if next_link.count() else None
+                listing_url = urljoin(listing_url, str(next_href)) if next_href else None
                 page.wait_for_timeout(wait_ms)
 
             if max_events > 0 and len(candidates) >= max_events:
@@ -2668,13 +2633,11 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
             try:
                 page.goto(detail_url, wait_until="domcontentloaded", timeout=60000)
                 exact_comment = page.locator(
-                    "div.thing.comment"
-                    f'[data-fullname="t1_{candidate["event_id"]}"]'
+                    f'div.thing.comment[data-fullname="t1_{candidate["event_id"]}"]'
                 ).first
                 if exact_comment.count():
-                    detail_member_count = (
-                        _extract_reddit_subreddit_members(page)
-                        or candidate.get("subreddit_member_count")
+                    detail_member_count = _extract_reddit_subreddit_members(page) or candidate.get(
+                        "subreddit_member_count"
                     )
                     candidate_subreddit_info = {
                         key: candidate.get(key)
@@ -2729,9 +2692,7 @@ def main() -> None:
     ):
         raise RuntimeError(f"Invalid Avro schema fields: {schema_path}")
     max_events = _env_int("PRODUCER_MAX_EVENTS", 50)
-    state = ProcessedState(
-        _env_str("COLLECTOR_STATE_DB", "/app/state/processed.sqlite")
-    )
+    state = ProcessedState(_env_str("COLLECTOR_STATE_DB", "/app/state/processed.sqlite"))
 
     if not topic or mode not in {"youtube", "x", "reddit"}:
         raise RuntimeError("KAFKA_TOPIC and a supported PRODUCER_MODE are required")
@@ -2796,8 +2757,7 @@ def main() -> None:
                     "raw_text": event.get("raw_text") or event["title"],
                     "clean_text": None,
                     "text_for_model": None,
-                    "timestamp": event.get("timestamp")
-                    or datetime.now(timezone.utc).isoformat(),
+                    "timestamp": event.get("timestamp") or datetime.now(timezone.utc).isoformat(),
                     "source": event["source"],
                     "error": None,
                 }
@@ -2868,28 +2828,21 @@ def main() -> None:
                 1,
                 _env_int("YOUTUBE_COLLECTION_TIMEOUT_SECONDS", 900) - 120,
             )
-            output_dir = Path(
-                _env_str("YOUTUBE_OUTPUT_DIR", "/app/api/yt_raw_json")
-            )
+            output_dir = Path(_env_str("YOUTUBE_OUTPUT_DIR", "/app/api/yt_raw_json"))
             candidate_ids = [
-                video_id
-                for video_id in video_ids
-                if not state.contains("youtube", video_id)
+                video_id for video_id in video_ids if not state.contains("youtube", video_id)
             ]
             if max_events > 0:
                 candidate_ids = candidate_ids[:max_events]
             metadata_by_id = {
-                video_id: _fetch_video_metadata(youtube, video_id)
-                for video_id in candidate_ids
+                video_id: _fetch_video_metadata(youtube, video_id) for video_id in candidate_ids
             }
             owner_by_id = {
                 video_id: owner_channel_id
                 for video_id, metadata_result in metadata_by_id.items()
                 if (
                     owner_channel_id := (
-                        (metadata_result.payload or {})
-                        .get("snippet", {})
-                        .get("channelId")
+                        (metadata_result.payload or {}).get("snippet", {}).get("channelId")
                     )
                 )
             }
@@ -2943,9 +2896,7 @@ def main() -> None:
                 else:
                     transcript_result = _fetch_youtube_transcript(
                         video_id,
-                        _preferred_youtube_transcript_languages(
-                            metadata_result.payload or {}
-                        ),
+                        _preferred_youtube_transcript_languages(metadata_result.payload or {}),
                         attempt_count,
                     )
                     if transcript_result.status in {
@@ -2973,9 +2924,7 @@ def main() -> None:
                             "video_metadata": metadata_result.to_dict(),
                             "video_transcript": transcript_result.to_dict(),
                             "owner_channel_id": owner_channel_id,
-                            "collaborator_channel_ids": (
-                                collaborator_channel_ids
-                            ),
+                            "collaborator_channel_ids": (collaborator_channel_ids),
                             "comment_threads": comments_result.to_dict(),
                         },
                         pretty=True,

@@ -23,6 +23,7 @@ try:
         countDistinct,
         first,
         get_json_object,
+        length,
         lit,
         lower,
         regexp_extract,
@@ -195,6 +196,11 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.transcripts (
   video_id STRING,
   content_id STRING,
   transcript_status STRING,
+  transcript_lifecycle_status STRING,
+  requested_language STRING,
+  requested_language_code STRING,
+  obtained_language STRING,
+  obtained_language_code STRING,
   language STRING,
   language_code STRING,
   transcript_text STRING,
@@ -207,15 +213,20 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.transcripts (
   has_auto_captions BOOLEAN,
   is_generated BOOLEAN,
   is_translated BOOLEAN,
+  generation_type STRING,
   source_language STRING,
   source_language_code STRING,
   transcript_source STRING,
+  provider STRING,
   selection_strategy STRING,
   error_code STRING,
   error_message STRING,
   attempt_count BIGINT,
   last_attempt_at TIMESTAMP,
+  next_attempt_at TIMESTAMP,
   collected_at TIMESTAMP,
+  recovered_at TIMESTAMP,
+  content_version STRING,
   created_at TIMESTAMP,
   updated_at TIMESTAMP,
   event_date DATE
@@ -358,6 +369,11 @@ TRANSCRIPT_COLUMNS = [
     "video_id",
     "content_id",
     "transcript_status",
+    "transcript_lifecycle_status",
+    "requested_language",
+    "requested_language_code",
+    "obtained_language",
+    "obtained_language_code",
     "language",
     "language_code",
     "transcript_text",
@@ -370,15 +386,20 @@ TRANSCRIPT_COLUMNS = [
     "has_auto_captions",
     "is_generated",
     "is_translated",
+    "generation_type",
     "source_language",
     "source_language_code",
     "transcript_source",
+    "provider",
     "selection_strategy",
     "error_code",
     "error_message",
     "attempt_count",
     "last_attempt_at",
+    "next_attempt_at",
     "collected_at",
+    "recovered_at",
+    "content_version",
     "created_at",
     "updated_at",
     "event_date",
@@ -469,6 +490,7 @@ OPTIONAL_EVENT_COLUMNS = {
     "collection_status": "STRING",
     "metadata_status": "STRING",
     "transcript_status": "STRING",
+    "transcript_lifecycle_status": "STRING",
     "comments_status": "STRING",
     "storage_status": "STRING",
     "error_code": "STRING",
@@ -476,14 +498,26 @@ OPTIONAL_EVENT_COLUMNS = {
     "attempt_count": "INT",
     "transcript_language": "STRING",
     "transcript_language_code": "STRING",
+    "transcript_requested_language": "STRING",
+    "transcript_requested_language_code": "STRING",
+    "transcript_obtained_language": "STRING",
+    "transcript_obtained_language_code": "STRING",
     "transcript_is_generated": "BOOLEAN",
     "transcript_is_translated": "BOOLEAN",
+    "transcript_generation_type": "STRING",
+    "transcript_provider": "STRING",
     "transcript_source": "STRING",
     "transcript_selection_strategy": "STRING",
     "transcript_segment_count": "BIGINT",
     "transcript_available_languages": "ARRAY<STRING>",
+    "transcript_available_languages_json": "STRING",
     "transcript_covered_duration_seconds": "DOUBLE",
     "transcript_collected_at": "STRING",
+    "transcript_attempt_count": "INT",
+    "transcript_last_attempt_at": "STRING",
+    "transcript_next_attempt_at": "STRING",
+    "transcript_recovered_at": "STRING",
+    "transcript_content_version": "STRING",
     "transcript_error_code": "STRING",
     "transcript_error_message": "STRING",
     "transcript_source_language": "STRING",
@@ -539,12 +573,10 @@ def normalize_events(events: DataFrame) -> DataFrame:
         derived_platform_id,
         col("url"),
     )
-    root_platform_id = (
-        when(
-            col("source") == "reddit",
-            coalesce(col("conversation_id"), derived_platform_id, event_platform_id),
-        ).otherwise(event_platform_id)
-    )
+    root_platform_id = when(
+        col("source") == "reddit",
+        coalesce(col("conversation_id"), derived_platform_id, event_platform_id),
+    ).otherwise(event_platform_id)
     derived_event_content_id = sha2(
         concat_ws(":", col("source"), event_platform_id),
         256,
@@ -570,10 +602,7 @@ def normalize_events(events: DataFrame) -> DataFrame:
     is_interaction = (
         explicit_interaction
         | typed_interaction
-        | (
-            (col("source") == "reddit")
-            & col("relation_type").isNull()
-        )
+        | ((col("source") == "reddit") & col("relation_type").isNull())
     )
     interaction_id = coalesce(
         when(is_interaction, event_content_id),
@@ -609,15 +638,11 @@ def normalize_events(events: DataFrame) -> DataFrame:
         )
         .withColumn(
             "content_raw_text",
-            when(col("source") == "reddit", lit(None).cast("string")).otherwise(
-                col("raw_text")
-            ),
+            when(col("source") == "reddit", lit(None).cast("string")).otherwise(col("raw_text")),
         )
         .withColumn(
             "content_clean_text",
-            when(col("source") == "reddit", lit(None).cast("string")).otherwise(
-                col("clean_text")
-            ),
+            when(col("source") == "reddit", lit(None).cast("string")).otherwise(col("clean_text")),
         )
         .withColumn(
             "content_text_for_model",
@@ -655,9 +680,7 @@ def normalize_events(events: DataFrame) -> DataFrame:
         .withColumn("author_id_hash", col("user_id"))
         .withColumn(
             "content_author_id_hash",
-            when(col("source") == "reddit", lit(None).cast("string")).otherwise(
-                col("user_id")
-            ),
+            when(col("source") == "reddit", lit(None).cast("string")).otherwise(col("user_id")),
         )
         .withColumn("youtube_channel_id", col("owner_channel_id"))
     )
@@ -681,29 +704,17 @@ def build_contents(events: DataFrame) -> DataFrame:
             first("event_date", ignorenulls=True).alias("event_date"),
             first("derived_subreddit", ignorenulls=True).alias("subreddit"),
             first("subreddit_title", ignorenulls=True).alias("subreddit_title"),
-            first("subreddit_description", ignorenulls=True).alias(
-                "subreddit_description"
-            ),
-            first("subreddit_created_at", ignorenulls=True).alias(
-                "subreddit_created_at"
-            ),
-            first("subreddit_visibility", ignorenulls=True).alias(
-                "subreddit_visibility"
-            ),
-            first("subreddit_weekly_visitors", ignorenulls=True).alias(
-                "subreddit_weekly_visitors"
-            ),
+            first("subreddit_description", ignorenulls=True).alias("subreddit_description"),
+            first("subreddit_created_at", ignorenulls=True).alias("subreddit_created_at"),
+            first("subreddit_visibility", ignorenulls=True).alias("subreddit_visibility"),
+            first("subreddit_weekly_visitors", ignorenulls=True).alias("subreddit_weekly_visitors"),
             first("subreddit_weekly_contributions", ignorenulls=True).alias(
                 "subreddit_weekly_contributions"
             ),
-            first("subreddit_member_count", ignorenulls=True).alias(
-                "subreddit_member_count"
-            ),
+            first("subreddit_member_count", ignorenulls=True).alias("subreddit_member_count"),
             first("x_account", ignorenulls=True).alias("x_account"),
             first("youtube_channel_id", ignorenulls=True).alias("youtube_channel_id"),
-            first("youtube_channel_name", ignorenulls=True).alias(
-                "youtube_channel_name"
-            ),
+            first("youtube_channel_name", ignorenulls=True).alias("youtube_channel_name"),
             first("language", ignorenulls=True).alias("language"),
             first("conversation_id", ignorenulls=True).alias("conversation_id"),
             first("collection_status", ignorenulls=True).alias("collection_status"),
@@ -711,9 +722,7 @@ def build_contents(events: DataFrame) -> DataFrame:
             first("transcript_status", ignorenulls=True).alias("transcript_status"),
             first("comments_status", ignorenulls=True).alias("comments_status"),
             first("canonical_metadata", ignorenulls=True).alias("canonical_metadata"),
-            first("source_specific_metadata", ignorenulls=True).alias(
-                "source_specific_metadata"
-            ),
+            first("source_specific_metadata", ignorenulls=True).alias("source_specific_metadata"),
             first("content_raw_text", ignorenulls=True).alias("raw_text"),
             first("content_clean_text", ignorenulls=True).alias("clean_text"),
             first("content_text_for_model", ignorenulls=True).alias("text_for_model"),
@@ -725,39 +734,44 @@ def build_contents(events: DataFrame) -> DataFrame:
 
 def build_interactions(events: DataFrame) -> DataFrame:
     normalized = normalize_events(events)
-    return normalized.filter(col("is_interaction")).select(
-        "interaction_id",
-        "source",
-        col("platform_event_id").alias("platform_interaction_id"),
-        "parent_content_id",
-        "root_content_id",
-        "parent_interaction_id",
-        "conversation_id",
-        "interaction_type",
-        "relation_type",
-        "depth",
-        "position_in_thread",
-        "author_id_hash",
-        "text",
-        "created_at",
-        "event_date",
-        "score",
-        "like_count",
-        "reply_count",
-        "collection_status",
-        "metadata_status",
-        "canonical_metadata",
-        "source_specific_metadata",
-        "raw_text",
-        "clean_text",
-        "text_for_model",
-    ).dropDuplicates(["interaction_id"])
+    return (
+        normalized.filter(col("is_interaction"))
+        .select(
+            "interaction_id",
+            "source",
+            col("platform_event_id").alias("platform_interaction_id"),
+            "parent_content_id",
+            "root_content_id",
+            "parent_interaction_id",
+            "conversation_id",
+            "interaction_type",
+            "relation_type",
+            "depth",
+            "position_in_thread",
+            "author_id_hash",
+            "text",
+            "created_at",
+            "event_date",
+            "score",
+            "like_count",
+            "reply_count",
+            "collection_status",
+            "metadata_status",
+            "canonical_metadata",
+            "source_specific_metadata",
+            "raw_text",
+            "clean_text",
+            "text_for_model",
+        )
+        .dropDuplicates(["interaction_id"])
+    )
 
 
 def build_snapshots(events: DataFrame) -> DataFrame:
     normalized = normalize_events(events)
     return (
-        normalized.filter(~col("is_interaction")).withColumn(
+        normalized.filter(~col("is_interaction"))
+        .withColumn(
             "snapshot_at",
             coalesce(col("metadata_refreshed_at"), col("created_at")),
         )
@@ -771,7 +785,37 @@ def build_transcripts(events: DataFrame) -> DataFrame:
     normalized = normalize_events(events).filter(
         (col("source") == "youtube") & (~col("is_interaction"))
     )
-    return (
+    requested_language_code = coalesce(
+        col("transcript_requested_language_code"),
+        when(
+            lower(regexp_extract(coalesce(col("language"), lit("")), r"^([A-Za-z]+)", 1)) == "vi",
+            lit("vi"),
+        ).otherwise(lit("en")),
+    )
+    lifecycle_status = (
+        when(
+            col("transcript_text").isNotNull() & (length(trim(col("transcript_text"))) > 0),
+            lit("available"),
+        )
+        .when(col("transcript_lifecycle_status").isNotNull(), col("transcript_lifecycle_status"))
+        .when(lower(trim(col("transcript_status"))) == "success", lit("available"))
+        .when(
+            lower(trim(col("transcript_status"))).isin(
+                "not_available", "not_found", "age_restricted"
+            ),
+            lit("unavailable"),
+        )
+        .when(lower(trim(col("transcript_status"))) == "disabled", lit("disabled"))
+        .when(lower(trim(col("transcript_status"))) == "rate_limited", lit("rate_limited"))
+        .when(lower(trim(col("transcript_status"))) == "ip_blocked", lit("blocked"))
+        .when(
+            lower(trim(col("transcript_status"))) == "permanent_error",
+            lit("permanent_error"),
+        )
+        .when(lower(trim(col("transcript_status"))) == "pending", lit("pending"))
+        .otherwise(lit("retryable_error"))
+    )
+    prepared = (
         normalized.withColumn(
             "transcript_text",
             coalesce(col("transcript_text"), lit(None).cast("string")),
@@ -787,36 +831,76 @@ def build_transcripts(events: DataFrame) -> DataFrame:
             col("platform_event_id").alias("video_id"),
             "content_id",
             "transcript_status",
+            lifecycle_status.alias("transcript_lifecycle_status"),
+            coalesce(
+                col("transcript_requested_language"),
+                requested_language_code,
+            ).alias("requested_language"),
+            requested_language_code.alias("requested_language_code"),
+            coalesce(
+                col("transcript_obtained_language"),
+                col("transcript_language"),
+            ).alias("obtained_language"),
+            coalesce(
+                col("transcript_obtained_language_code"),
+                col("transcript_language_code"),
+            ).alias("obtained_language_code"),
             coalesce(col("transcript_language"), col("language")).alias("language"),
             col("transcript_language_code").alias("language_code"),
             "transcript_text",
             col("transcript_segments_json").alias("segments_json"),
             "duration_seconds",
-            col("transcript_covered_duration_seconds").alias(
-                "covered_duration_seconds"
-            ),
+            col("transcript_covered_duration_seconds").alias("covered_duration_seconds"),
             "word_count",
             col("transcript_segment_count").alias("segment_count"),
-            to_json(col("transcript_available_languages")).alias(
-                "available_languages_json"
-            ),
+            coalesce(
+                col("transcript_available_languages_json"),
+                to_json(col("transcript_available_languages")),
+            ).alias("available_languages_json"),
             "has_auto_captions",
             col("transcript_is_generated").alias("is_generated"),
             col("transcript_is_translated").alias("is_translated"),
+            col("transcript_generation_type").alias("generation_type"),
             col("transcript_source_language").alias("source_language"),
             col("transcript_source_language_code").alias("source_language_code"),
             "transcript_source",
+            coalesce(
+                col("transcript_provider"),
+                col("transcript_source"),
+                lit("youtube_transcript_api"),
+            ).alias("provider"),
             col("transcript_selection_strategy").alias("selection_strategy"),
             col("transcript_error_code").alias("error_code"),
             col("transcript_error_message").alias("error_message"),
-            "attempt_count",
-            to_timestamp(col("last_attempt_at")).alias("last_attempt_at"),
+            coalesce(col("transcript_attempt_count"), col("attempt_count"))
+            .cast("bigint")
+            .alias("attempt_count"),
+            to_timestamp(coalesce(col("transcript_last_attempt_at"), col("last_attempt_at"))).alias(
+                "last_attempt_at"
+            ),
+            to_timestamp(col("transcript_next_attempt_at")).alias("next_attempt_at"),
             to_timestamp(col("transcript_collected_at")).alias("collected_at"),
+            to_timestamp(col("transcript_recovered_at")).alias("recovered_at"),
+            col("transcript_content_version").alias("content_version"),
             "created_at",
             to_timestamp(col("updated_at")).alias("updated_at"),
             "event_date",
         )
-        .dropDuplicates(["video_id", "content_id"])
+    )
+    priority = when(col("transcript_lifecycle_status") == "available", lit(0)).otherwise(lit(1))
+    window = Window.partitionBy(
+        "video_id",
+        "content_id",
+        "requested_language_code",
+    ).orderBy(
+        priority.asc(),
+        col("last_attempt_at").desc_nulls_last(),
+        col("updated_at").desc_nulls_last(),
+    )
+    return (
+        prepared.withColumn("transcript_row_number", row_number().over(window))
+        .filter(col("transcript_row_number") == 1)
+        .drop("transcript_row_number")
     )
 
 
@@ -830,9 +914,7 @@ def build_content_stats(contents: DataFrame, interactions: DataFrame, snapshots:
         spark_sum("score").cast("bigint").alias("total_score"),
     )
 
-    latest_window = Window.partitionBy("content_id").orderBy(
-        col("snapshot_at").desc_nulls_last()
-    )
+    latest_window = Window.partitionBy("content_id").orderBy(col("snapshot_at").desc_nulls_last())
     latest_snapshots = (
         snapshots.withColumn("_rank", row_number().over(latest_window))
         .filter(col("_rank") == 1)
@@ -893,25 +975,16 @@ def build_user_evolution(contents: DataFrame, interactions: DataFrame) -> DataFr
         activity.groupBy("user_id_hash", "source", "event_date")
         .agg(
             spark_sum("contents_created").cast("bigint").alias("contents_created"),
-            spark_sum("interactions_created")
-            .cast("bigint")
-            .alias("interactions_created"),
-            countDistinct("content_id").cast("bigint").alias(
-                "distinct_contents_touched"
-            ),
+            spark_sum("interactions_created").cast("bigint").alias("interactions_created"),
+            countDistinct("content_id").cast("bigint").alias("distinct_contents_touched"),
             countDistinct("subreddit").cast("bigint").alias("distinct_subreddits"),
-            countDistinct("youtube_channel_id")
-            .cast("bigint")
-            .alias("distinct_youtube_channels"),
-            countDistinct("conversation_id")
-            .cast("bigint")
-            .alias("distinct_conversations"),
+            countDistinct("youtube_channel_id").cast("bigint").alias("distinct_youtube_channels"),
+            countDistinct("conversation_id").cast("bigint").alias("distinct_conversations"),
             avg(size(split(trim(coalesce(col("activity_text"), lit(""))), r"\s+"))).alias(
                 "avg_text_length"
             ),
             spark_sum(
-                when(lower(coalesce(col("activity_text"), lit(""))).contains("?"), 1)
-                .otherwise(0)
+                when(lower(coalesce(col("activity_text"), lit(""))).contains("?"), 1).otherwise(0)
             )
             .cast("bigint")
             .alias("question_count"),
@@ -1004,6 +1077,11 @@ def _create_tables(spark: SparkSession) -> None:
         TRANSCRIPT_TABLE,
         {
             "transcript_status": "STRING",
+            "transcript_lifecycle_status": "STRING",
+            "requested_language": "STRING",
+            "requested_language_code": "STRING",
+            "obtained_language": "STRING",
+            "obtained_language_code": "STRING",
             "language_code": "STRING",
             "segments_json": "STRING",
             "duration_seconds": "DOUBLE",
@@ -1013,17 +1091,79 @@ def _create_tables(spark: SparkSession) -> None:
             "has_auto_captions": "BOOLEAN",
             "is_generated": "BOOLEAN",
             "is_translated": "BOOLEAN",
+            "generation_type": "STRING",
             "source_language": "STRING",
             "source_language_code": "STRING",
             "transcript_source": "STRING",
+            "provider": "STRING",
             "selection_strategy": "STRING",
             "error_code": "STRING",
             "error_message": "STRING",
             "attempt_count": "BIGINT",
             "last_attempt_at": "TIMESTAMP",
+            "next_attempt_at": "TIMESTAMP",
             "collected_at": "TIMESTAMP",
+            "recovered_at": "TIMESTAMP",
+            "content_version": "STRING",
             "updated_at": "TIMESTAMP",
         },
+    )
+    spark.sql(
+        f"""
+        UPDATE {TRANSCRIPT_TABLE}
+        SET transcript_lifecycle_status = COALESCE(
+          transcript_lifecycle_status,
+          CASE
+            WHEN transcript_text IS NOT NULL AND LENGTH(TRIM(transcript_text)) > 0
+              THEN 'available'
+            WHEN LOWER(TRIM(transcript_status)) = 'success' THEN 'available'
+            WHEN LOWER(TRIM(transcript_status)) IN (
+              'not_available', 'not_found', 'age_restricted'
+            ) THEN 'unavailable'
+            WHEN LOWER(TRIM(transcript_status)) = 'disabled' THEN 'disabled'
+            WHEN LOWER(TRIM(transcript_status)) = 'rate_limited' THEN 'rate_limited'
+            WHEN LOWER(TRIM(transcript_status)) = 'ip_blocked' THEN 'blocked'
+            WHEN LOWER(TRIM(transcript_status)) = 'permanent_error'
+              THEN 'permanent_error'
+            WHEN LOWER(TRIM(transcript_status)) = 'pending' THEN 'pending'
+            ELSE 'retryable_error'
+          END
+        ),
+        requested_language_code = COALESCE(
+          requested_language_code,
+          CASE
+            WHEN LOWER(REPLACE(COALESCE(language, ''), '_', '-')) = 'vi'
+              OR LOWER(REPLACE(COALESCE(language, ''), '_', '-')) LIKE 'vi-%'
+              OR LOWER(COALESCE(language, '')) LIKE '%vietnam%'
+              THEN 'vi'
+            ELSE 'en'
+          END
+        ),
+        requested_language = COALESCE(
+          requested_language,
+          CASE
+            WHEN LOWER(REPLACE(COALESCE(language, ''), '_', '-')) = 'vi'
+              OR LOWER(REPLACE(COALESCE(language, ''), '_', '-')) LIKE 'vi-%'
+              OR LOWER(COALESCE(language, '')) LIKE '%vietnam%'
+              THEN 'vi'
+            ELSE 'en'
+          END
+        ),
+        obtained_language = COALESCE(obtained_language, language),
+        obtained_language_code = COALESCE(obtained_language_code, language_code),
+        generation_type = COALESCE(
+          generation_type,
+          CASE
+            WHEN is_generated = TRUE THEN 'automatic'
+            WHEN is_generated = FALSE THEN 'manual'
+          END
+        ),
+        provider = COALESCE(provider, transcript_source, 'youtube_transcript_api')
+        WHERE transcript_lifecycle_status IS NULL
+           OR requested_language_code IS NULL
+           OR requested_language IS NULL
+           OR provider IS NULL
+        """
     )
 
 
@@ -1051,11 +1191,20 @@ def _merge_dataframe(
                 "THEN t.transcript_status "
                 "ELSE COALESCE(s.transcript_status, t.transcript_status) END"
             )
+        if column == "transcript_lifecycle_status":
+            return (
+                "t.transcript_lifecycle_status = CASE "
+                "WHEN s.transcript_lifecycle_status = 'available' THEN 'available' "
+                "WHEN t.transcript_lifecycle_status IN ("
+                "'available', 'unavailable', 'disabled', 'permanent_error') "
+                "THEN t.transcript_lifecycle_status ELSE COALESCE("
+                "s.transcript_lifecycle_status, t.transcript_lifecycle_status) END"
+            )
         if column in {"error_code", "error_message"}:
             return (
                 f"t.{column} = CASE "
-                "WHEN s.transcript_status = 'success' THEN NULL "
-                f"WHEN t.transcript_status = 'success' THEN t.{column} "
+                "WHEN s.transcript_lifecycle_status = 'available' THEN NULL "
+                f"WHEN t.transcript_lifecycle_status = 'available' THEN t.{column} "
                 f"ELSE COALESCE(s.{column}, t.{column}) END"
             )
         if column == "attempt_count":
@@ -1065,24 +1214,18 @@ def _merge_dataframe(
             )
         if column in {"last_attempt_at", "updated_at"}:
             return f"t.{column} = GREATEST(s.{column}, t.{column})"
+        if column == "next_attempt_at":
+            return "t.next_attempt_at = s.next_attempt_at"
         if column in {"created_at", "event_date"}:
             return f"t.{column} = COALESCE(t.{column}, s.{column})"
         return f"t.{column} = COALESCE(s.{column}, t.{column})"
 
-    assignments = ", ".join(
-        assignment(column)
-        for column in columns
-        if column not in key_columns
-    )
+    assignments = ", ".join(assignment(column) for column in columns if column not in key_columns)
     insert_columns = ", ".join(columns)
     insert_values = ", ".join(f"s.{column}" for column in columns)
-    predicate = " AND ".join(
-        f"t.{column} <=> s.{column}" for column in key_columns
-    )
+    predicate = " AND ".join(f"t.{column} <=> s.{column}" for column in key_columns)
     update_clause = (
-        f"WHEN MATCHED THEN UPDATE SET {assignments}"
-        if update_existing and assignments
-        else ""
+        f"WHEN MATCHED THEN UPDATE SET {assignments}" if update_existing and assignments else ""
     )
     dataframe.sparkSession.sql(
         f"""
@@ -1130,7 +1273,7 @@ def main() -> None:
         transcripts,
         TRANSCRIPT_TABLE,
         TRANSCRIPT_COLUMNS,
-        ["video_id", "content_id"],
+        ["video_id", "content_id", "requested_language_code"],
     )
     _merge_dataframe(
         content_stats,

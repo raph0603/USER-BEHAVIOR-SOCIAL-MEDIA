@@ -10,6 +10,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Sequence
 
+from common.transcripts import (
+    legacy_transcript_status,
+    transcript_content_version,
+    transcript_lifecycle_status,
+)
 from common.youtube_pipeline import (
     SearchQuery,
     canonical_metadata,
@@ -150,6 +155,40 @@ class YouTubeStateStore(
               result_json TEXT NOT NULL,
               updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS youtube_transcript_lifecycle (
+              video_id TEXT NOT NULL,
+              requested_language_code TEXT NOT NULL,
+              correlation_id TEXT NOT NULL,
+              first_seen_at TEXT NOT NULL,
+              published_at TEXT,
+              request_json TEXT NOT NULL,
+              transcript_lifecycle_status TEXT NOT NULL DEFAULT 'pending',
+              transcript_status TEXT NOT NULL DEFAULT 'pending',
+              migrated_legacy_status TEXT,
+              requested_language TEXT,
+              obtained_language TEXT,
+              obtained_language_code TEXT,
+              available_languages_json TEXT,
+              generation_type TEXT,
+              is_generated INTEGER,
+              is_translated INTEGER,
+              provider TEXT,
+              selection_strategy TEXT,
+              attempt_count INTEGER NOT NULL DEFAULT 0,
+              last_attempt_at TEXT,
+              next_attempt_at TEXT,
+              collected_at TEXT,
+              error_code TEXT,
+              error_message TEXT,
+              recovered_at TEXT,
+              content_version TEXT,
+              result_json TEXT,
+              PRIMARY KEY (video_id, requested_language_code)
+            );
+            CREATE INDEX IF NOT EXISTS idx_youtube_transcript_lifecycle_due
+              ON youtube_transcript_lifecycle (
+                transcript_lifecycle_status, next_attempt_at, first_seen_at
+              );
             CREATE TABLE IF NOT EXISTS youtube_worker_outbox (
               outbox_id TEXT PRIMARY KEY,
               worker_name TEXT NOT NULL,
@@ -168,7 +207,111 @@ class YouTubeStateStore(
               ON youtube_worker_outbox (delivered_at, available_at, created_at);
             """
         )
+        self._backfill_transcript_lifecycle_state()
         self.connection.commit()
+
+    def _backfill_transcript_lifecycle_state(self) -> None:
+        """Copy legacy per-video transcript state into the language-aware table."""
+
+        rows = self.connection.execute("SELECT * FROM youtube_transcript_state").fetchall()
+        for source_row in rows:
+            row = dict(source_row)
+            try:
+                request = json.loads(row.get("request_json") or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                request = {}
+            try:
+                result = json.loads(row.get("result_json") or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                result = {}
+            if not isinstance(result, dict):
+                result = {}
+            payload = result.get("payload")
+            payload = payload if isinstance(payload, dict) else {}
+            requested_language, requested_code = self._requested_transcript_language(request)
+            text = str(payload.get("text") or "").strip()
+            lifecycle = transcript_lifecycle_status(
+                row.get("status"),
+                error_code=row.get("error_class") or result.get("error_code"),
+                has_text=bool(text),
+                attempt_count=int(row.get("attempt_count") or 0),
+            )
+            is_generated = payload.get("is_generated")
+            generation_type = (
+                None if is_generated is None else ("automatic" if bool(is_generated) else "manual")
+            )
+            available_languages = payload.get("available_languages")
+            segments = payload.get("segments")
+            if not isinstance(segments, (list, tuple)):
+                segments = ()
+            content_version = payload.get("content_version")
+            if not content_version and text:
+                content_version = transcript_content_version(
+                    video_id=row["video_id"],
+                    language_code=payload.get("language_code"),
+                    text=text,
+                    segments=segments,
+                )
+            self.connection.execute(
+                """
+                INSERT OR IGNORE INTO youtube_transcript_lifecycle (
+                  video_id, requested_language_code, correlation_id,
+                  first_seen_at, published_at, request_json,
+                  transcript_lifecycle_status, transcript_status,
+                  migrated_legacy_status, requested_language,
+                  obtained_language, obtained_language_code,
+                  available_languages_json, generation_type,
+                  is_generated, is_translated, provider,
+                  selection_strategy, attempt_count, last_attempt_at,
+                  next_attempt_at, collected_at, error_code, error_message,
+                  content_version, result_json
+                ) VALUES (
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                  ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    row["video_id"],
+                    requested_code,
+                    row["correlation_id"],
+                    row["first_seen_at"],
+                    row.get("published_at"),
+                    row["request_json"],
+                    lifecycle,
+                    legacy_transcript_status(lifecycle),
+                    row.get("status"),
+                    requested_language,
+                    payload.get("language"),
+                    payload.get("language_code"),
+                    (
+                        json.dumps(
+                            available_languages,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            default=str,
+                        )
+                        if available_languages is not None
+                        else None
+                    ),
+                    generation_type,
+                    None if is_generated is None else int(bool(is_generated)),
+                    (
+                        None
+                        if payload.get("is_translated") is None
+                        else int(bool(payload.get("is_translated")))
+                    ),
+                    payload.get("source"),
+                    payload.get("selection_strategy"),
+                    int(row.get("attempt_count") or 0),
+                    row.get("last_attempt_at"),
+                    row.get("next_attempt_at"),
+                    payload.get("collected_at"),
+                    row.get("error_class") or result.get("error_code"),
+                    row.get("error_message") or result.get("error_message"),
+                    content_version,
+                    row.get("result_json"),
+                ),
+            )
 
     def _commit(self) -> None:
         if self._transaction_depth == 0:

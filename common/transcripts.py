@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from dataclasses import asdict, dataclass
@@ -25,6 +26,161 @@ from .collection import (
 
 
 TRANSCRIPT_SOURCE = "youtube_transcript_api"
+
+TRANSCRIPT_PENDING = "pending"
+TRANSCRIPT_AVAILABLE = "available"
+TRANSCRIPT_UNAVAILABLE = "unavailable"
+TRANSCRIPT_DISABLED = "disabled"
+TRANSCRIPT_RATE_LIMITED = "rate_limited"
+TRANSCRIPT_BLOCKED = "blocked"
+TRANSCRIPT_RETRYABLE_ERROR = "retryable_error"
+TRANSCRIPT_PERMANENT_ERROR = "permanent_error"
+
+TRANSCRIPT_LIFECYCLE_STATUSES = frozenset(
+    {
+        TRANSCRIPT_PENDING,
+        TRANSCRIPT_AVAILABLE,
+        TRANSCRIPT_UNAVAILABLE,
+        TRANSCRIPT_DISABLED,
+        TRANSCRIPT_RATE_LIMITED,
+        TRANSCRIPT_BLOCKED,
+        TRANSCRIPT_RETRYABLE_ERROR,
+        TRANSCRIPT_PERMANENT_ERROR,
+    }
+)
+TERMINAL_TRANSCRIPT_LIFECYCLE_STATUSES = frozenset(
+    {
+        TRANSCRIPT_AVAILABLE,
+        TRANSCRIPT_UNAVAILABLE,
+        TRANSCRIPT_DISABLED,
+        TRANSCRIPT_PERMANENT_ERROR,
+    }
+)
+RETRYABLE_TRANSCRIPT_LIFECYCLE_STATUSES = frozenset(
+    {
+        TRANSCRIPT_PENDING,
+        TRANSCRIPT_RATE_LIMITED,
+        TRANSCRIPT_BLOCKED,
+        TRANSCRIPT_RETRYABLE_ERROR,
+    }
+)
+
+_BLOCKED_ERROR_CODES = frozenset({"ip_blocked", "request_blocked"})
+_PERMANENT_ERROR_CODES = frozenset(
+    {
+        "dependency_missing",
+        "invalid_video_id",
+        "missing_video_id",
+    }
+)
+_LEGACY_LIFECYCLE_ALIASES = {
+    "success": TRANSCRIPT_AVAILABLE,
+    "partial": TRANSCRIPT_RETRYABLE_ERROR,
+    "not_available": TRANSCRIPT_UNAVAILABLE,
+    "age_restricted": TRANSCRIPT_UNAVAILABLE,
+    "not_found": TRANSCRIPT_UNAVAILABLE,
+    "ip_blocked": TRANSCRIPT_BLOCKED,
+    "failed": TRANSCRIPT_RETRYABLE_ERROR,
+}
+_LIFECYCLE_TO_LEGACY_STATUS = {
+    TRANSCRIPT_PENDING: "pending",
+    TRANSCRIPT_AVAILABLE: "success",
+    TRANSCRIPT_UNAVAILABLE: "not_available",
+    TRANSCRIPT_DISABLED: "disabled",
+    TRANSCRIPT_RATE_LIMITED: "rate_limited",
+    TRANSCRIPT_BLOCKED: "rate_limited",
+    TRANSCRIPT_RETRYABLE_ERROR: "failed",
+    TRANSCRIPT_PERMANENT_ERROR: "failed",
+}
+
+
+def normalize_transcript_language_code(value: Any) -> str:
+    return _normalize_language_code(value)
+
+
+def preferred_transcript_language_code(value: Any) -> str:
+    """Apply the canonical per-video language policy without retaining global state."""
+
+    language = normalize_transcript_language_code(value)
+    if language == "vi" or language.startswith("vi-") or "vietnam" in language:
+        return "vi"
+    return "en"
+
+
+def transcript_lifecycle_status(
+    status: Any,
+    *,
+    error_code: Any = None,
+    has_text: bool = False,
+    attempt_count: int = 0,
+    max_attempts: int | None = None,
+) -> str:
+    """Map collector and legacy outcomes to the additive transcript lifecycle."""
+
+    normalized = str(status or TRANSCRIPT_PENDING).strip().lower()
+    normalized_error = str(error_code or "").strip().lower()
+    if has_text:
+        lifecycle = TRANSCRIPT_AVAILABLE
+    elif normalized_error in _BLOCKED_ERROR_CODES:
+        lifecycle = TRANSCRIPT_BLOCKED
+    elif normalized_error in _PERMANENT_ERROR_CODES:
+        lifecycle = TRANSCRIPT_PERMANENT_ERROR
+    elif normalized in TRANSCRIPT_LIFECYCLE_STATUSES:
+        lifecycle = normalized
+    elif normalized == STATUS_RATE_LIMITED:
+        lifecycle = TRANSCRIPT_RATE_LIMITED
+    elif normalized == STATUS_DISABLED:
+        lifecycle = TRANSCRIPT_DISABLED
+    elif normalized == STATUS_NOT_AVAILABLE:
+        lifecycle = TRANSCRIPT_UNAVAILABLE
+    else:
+        lifecycle = _LEGACY_LIFECYCLE_ALIASES.get(
+            normalized,
+            TRANSCRIPT_RETRYABLE_ERROR,
+        )
+
+    if (
+        lifecycle in RETRYABLE_TRANSCRIPT_LIFECYCLE_STATUSES
+        and max_attempts is not None
+        and int(attempt_count or 0) >= max(1, int(max_attempts))
+    ):
+        return TRANSCRIPT_PERMANENT_ERROR
+    return lifecycle
+
+
+def legacy_transcript_status(lifecycle_status: Any) -> str:
+    """Return the compatibility status retained for existing consumers."""
+
+    lifecycle = transcript_lifecycle_status(lifecycle_status)
+    return _LIFECYCLE_TO_LEGACY_STATUS[lifecycle]
+
+
+def is_terminal_transcript_lifecycle(status: Any) -> bool:
+    return transcript_lifecycle_status(status) in TERMINAL_TRANSCRIPT_LIFECYCLE_STATUSES
+
+
+def is_retryable_transcript_lifecycle(status: Any) -> bool:
+    return transcript_lifecycle_status(status) in RETRYABLE_TRANSCRIPT_LIFECYCLE_STATUSES
+
+
+def transcript_content_version(
+    *,
+    video_id: str,
+    language_code: str | None,
+    text: str,
+    segments: Sequence[Mapping[str, Any]],
+) -> str:
+    """Build a stable content version that is independent of collection time."""
+
+    del segments  # timing edits do not create a new textual content version
+    canonical = "\u001f".join(
+        (
+            str(video_id),
+            _normalize_language_code(language_code),
+            str(text),
+        )
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -64,6 +220,26 @@ class TranscriptPayload:
     available_languages: tuple[dict[str, Any], ...]
     covered_duration_seconds: float
     collected_at: datetime
+    requested_language: str | None = None
+    requested_language_code: str | None = None
+    content_version: str = ""
+
+    def __post_init__(self) -> None:
+        requested_code = _normalize_language_code(self.requested_language_code)
+        if not requested_code and self.requested_language:
+            requested_code = _normalize_language_code(self.requested_language)
+        object.__setattr__(self, "requested_language_code", requested_code or None)
+        if not self.content_version:
+            object.__setattr__(
+                self,
+                "content_version",
+                transcript_content_version(
+                    video_id=self.video_id,
+                    language_code=self.language_code,
+                    text=self.text,
+                    segments=self.segments,
+                ),
+            )
 
     @property
     def transcript_text(self) -> str:
@@ -76,6 +252,12 @@ class TranscriptPayload:
     @property
     def has_auto_captions(self) -> bool | None:
         return self.is_generated
+
+    @property
+    def generation_type(self) -> str | None:
+        if self.is_generated is None:
+            return None
+        return "automatic" if self.is_generated else "manual"
 
     @property
     def segments_json(self) -> str:
@@ -219,7 +401,9 @@ def _language_match_quality(language_code: str, preferred: str) -> int | None:
     return None
 
 
-def _preferred_key(track: Any, preferred_languages: Sequence[str]) -> tuple[int, int, str, str] | None:
+def _preferred_key(
+    track: Any, preferred_languages: Sequence[str]
+) -> tuple[int, int, str, str] | None:
     language_code = _normalize_language_code(getattr(track, "language_code", None))
     matches = []
     for index, preferred in enumerate(preferred_languages):
@@ -308,9 +492,7 @@ def _translation_languages(track: Any) -> list[dict[str, str | None]]:
         result.append(
             {
                 "language": str(language) if language is not None else None,
-                "language_code": (
-                    str(language_code) if language_code is not None else None
-                ),
+                "language_code": (str(language_code) if language_code is not None else None),
             }
         )
     return sorted(
@@ -351,8 +533,7 @@ def _can_translate(track: Any, target_language: str) -> bool:
     if not available:
         return True
     return any(
-        _language_match_quality(item["language_code"] or "", target_language)
-        is not None
+        _language_match_quality(item["language_code"] or "", target_language) is not None
         for item in available
     )
 
@@ -427,8 +608,7 @@ def _covered_duration(segments: Sequence[Mapping[str, Any]]) -> float:
             _float_or_zero(segment.get("end")),
         )
         for segment in segments
-        if _float_or_zero(segment.get("end"))
-        > _float_or_zero(segment.get("start"))
+        if _float_or_zero(segment.get("end")) > _float_or_zero(segment.get("start"))
     )
     if not intervals:
         return 0.0
@@ -539,8 +719,9 @@ def fetch_transcript(
     selection_strategy = choice.strategy
     is_translated = False
     translation_error: BaseException | None = None
-    target_language = _normalize_language_code(
-        translation_language or (languages[0] if languages else "")
+    target_language: str | None = (
+        _normalize_language_code(translation_language or (languages[0] if languages else ""))
+        or None
     )
 
     if choice.is_fallback and require_preferred_language:
@@ -620,10 +801,7 @@ def fetch_transcript(
     transcript_text = " ".join(segment["text"] for segment in segments)
     payload = TranscriptPayload(
         video_id=normalized_video_id,
-        language=(
-            getattr(selected_track, "language", None)
-            or getattr(fetched, "language", None)
-        ),
+        language=(getattr(selected_track, "language", None) or getattr(fetched, "language", None)),
         language_code=(
             getattr(selected_track, "language_code", None)
             or getattr(fetched, "language_code", None)
@@ -641,6 +819,8 @@ def fetch_transcript(
         available_languages=_available_languages(tracks),
         covered_duration_seconds=_covered_duration(segments),
         collected_at=completed_at,
+        requested_language=(languages[0] if languages else None),
+        requested_language_code=(languages[0] if languages else None),
     )
 
     if not segments:

@@ -59,6 +59,7 @@ EVENT_FIELD_TYPES = {
     "collection_status": "string",
     "metadata_status": "string",
     "transcript_status": "string",
+    "transcript_lifecycle_status": "string",
     "comments_status": "string",
     "storage_status": "string",
     "error_code": "string",
@@ -74,16 +75,28 @@ EVENT_FIELD_TYPES = {
     "comments_error_message": "string",
     "transcript_language": "string",
     "transcript_language_code": "string",
+    "transcript_requested_language": "string",
+    "transcript_requested_language_code": "string",
+    "transcript_obtained_language": "string",
+    "transcript_obtained_language_code": "string",
     "transcript_source_language": "string",
     "transcript_source_language_code": "string",
     "transcript_is_generated": "boolean",
     "transcript_is_translated": "boolean",
+    "transcript_generation_type": "string",
+    "transcript_provider": "string",
     "transcript_source": "string",
     "transcript_selection_strategy": "string",
     "transcript_segment_count": "long",
     "transcript_available_languages": "array_string",
+    "transcript_available_languages_json": "string",
     "transcript_covered_duration_seconds": "double",
     "transcript_collected_at": "string",
+    "transcript_attempt_count": "int",
+    "transcript_last_attempt_at": "string",
+    "transcript_next_attempt_at": "string",
+    "transcript_recovered_at": "string",
+    "transcript_content_version": "string",
     "transcript_error_code": "string",
     "transcript_error_message": "string",
     "event_type": "string",
@@ -149,6 +162,7 @@ OUTCOME_STATUS_COLUMNS = frozenset(
         "collection_status",
         "metadata_status",
         "transcript_status",
+        "transcript_lifecycle_status",
         "comments_status",
         "storage_status",
     }
@@ -223,14 +237,21 @@ def spark_struct_type(*extra_fields: tuple[str, str]):
 def create_table_columns(columns: tuple[str, ...]) -> str:
     """Render a deterministic Iceberg column list for CREATE TABLE statements."""
 
-    return ",\n          ".join(
-        f"{column} {ICEBERG_TYPES[column]}" for column in columns
-    )
+    return ",\n          ".join(f"{column} {ICEBERG_TYPES[column]}" for column in columns)
 
 
 def merge_assignment(column: str) -> str:
     """Render an idempotent update that cannot downgrade a terminal outcome."""
 
+    if column == "transcript_lifecycle_status":
+        return (
+            "t.transcript_lifecycle_status = CASE "
+            "WHEN s.transcript_lifecycle_status = 'available' THEN 'available' "
+            "WHEN t.transcript_lifecycle_status IN ("
+            "'available', 'unavailable', 'disabled', 'permanent_error') "
+            "THEN t.transcript_lifecycle_status ELSE COALESCE("
+            "s.transcript_lifecycle_status, t.transcript_lifecycle_status) END"
+        )
     if column in OUTCOME_STATUS_COLUMNS:
         return (
             f"t.{column} = CASE "
@@ -240,8 +261,7 @@ def merge_assignment(column: str) -> str:
         )
     if column == "attempt_count":
         return (
-            "t.attempt_count = GREATEST("
-            "COALESCE(s.attempt_count, 0), COALESCE(t.attempt_count, 0))"
+            "t.attempt_count = GREATEST(COALESCE(s.attempt_count, 0), COALESCE(t.attempt_count, 0))"
         )
     if column in {"last_attempt_at", "updated_at"}:
         return f"t.{column} = GREATEST(s.{column}, t.{column})"

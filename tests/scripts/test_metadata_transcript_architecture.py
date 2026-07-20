@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
 try:
     from fastavro import parse_schema, schemaless_reader, schemaless_writer
 except ModuleNotFoundError:
@@ -28,7 +29,11 @@ from common.collection import (
     safe_json_dumps,
     utc_now,
 )
-from common.transcripts import TranscriptPayload
+from common.transcripts import (
+    TranscriptPayload,
+    legacy_transcript_status,
+    transcript_lifecycle_status,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -240,16 +245,14 @@ class AvroCompatibilityTests(unittest.TestCase):
         self.assertNotIn("metadata_status", decoded)
 
     def test_cleaner_selects_the_registered_writer_schema_id(self):
-        source = (
-            ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py"
-        ).read_text(encoding="utf-8")
+        source = (ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("_registered_avro_schemas", source)
         self.assertIn('withColumn("_schema_id"', source)
         self.assertIn("for schema_id, writer_schema", source)
-        decoder = source[
-            source.index("def _decode_confluent_avro") : source.index("def main")
-        ]
+        decoder = source[source.index("def _decode_confluent_avro") : source.index("def main")]
         self.assertIn('withColumn("_decoded_json", decoded_json)', decoder)
         self.assertIn('from_json(col("_decoded_json"), spark_struct_type())', decoder)
         self.assertNotIn("unionByName", decoder)
@@ -260,10 +263,7 @@ class AvroCompatibilityTests(unittest.TestCase):
         paths = (
             ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py",
             ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py",
-            ROOT
-            / "orchestrator"
-            / "dags"
-            / "user_behavior_lakehouse_no_row_checks.py",
+            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse_no_row_checks.py",
         )
 
         for path in paths:
@@ -368,6 +368,7 @@ class CanonicalEventTests(unittest.TestCase):
             "canonical_content_id": canonical_content_id,
             "isoformat_utc": isoformat_utc,
             "safe_json_dumps": safe_json_dumps,
+            "transcript_lifecycle_status": transcript_lifecycle_status,
             "utc_now": utc_now,
             "_env_str": lambda name, default: default,
         }
@@ -423,7 +424,9 @@ class CanonicalEventTests(unittest.TestCase):
     def test_reddit_detail_pass_uses_candidate_community_metadata(self):
         source = PRODUCER_PATH.read_text(encoding="utf-8")
         self.assertIn("candidate_subreddit_info", source)
-        self.assertIn("detail_member_count,\n                        candidate_subreddit_info", source)
+        self.assertIn(
+            "detail_member_count,\n                        candidate_subreddit_info", source
+        )
 
 
 class YouTubeMetadataMappingTests(unittest.TestCase):
@@ -434,6 +437,7 @@ class YouTubeMetadataMappingTests(unittest.TestCase):
             "_terminal_collection_status",
             "_first_operation_error",
             "_parse_youtube_duration_seconds",
+            "_preferred_youtube_transcript_languages",
             "_search_youtube_video_ids",
             "_youtube_video_event",
         }
@@ -446,6 +450,8 @@ class YouTubeMetadataMappingTests(unittest.TestCase):
             "isoformat_utc": isoformat_utc,
             "overall_status": overall_status,
             "safe_json_dumps": safe_json_dumps,
+            "legacy_transcript_status": legacy_transcript_status,
+            "transcript_lifecycle_status": transcript_lifecycle_status,
             "utc_now": utc_now,
             "parse_count": lambda value: int(value) if value is not None else None,
             "youtube_authors": types.SimpleNamespace(SUBSCRIBER_COUNTS={}),
@@ -510,9 +516,7 @@ class YouTubeMetadataMappingTests(unittest.TestCase):
                     "channelTitle": "Channel",
                     "tags": ["ev"],
                     "thumbnails": {
-                        "default": {
-                            "url": "https://img.youtube.com/vi/video-1/default.jpg"
-                        }
+                        "default": {"url": "https://img.youtube.com/vi/video-1/default.jpg"}
                     },
                 },
                 "statistics": {
@@ -568,15 +572,20 @@ class YouTubeMetadataMappingTests(unittest.TestCase):
             "https://img.youtube.com/vi/video-1/default.jpg",
         )
         self.assertEqual(event["transcript_language_code"], "en")
+        self.assertEqual(event["transcript_lifecycle_status"], "available")
+        self.assertEqual(event["transcript_status"], "success")
+        self.assertEqual(event["transcript_requested_language_code"], "en")
+        self.assertEqual(event["transcript_generation_type"], "manual")
+        self.assertEqual(len(event["transcript_content_version"]), 64)
         self.assertEqual(event["transcript_selection_strategy"], "manual_preferred")
         self.assertEqual(event["duration_seconds"], 90.0)
 
 
 class PipelineHandoffTests(unittest.TestCase):
     def test_silver_handoff_occurs_after_the_bronze_merge(self):
-        source = (
-            ROOT / "spark" / "jobs" / "streaming" / "kafka_to_iceberg_bronze.py"
-        ).read_text(encoding="utf-8")
+        source = (ROOT / "spark" / "jobs" / "streaming" / "kafka_to_iceberg_bronze.py").read_text(
+            encoding="utf-8"
+        )
         merge_index = source.index("MERGE INTO lakehouse.bronze.events")
         handoff_index = source.index('.write.format("kafka")', merge_index)
 
@@ -585,21 +594,21 @@ class PipelineHandoffTests(unittest.TestCase):
         self.assertNotIn("kafka_query.awaitTermination", source)
 
     def test_lakehouse_health_checks_are_scoped_to_the_current_run(self):
-        check = (
-            ROOT / "tests" / "spark" / "lakehouse" / "lakehouse_check.py"
-        ).read_text(encoding="utf-8")
-        dag = (
-            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py"
-        ).read_text(encoding="utf-8")
+        check = (ROOT / "tests" / "spark" / "lakehouse" / "lakehouse_check.py").read_text(
+            encoding="utf-8"
+        )
+        dag = (ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("since_timestamp", check)
         self.assertIn('col("collected_at")', check)
         self.assertIn("dag_run.start_date.isoformat()", dag)
 
     def test_content_analytics_cannot_downgrade_terminal_transcripts(self):
-        source = (
-            ROOT / "spark" / "jobs" / "batch" / "content_analytics.py"
-        ).read_text(encoding="utf-8")
+        source = (ROOT / "spark" / "jobs" / "batch" / "content_analytics.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("t.transcript_status IN ('success', 'not_available', 'disabled')", source)
         self.assertIn("t.attempt_count = GREATEST", source)

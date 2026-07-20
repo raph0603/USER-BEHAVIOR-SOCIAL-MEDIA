@@ -13,6 +13,7 @@ from typing import Any
 
 import yt_dlp
 
+from common.transcripts import preferred_transcript_language_code
 from common.youtube_pipeline import (
     finalize_worker_summary,
     isoformat,
@@ -81,7 +82,7 @@ def normalize_yt_dlp_metadata(info: dict[str, Any]) -> dict[str, Any]:
 
 
 def extract_metadata(video_id: str, *, jitter_seconds: float = 0.0) -> tuple[dict, dict]:
-    options = {
+    options: dict[str, Any] = {
         "skip_download": True,
         "quiet": True,
         "no_warnings": True,
@@ -171,7 +172,7 @@ def main() -> None:
         schema_registry_url=registry,
         schema_path=schema_path,
     )
-    summary = {
+    summary: dict[str, Any] = {
         "event": "youtube_metadata_summary",
         "discovery_events": 0,
         "due": 0,
@@ -305,12 +306,16 @@ def main() -> None:
                                 created_at=observed_at,
                             )
                         if previous_hash is None:
+                            requested_transcript_language = preferred_transcript_language_code(
+                                metadata.get("language")
+                            )
                             request_fields = {
                                 "correlation_id": row["correlation_id"],
                                 "collected_at": observed_at,
                                 "attempt_count": 1,
                                 "channel_id": metadata.get("channel_id"),
                                 "published_at": row.get("published_at"),
+                                "language": metadata.get("language"),
                                 "collection_status": "pending",
                             }
                             requests = (
@@ -320,6 +325,14 @@ def main() -> None:
                                         "youtube.transcript.requested",
                                         video_id,
                                         **request_fields,
+                                        transcript_lifecycle_status="pending",
+                                        transcript_status="pending",
+                                        transcript_requested_language=(
+                                            requested_transcript_language
+                                        ),
+                                        transcript_requested_language_code=(
+                                            requested_transcript_language
+                                        ),
                                     ),
                                 ),
                                 (

@@ -7,6 +7,11 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable
 
+from common.transcripts import (
+    legacy_transcript_status,
+    normalize_transcript_language_code,
+    preferred_transcript_language_code,
+)
 from common.youtube_pipeline import isoformat, parse_datetime
 
 
@@ -60,6 +65,210 @@ class YouTubeRequestStateMixin:
         )
         self._commit()
         return bool(cursor.rowcount)
+
+    @staticmethod
+    def _requested_transcript_language(request: dict[str, Any]) -> tuple[str, str]:
+        explicit_code = request.get("transcript_requested_language_code") or request.get(
+            "requested_language_code"
+        )
+        requested_code = (
+            normalize_transcript_language_code(explicit_code)
+            if explicit_code
+            else preferred_transcript_language_code(request.get("language"))
+        )
+        if not requested_code:
+            requested_code = "en"
+        requested_language = str(
+            request.get("transcript_requested_language")
+            or request.get("requested_language")
+            or requested_code
+        )
+        return requested_language, requested_code
+
+    def enqueue_transcript_request(
+        self,
+        *,
+        video_id: str,
+        correlation_id: str,
+        first_seen_at: datetime,
+        published_at: str | datetime | None,
+        request: dict[str, Any],
+    ) -> bool:
+        """Persist one independent request for each video and requested language."""
+
+        requested_language, requested_code = self._requested_transcript_language(request)
+        request_payload = {
+            **request,
+            "transcript_requested_language": requested_language,
+            "transcript_requested_language_code": requested_code,
+        }
+        serialized = json.dumps(request_payload, ensure_ascii=False, sort_keys=True)
+        first_seen_value = isoformat(first_seen_at)
+        published_value = isoformat(parse_datetime(published_at))
+        cursor = self.connection.execute(
+            """
+            INSERT OR IGNORE INTO youtube_transcript_lifecycle (
+              video_id, requested_language_code, correlation_id,
+              first_seen_at, published_at, request_json,
+              transcript_lifecycle_status, transcript_status,
+              requested_language, next_attempt_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?)
+            """,
+            (
+                video_id,
+                requested_code,
+                correlation_id,
+                first_seen_value,
+                published_value,
+                serialized,
+                requested_language,
+                first_seen_value,
+            ),
+        )
+        self.connection.execute(
+            """
+            INSERT OR IGNORE INTO youtube_transcript_state (
+              video_id, correlation_id, first_seen_at, published_at,
+              request_json, next_attempt_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                video_id,
+                correlation_id,
+                first_seen_value,
+                published_value,
+                serialized,
+                first_seen_value,
+            ),
+        )
+        self._commit()
+        return bool(cursor.rowcount)
+
+    def due_transcript_requests(self, *, now: datetime, limit: int) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT * FROM youtube_transcript_lifecycle
+            WHERE transcript_lifecycle_status NOT IN (
+              'available', 'unavailable', 'disabled', 'permanent_error'
+            )
+              AND next_attempt_at IS NOT NULL
+              AND next_attempt_at <= ?
+            ORDER BY next_attempt_at, first_seen_at, video_id, requested_language_code
+            LIMIT ?
+            """,
+            (isoformat(now), max(1, int(limit))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_transcript_result(
+        self,
+        *,
+        video_id: str,
+        requested_language_code: str,
+        lifecycle_status: str,
+        attempt_count: int,
+        attempted_at: datetime,
+        next_attempt_at: datetime | None,
+        result: dict[str, Any],
+        requested_language: str | None = None,
+        obtained_language: str | None = None,
+        obtained_language_code: str | None = None,
+        available_languages: Any = None,
+        generation_type: str | None = None,
+        is_generated: bool | None = None,
+        is_translated: bool | None = None,
+        provider: str | None = None,
+        selection_strategy: str | None = None,
+        collected_at: datetime | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        recovered_at: datetime | None = None,
+        content_version: str | None = None,
+    ) -> None:
+        requested_code = normalize_transcript_language_code(requested_language_code)
+        legacy_status = legacy_transcript_status(lifecycle_status)
+        result_json = json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
+        available_json = (
+            json.dumps(available_languages, ensure_ascii=False, sort_keys=True, default=str)
+            if available_languages is not None
+            else None
+        )
+        cursor = self.connection.execute(
+            """
+            UPDATE youtube_transcript_lifecycle SET
+              transcript_lifecycle_status = ?,
+              transcript_status = ?,
+              requested_language = COALESCE(?, requested_language),
+              obtained_language = ?,
+              obtained_language_code = ?,
+              available_languages_json = ?,
+              generation_type = ?,
+              is_generated = ?,
+              is_translated = ?,
+              provider = ?,
+              selection_strategy = ?,
+              attempt_count = MAX(attempt_count, ?),
+              last_attempt_at = ?,
+              next_attempt_at = ?,
+              collected_at = ?,
+              error_code = ?,
+              error_message = ?,
+              recovered_at = COALESCE(?, recovered_at),
+              content_version = ?,
+              result_json = ?
+            WHERE video_id = ? AND requested_language_code = ?
+            """,
+            (
+                lifecycle_status,
+                legacy_status,
+                requested_language,
+                obtained_language,
+                obtained_language_code,
+                available_json,
+                generation_type,
+                None if is_generated is None else int(is_generated),
+                None if is_translated is None else int(is_translated),
+                provider,
+                selection_strategy,
+                max(0, int(attempt_count)),
+                isoformat(attempted_at),
+                isoformat(next_attempt_at),
+                isoformat(collected_at),
+                error_code,
+                error_message[:1000] if error_message else None,
+                isoformat(recovered_at),
+                content_version,
+                result_json,
+                video_id,
+                requested_code,
+            ),
+        )
+        if not cursor.rowcount:
+            raise KeyError((video_id, requested_code))
+        self.connection.execute(
+            """
+            UPDATE youtube_transcript_state SET
+              status = ?,
+              attempt_count = MAX(attempt_count, ?),
+              last_attempt_at = ?,
+              next_attempt_at = ?,
+              error_class = ?,
+              error_message = ?,
+              result_json = ?
+            WHERE video_id = ?
+            """,
+            (
+                legacy_status,
+                max(0, int(attempt_count)),
+                isoformat(attempted_at),
+                isoformat(next_attempt_at),
+                error_code,
+                error_message[:1000] if error_message else None,
+                result_json,
+                video_id,
+            ),
+        )
+        self._commit()
 
     def due_requests(self, family: str, *, now: datetime, limit: int) -> list[dict[str, Any]]:
         table = self._request_table(family)

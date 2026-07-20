@@ -1,4 +1,4 @@
-"""Additively migrate Bronze/Silver reliability tables and historical rows."""
+"""Additively migrate reliability tables, transcript lifecycle, and historical rows."""
 
 from __future__ import annotations
 
@@ -23,6 +23,10 @@ from pyspark.sql.functions import (
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from batch.youtube_transcripts import (
+    TRANSCRIPT_TABLE,
+    ensure_transcript_table,
+)
 from event_contract import BRONZE_COLUMNS, BRONZE_EVENT_LOG_COLUMNS
 from pipeline.silver_merge import (
     APPLIED_EVENT_COLUMNS,
@@ -69,8 +73,7 @@ def _build_spark(warehouse: str) -> SparkSession:
 def _latest_snapshot_id(spark: SparkSession, table: str) -> int | None:
     try:
         row = spark.sql(
-            f"SELECT snapshot_id FROM {table}.snapshots "
-            "ORDER BY committed_at DESC LIMIT 1"
+            f"SELECT snapshot_id FROM {table}.snapshots ORDER BY committed_at DESC LIMIT 1"
         ).first()
     except Exception as exc:  # metadata tables vary across Iceberg versions
         print(
@@ -128,9 +131,7 @@ def _historical_journal_rows(spark: SparkSession) -> DataFrame:
 
 
 def _backfill_applied_events(spark: SparkSession) -> int:
-    historical = spark.table(EVENT_LOG_TABLE).filter(col("bronze_epoch_id") == -1).alias(
-        "journal"
-    )
+    historical = spark.table(EVENT_LOG_TABLE).filter(col("bronze_epoch_id") == -1).alias("journal")
     silver = spark.table(SILVER_TABLE).alias("silver")
     matches = historical.join(
         silver,
@@ -138,10 +139,7 @@ def _backfill_applied_events(spark: SparkSession) -> int:
         & (
             (
                 col("journal.platform_event_id").isNotNull()
-                & (
-                    col("journal.platform_event_id")
-                    == col("silver.platform_event_id")
-                )
+                & (col("journal.platform_event_id") == col("silver.platform_event_id"))
             )
             | (
                 col("journal.platform_event_id").isNull()
@@ -193,25 +191,36 @@ def main(argv: list[str] | None = None) -> int:
     spark.sparkContext.setLogLevel("WARN")
     bronze_exists = spark.catalog.tableExists(CURRENT_TABLE)
     silver_exists = spark.catalog.tableExists(SILVER_TABLE)
+    transcript_exists = spark.catalog.tableExists(TRANSCRIPT_TABLE)
     before = {
         "mode": "apply" if args.apply else "dry-run",
         "bronze_rows": spark.table(CURRENT_TABLE).count() if bronze_exists else 0,
         "silver_rows": spark.table(SILVER_TABLE).count() if silver_exists else 0,
         "event_log_exists": spark.catalog.tableExists(EVENT_LOG_TABLE),
         "applied_events_exists": spark.catalog.tableExists(APPLIED_EVENTS_TABLE),
+        "transcript_table_exists": transcript_exists,
+        "transcript_rows": (spark.table(TRANSCRIPT_TABLE).count() if transcript_exists else 0),
         "bronze_snapshot_id": (
             _latest_snapshot_id(spark, CURRENT_TABLE) if bronze_exists else None
         ),
-        "silver_snapshot_id": (
-            _latest_snapshot_id(spark, SILVER_TABLE) if silver_exists else None
-        ),
+        "silver_snapshot_id": (_latest_snapshot_id(spark, SILVER_TABLE) if silver_exists else None),
     }
     if args.dry_run:
-        print(json.dumps({**before, "would_backfill_historical_rows": before["bronze_rows"]}, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    **before,
+                    "would_backfill_historical_rows": before["bronze_rows"],
+                    "would_migrate_transcript_lifecycle_rows": before["transcript_rows"],
+                },
+                sort_keys=True,
+            )
+        )
         return 0
 
     ensure_bronze_tables(spark)
     ensure_silver_tables(spark)
+    ensure_transcript_table(spark)
     journal_rows = _historical_journal_rows(spark)
     journal_candidates = journal_rows.count()
     if journal_candidates:
@@ -229,6 +238,10 @@ def main(argv: list[str] | None = None) -> int:
         "applied_candidates": applied_candidates,
         "event_log_rows_after": spark.table(EVENT_LOG_TABLE).count(),
         "applied_events_rows_after": spark.table(APPLIED_EVENTS_TABLE).count(),
+        "transcript_rows_after": spark.table(TRANSCRIPT_TABLE).count(),
+        "transcript_lifecycle_rows_after": spark.table(TRANSCRIPT_TABLE)
+        .filter("transcript_lifecycle_status IS NOT NULL")
+        .count(),
         "historical_limit": (
             "one deterministic synthetic event per current Bronze row; "
             "pre-journal history cannot be reconstructed"
