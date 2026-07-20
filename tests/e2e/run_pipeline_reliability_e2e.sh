@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Git Bash otherwise rewrites Linux container paths such as /opt/kafka into
+# Windows host paths before invoking the Docker CLI. Compose paths below are
+# repository-relative, so disabling that conversion is safe on MSYS hosts.
+if [[ -n "${MSYSTEM:-}" ]]; then
+  export MSYS_NO_PATHCONV=1
+fi
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 
