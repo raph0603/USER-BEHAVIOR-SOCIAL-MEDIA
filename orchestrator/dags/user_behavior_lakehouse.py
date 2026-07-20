@@ -399,6 +399,7 @@ with DAG(
         X_DLQ_TOPIC="${X_DLQ_KAFKA_TOPIC:-x.dlq.events}"
         REDDIT_DLQ_TOPIC="${REDDIT_DLQ_KAFKA_TOPIC:-reddit.dlq.events}"
         BRONZE_TOPIC="${BRONZE_KAFKA_OUT_TOPIC:-lakehouse.bronze.for_silver}"
+        BRONZE_INGRESS_DLQ_TOPIC="${BRONZE_INGRESS_DLQ_TOPIC:-lakehouse.bronze.ingress.dlq}"
         for TOPIC in \
           "$YOUTUBE_TOPIC" "$YOUTUBE_DISCOVERY_TOPIC" "$YOUTUBE_CHANGES_TOPIC" \
           "$YOUTUBE_TRANSCRIPT_REQUEST_TOPIC" "$YOUTUBE_TRANSCRIPT_RESULT_TOPIC" \
@@ -406,7 +407,8 @@ with DAG(
           "$YOUTUBE_CHANNEL_REQUEST_TOPIC" "$YOUTUBE_CHANNEL_RESULT_TOPIC" \
           "$YOUTUBE_ENGAGEMENT_TOPIC" "$X_TOPIC" "$REDDIT_TOPIC" \
           "$YOUTUBE_CLEAN_TOPIC" "$X_CLEAN_TOPIC" "$REDDIT_CLEAN_TOPIC" \
-          "$YOUTUBE_DLQ_TOPIC" "$X_DLQ_TOPIC" "$REDDIT_DLQ_TOPIC"; do
+          "$YOUTUBE_DLQ_TOPIC" "$X_DLQ_TOPIC" "$REDDIT_DLQ_TOPIC" \
+          "$BRONZE_INGRESS_DLQ_TOPIC"; do
           docker exec kafka /opt/kafka/bin/kafka-topics.sh \
             --create \
             --if-not-exists \
@@ -481,7 +483,11 @@ with DAG(
           -e KAFKA_TOPIC="${YOUTUBE_CLEAN_KAFKA_TOPIC:-youtube.clean.events},${X_CLEAN_KAFKA_TOPIC:-x.clean.events},${REDDIT_CLEAN_KAFKA_TOPIC:-reddit.clean.events}" \
           -e KAFKA_VALUE_FORMAT=json \
           -e BRONZE_KAFKA_OUT_TOPIC="${BRONZE_KAFKA_OUT_TOPIC:-lakehouse.bronze.for_silver}" \
-          -e BRONZE_CHECKPOINT_VERSION=post_clean_v1 \
+          -e BRONZE_INGRESS_DLQ_TOPIC="${BRONZE_INGRESS_DLQ_TOPIC:-lakehouse.bronze.ingress.dlq}" \
+          -e KAFKA_FAIL_ON_DATA_LOSS="${KAFKA_FAIL_ON_DATA_LOSS:-true}" \
+          -e ALLOW_KAFKA_DATA_LOSS="${ALLOW_KAFKA_DATA_LOSS:-false}" \
+          -e PIPELINE_RUN_ID="{{ dag.dag_id }}__{{ run_id }}" \
+          -e BRONZE_CHECKPOINT_VERSION=event_log_v1 \
           -e BRONZE_TRIGGER_MODE=available_now \
           spark-master /bin/bash -lc "set -o pipefail; mkdir -p /tmp/user-behavior-lakehouse; /opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=2 --conf spark.executor.cores=1 /opt/spark/jobs/streaming/kafka_to_iceberg_bronze.py 2>&1 | tee /tmp/user-behavior-lakehouse/bronze_stream.log"
         """,
@@ -493,9 +499,31 @@ with DAG(
         set -euo pipefail
         docker exec \
           -e SILVER_KAFKA_TOPICS="${BRONZE_KAFKA_OUT_TOPIC:-lakehouse.bronze.for_silver}" \
+          -e KAFKA_FAIL_ON_DATA_LOSS="${KAFKA_FAIL_ON_DATA_LOSS:-true}" \
+          -e ALLOW_KAFKA_DATA_LOSS="${ALLOW_KAFKA_DATA_LOSS:-false}" \
+          -e PIPELINE_RUN_ID="{{ dag.dag_id }}__{{ run_id }}" \
           -e SILVER_TRIGGER_MODE=available_now \
-          -e SILVER_CHECKPOINT_VERSION=post_clean_v1 \
+          -e SILVER_CHECKPOINT_VERSION=applied_events_v1 \
           spark-master /bin/bash -lc "set -o pipefail; mkdir -p /tmp/user-behavior-lakehouse; /opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=2 --conf spark.executor.cores=1 /opt/spark/jobs/batch/bronze_to_silver_from_kafka.py 2>&1 | tee /tmp/user-behavior-lakehouse/silver_stream.log"
+        """,
+    )
+
+    reconcile_bronze_silver = BashOperator(
+        task_id="reconcile_bronze_silver",
+        execution_timeout=timedelta(minutes=30),
+        bash_command=r"""
+        set -euo pipefail
+        docker exec \
+          -e PIPELINE_RUN_ID="{{ dag.dag_id }}__{{ run_id }}__reconcile" \
+          -e RECONCILIATION_REPAIR_LIMIT="${RECONCILIATION_REPAIR_LIMIT:-100000}" \
+          spark-master /opt/spark/bin/spark-submit \
+          --master spark://spark-master:7077 \
+          --driver-memory 512m \
+          --executor-memory 512m \
+          --conf spark.cores.max=2 \
+          --conf spark.executor.cores=1 \
+          /opt/spark/jobs/maintenance/reconcile_bronze_silver.py \
+          --mode repair
         """,
     )
     run_youtube_discovery = BashOperator(
@@ -765,7 +793,8 @@ with DAG(
     start_bronze_stream >> wait_bronze
     wait_bronze >> start_silver_stream
     start_silver_stream >> wait_silver
-    wait_silver >> [append_youtube_metadata_versions, persist_youtube_api_usage]
+    wait_silver >> reconcile_bronze_silver
+    reconcile_bronze_silver >> [append_youtube_metadata_versions, persist_youtube_api_usage]
     append_youtube_metadata_versions >> backfill_youtube_thumbnails
     backfill_youtube_thumbnails >> update_content_analytics
     update_content_analytics >> update_balancing_report
@@ -780,6 +809,7 @@ with DAG(
         wait_bronze,
         start_silver_stream,
         wait_silver,
+        reconcile_bronze_silver,
         append_youtube_metadata_versions,
         persist_youtube_api_usage,
         backfill_youtube_thumbnails,
@@ -800,6 +830,7 @@ with DAG(
         wait_clean_reddit,
         wait_bronze,
         wait_silver,
+        reconcile_bronze_silver,
         append_youtube_metadata_versions,
         persist_youtube_api_usage,
         backfill_youtube_thumbnails,
