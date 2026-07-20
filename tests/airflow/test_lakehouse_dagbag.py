@@ -27,6 +27,8 @@ class LakehouseDagBagTests(unittest.TestCase):
         environment = {
             "AIRFLOW__CORE__LOAD_EXAMPLES": "False",
             "AIRFLOW__CORE__UNIT_TEST_MODE": "True",
+            "AIRFLOW_VAR_CRAWLER_DASHBOARD_CONFIG": "{}",
+            "AIRFLOW_VAR_INSIGHT_DASHBOARD_CONFIG": "{}",
             "LAKEHOUSE_SCHEDULE_MINUTES": "0",
             "LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES": "60",
         }
@@ -45,8 +47,8 @@ class LakehouseDagBagTests(unittest.TestCase):
         self.assertIn("user_behavior_lakehouse_no_row_checks", self.bag.dags)
 
     def test_profiles_preserve_row_semantics_and_quality_checks(self):
-        standard = self.bag.get_dag("user_behavior_lakehouse")
-        no_rows = self.bag.get_dag("user_behavior_lakehouse_no_row_checks")
+        standard = self.bag.dags["user_behavior_lakehouse"]
+        no_rows = self.bag.dags["user_behavior_lakehouse_no_row_checks"]
         self.assertIn(
             "lakehouse.bronze.events 1",
             standard.get_task("verify_bronze_rows").bash_command,
@@ -69,7 +71,7 @@ class LakehouseDagBagTests(unittest.TestCase):
             "user_behavior_lakehouse",
             "user_behavior_lakehouse_no_row_checks",
         ):
-            dag = self.bag.get_dag(dag_id)
+            dag = self.bag.dags[dag_id]
             for task_id in (
                 "process_youtube_transcript_requests",
                 "process_youtube_comment_requests",
@@ -88,13 +90,15 @@ class LakehouseDagBagTests(unittest.TestCase):
             "user_behavior_lakehouse",
             "user_behavior_lakehouse_no_row_checks",
         ):
-            dag = self.bag.get_dag(dag_id)
+            dag = self.bag.dags[dag_id]
             for recovery_gate in (
                 "verify_bronze_recovery_lock",
                 "verify_silver_recovery_lock",
             ):
                 self.assertEqual(dag.get_task(recovery_gate).trigger_rule, "all_done")
-                self.assertIn("verify", dag.get_task(recovery_gate).bash_command.lower())
+                command = dag.get_task(recovery_gate).bash_command.lower()
+                self.assertIn("pipeline lock ownership check failed", command)
+                self.assertIn("verified shared pipeline lock", command)
             self.assertIn(
                 "verify_bronze_recovery_lock",
                 dag.get_task("transmit_bronze_to_silver").upstream_task_ids,
@@ -127,7 +131,7 @@ class LakehouseDagBagTests(unittest.TestCase):
             self.assertIn("update_content_analytics", downstream)
 
     def test_engagement_refresh_has_the_required_stage_order(self):
-        dag = self.bag.get_dag("refresh_recent_engagement_insights")
+        dag = self.bag.dags["refresh_recent_engagement_insights"]
         expected_edges = (
             ("export_recent_silver_targets", "refresh_youtube_insights"),
             ("refresh_youtube_insights", "validate_refresh_output"),
