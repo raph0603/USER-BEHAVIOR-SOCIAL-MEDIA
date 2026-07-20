@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 
 import sys
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "playwright"))
 MODULE_PATH = ROOT / "playwright" / "youtube_authors.py"
@@ -56,8 +57,7 @@ def _watch_html(channel_ids=None):
                             "customContent": {
                                 "listViewModel": {
                                     "listItems": [
-                                        _channel_item(channel_id)
-                                        for channel_id in channel_ids
+                                        _channel_item(channel_id) for channel_id in channel_ids
                                     ]
                                 }
                             }
@@ -153,31 +153,15 @@ class YouTubeAuthorTests(unittest.TestCase):
             ROOT / "schemas" / "playwright_event.avsc",
             ROOT / "playwright" / "producer.py",
             ROOT / "playwright" / "insight_refresh.py",
-            ROOT
-            / "spark"
-            / "jobs"
-            / "pipeline"
-            / "collector_stream_pipeline.py",
-            ROOT
-            / "spark"
-            / "jobs"
-            / "streaming"
-            / "kafka_to_iceberg_bronze.py",
+            ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py",
+            ROOT / "spark" / "jobs" / "streaming" / "kafka_to_iceberg_bronze.py",
             ROOT / "spark" / "jobs" / "batch" / "bronze_to_silver.py",
-            ROOT
-            / "spark"
-            / "jobs"
-            / "batch"
-            / "bronze_to_silver_from_kafka.py",
-            ROOT
-            / "spark"
-            / "jobs"
-            / "maintenance"
-            / "apply_insight_updates.py",
+            ROOT / "spark" / "jobs" / "batch" / "bronze_to_silver_from_kafka.py",
+            ROOT / "spark" / "jobs" / "maintenance" / "apply_insight_updates.py",
         ]
-        shared_contract = (
-            ROOT / "spark" / "jobs" / "event_contract.py"
-        ).read_text(encoding="utf-8")
+        shared_contract = (ROOT / "spark" / "jobs" / "event_contract.py").read_text(
+            encoding="utf-8"
+        )
         shared_stages = {
             "collector_stream_pipeline.py",
             "kafka_to_iceberg_bronze.py",
@@ -199,25 +183,18 @@ class YouTubeAuthorTests(unittest.TestCase):
                 "bronze_to_silver.py",
                 "bronze_to_silver_from_kafka.py",
             }:
-                source += (
-                    ROOT / "spark" / "jobs" / "pipeline" / "silver_merge.py"
-                ).read_text(encoding="utf-8")
+                source += (ROOT / "spark" / "jobs" / "pipeline" / "silver_merge.py").read_text(
+                    encoding="utf-8"
+                )
             with self.subTest(coalesce_path=path):
                 self.assertIn("COALESCE", source)
 
     def test_extract_youtube_subscriber_count_success(self):
         initial_data = {
-            "videoOwnerRenderer": {
-                "subscriberCountText": {
-                    "simpleText": "1.23M subscribers"
-                }
-            }
+            "videoOwnerRenderer": {"subscriberCountText": {"simpleText": "1.23M subscribers"}}
         }
         html = f"var ytInitialData = {json.dumps(initial_data)};"
-        self.assertEqual(
-            YOUTUBE_AUTHORS.extract_youtube_subscriber_count(html),
-            1230000
-        )
+        self.assertEqual(YOUTUBE_AUTHORS.extract_youtube_subscriber_count(html), 1230000)
 
 
 if __name__ == "__main__":

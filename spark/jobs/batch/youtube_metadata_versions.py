@@ -151,9 +151,7 @@ def main() -> None:
         PARTITIONED BY (snapshot_date)
         """
     )
-    versions = build_versions(spark.table("lakehouse.silver.events")).dropDuplicates(
-        ["version_id"]
-    )
+    versions = build_versions(spark.table("lakehouse.silver.events")).dropDuplicates(["version_id"])
     existing = spark.table(TABLE).select("version_id")
     new_versions = versions.join(existing, ["version_id"], "left_anti")
     if not new_versions.rdd.isEmpty():

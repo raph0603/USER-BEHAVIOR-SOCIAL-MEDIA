@@ -87,13 +87,7 @@ def _load_config(variable_key, defaults):
         return defaults.copy()
 
     config = defaults.copy()
-    config.update(
-        {
-            key: value
-            for key, value in stored_config.items()
-            if key in defaults
-        }
-    )
+    config.update({key: value for key, value in stored_config.items() if key in defaults})
     return config
 
 

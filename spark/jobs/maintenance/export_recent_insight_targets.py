@@ -98,16 +98,12 @@ def main() -> None:
                 (col("source") == "youtube")
                 & (
                     col("event_ts")
-                    >= current_timestamp()
-                    - expr(f"INTERVAL {youtube_max_age_days} DAYS")
+                    >= current_timestamp() - expr(f"INTERVAL {youtube_max_age_days} DAYS")
                 )
             )
             | (
                 (col("source") != "youtube")
-                & (
-                    col("event_ts")
-                    >= current_timestamp() - expr(f"INTERVAL {lookback_days} DAYS")
-                )
+                & (col("event_ts") >= current_timestamp() - expr(f"INTERVAL {lookback_days} DAYS"))
             )
         )
         .filter(
@@ -116,9 +112,7 @@ def main() -> None:
             | (col("next_metrics_refresh_at") <= current_timestamp())
         )
         .filter(col("url").isNotNull())
-        .dropDuplicates(
-            ["source", "platform_event_id", "user_id", "url", "event_ts"]
-        )
+        .dropDuplicates(["source", "platform_event_id", "user_id", "url", "event_ts"])
         .withColumn(
             "_rank",
             row_number().over(

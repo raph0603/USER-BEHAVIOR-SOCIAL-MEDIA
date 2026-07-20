@@ -92,9 +92,7 @@ class YouTubeMetadataTests(unittest.TestCase):
         )
 
     def test_canonical_metadata_excludes_engagement(self):
-        result = canonical_metadata(
-            {"title": "Video", "view_count": 10, "like_count": 2}
-        )
+        result = canonical_metadata({"title": "Video", "view_count": 10, "like_count": 2})
 
         self.assertEqual(result, {"title": "Video"})
 
@@ -124,9 +122,7 @@ class YouTubeSchedulingTests(unittest.TestCase):
                 self.assertEqual(metrics_refresh_interval(age), expected)
 
     def test_worker_summary_reports_average_processing_time(self):
-        result = finalize_worker_summary(
-            {"due": 2}, elapsed_seconds=5.0, processed=2
-        )
+        result = finalize_worker_summary({"due": 2}, elapsed_seconds=5.0, processed=2)
 
         self.assertEqual(result["elapsed_seconds"], 5.0)
         self.assertEqual(result["avg_seconds_per_video"], 2.5)
@@ -212,9 +208,7 @@ class YouTubeStateTests(unittest.TestCase):
                     reason="ip blocked",
                 )
                 self.assertTrue(state.breaker_open("transcript", observed))
-                self.assertFalse(
-                    state.breaker_open("transcript", observed + timedelta(hours=2))
-                )
+                self.assertFalse(state.breaker_open("transcript", observed + timedelta(hours=2)))
 
     def test_request_state_and_api_usage_are_persistent(self):
         with tempfile.TemporaryDirectory() as directory:

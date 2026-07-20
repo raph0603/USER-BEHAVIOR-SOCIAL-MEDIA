@@ -23,9 +23,7 @@ def schedule_interval() -> timedelta | None:
     try:
         minutes = int(raw_value)
     except ValueError as exc:
-        raise ValueError(
-            "INSIGHT_REFRESH_SCHEDULE_MINUTES must be an integer"
-        ) from exc
+        raise ValueError("INSIGHT_REFRESH_SCHEDULE_MINUTES must be an integer") from exc
     return timedelta(minutes=minutes) if minutes > 0 else None
 
 
@@ -75,8 +73,7 @@ with DAG(
     initialize_services = BashOperator(
         task_id="initialize_refresh_services",
         bash_command=docker_compose(
-            "up -d --scale spark-worker=${SPARK_WORKER_COUNT:-4} "
-            "minio spark-master spark-worker"
+            "up -d --scale spark-worker=${SPARK_WORKER_COUNT:-4} minio spark-master spark-worker"
         ),
     )
 
@@ -162,7 +159,8 @@ with DAG(
           : > /workspace/data/insight-refresh/x.jsonl
           exit 0
         fi
-        """ + docker_compose(
+        """
+        + docker_compose(
             "run --rm --no-deps "
             "-e INSIGHT_REFRESH_SOURCE=x "
             "-e X_HEADLESS={{ params.x_headless | lower }} "
@@ -180,7 +178,8 @@ with DAG(
           : > /workspace/data/insight-refresh/reddit.jsonl
           exit 0
         fi
-        """ + docker_compose(
+        """
+        + docker_compose(
             "run --rm --no-deps "
             "-e INSIGHT_REFRESH_SOURCE=reddit "
             "reddit-collector python /app/insight_refresh.py"
@@ -191,8 +190,7 @@ with DAG(
         task_id="validate_refresh_output",
         execution_timeout=timedelta(minutes=5),
         bash_command=docker_compose(
-            "run --rm --no-deps youtube-collector "
-            "python /app/validate_insight_refresh.py"
+            "run --rm --no-deps youtube-collector python /app/validate_insight_refresh.py"
         ),
     )
 

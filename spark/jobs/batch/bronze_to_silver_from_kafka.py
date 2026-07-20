@@ -149,8 +149,7 @@ def main() -> None:
     checkpoint_key = re.sub(r"[^a-zA-Z0-9._-]+", "_", kafka_topics)
     checkpoint_version = _env("SILVER_CHECKPOINT_VERSION", "applied_events_v1")
     checkpoint = (
-        f"s3a://{bucket}/checkpoints/silver/events/kafka/"
-        f"{checkpoint_version}/{checkpoint_key}"
+        f"s3a://{bucket}/checkpoints/silver/events/kafka/{checkpoint_version}/{checkpoint_key}"
     )
     writer = (
         events.writeStream.outputMode("append")

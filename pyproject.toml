@@ -19,6 +19,9 @@ extend-exclude = [
     "data",
 ]
 
+[tool.ruff.format]
+line-ending = "lf"
+
 [tool.ruff.lint]
 # Keep the first repository-wide lint gate focused on runtime-breaking errors.
 select = ["E9", "F63", "F7", "F82"]

@@ -171,7 +171,7 @@ def _merge_current_state(events: DataFrame, *, epoch_id: int) -> int:
               {assignments}
             WHEN NOT MATCHED THEN
               INSERT ({rendered_columns})
-              VALUES ({', '.join(f's.{name}' for name in columns)})
+              VALUES ({", ".join(f"s.{name}" for name in columns)})
             """
         )
         return row_count
@@ -202,7 +202,7 @@ def _record_applied_events(
         ON t.event_id = s.event_id
         WHEN NOT MATCHED THEN
           INSERT ({rendered_columns})
-          VALUES ({', '.join(f's.{name}' for name in APPLIED_EVENT_COLUMNS)})
+          VALUES ({", ".join(f"s.{name}" for name in APPLIED_EVENT_COLUMNS)})
         """
     )
 

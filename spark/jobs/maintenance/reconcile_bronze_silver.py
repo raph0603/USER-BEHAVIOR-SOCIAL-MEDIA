@@ -55,8 +55,8 @@ def _build_spark(warehouse: str) -> SparkSession:
 
 
 def _duplicate_id_count(frame: DataFrame) -> int:
-    duplicates = frame.groupBy("event_id").agg(count("*").alias("row_count")).filter(
-        col("row_count") > 1
+    duplicates = (
+        frame.groupBy("event_id").agg(count("*").alias("row_count")).filter(col("row_count") > 1)
     )
     return sum(int(row["row_count"]) - 1 for row in duplicates.collect())
 
@@ -130,15 +130,11 @@ def main(argv: list[str] | None = None) -> int:
     spark.sparkContext.setLogLevel("WARN")
     ensure_silver_tables(spark)
     if not spark.catalog.tableExists(EVENT_LOG_TABLE):
-        raise RuntimeError(
-            f"{EVENT_LOG_TABLE} does not exist; run the additive migration first"
-        )
+        raise RuntimeError(f"{EVENT_LOG_TABLE} does not exist; run the additive migration first")
 
     repaired_events = 0
     if args.mode == "repair":
-        missing = _missing_events(spark).orderBy("ingested_at", "event_id").limit(
-            args.repair_limit
-        )
+        missing = _missing_events(spark).orderBy("ingested_at", "event_id").limit(args.repair_limit)
         run_id = _env(
             "PIPELINE_RUN_ID",
             f"reconcile-{datetime.now(timezone.utc).isoformat()}",

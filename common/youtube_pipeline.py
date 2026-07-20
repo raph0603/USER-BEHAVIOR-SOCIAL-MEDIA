@@ -71,12 +71,8 @@ class SearchQuery:
 
 
 DEFAULT_SEARCH_QUERIES = (
-    SearchQuery.create(
-        "electric vehicle review|EV charging battery range", "en"
-    ),
-    SearchQuery.create(
-        "đánh giá xe điện|xe điện VinFast trạm sạc", "vi"
-    ),
+    SearchQuery.create("electric vehicle review|EV charging battery range", "en"),
+    SearchQuery.create("đánh giá xe điện|xe điện VinFast trạm sạc", "vi"),
 )
 
 
@@ -100,9 +96,7 @@ def parse_search_queries(
     if parsed is not None:
         for item in parsed:
             if isinstance(item, dict):
-                specs.append(
-                    SearchQuery.create(item.get("query", ""), item.get("language", ""))
-                )
+                specs.append(SearchQuery.create(item.get("query", ""), item.get("language", "")))
             elif isinstance(item, str):
                 specs.append(SearchQuery.create(item, _legacy_language(item, (), "en")))
             else:
@@ -225,13 +219,14 @@ def _normalize_value(value: Any, *, field: str = "") -> Any:
         }
         return {key: item for key, item in normalized.items() if item is not None}
     if isinstance(value, (list, tuple, set)):
-        normalized_items = [
-            _normalize_value(item, field=field) for item in value
-        ]
+        normalized_items = [_normalize_value(item, field=field) for item in value]
         normalized_items = [item for item in normalized_items if item is not None]
         if field in SET_LIKE_FIELDS:
             return sorted(
-                {json.dumps(item, sort_keys=True, ensure_ascii=False): item for item in normalized_items}.values(),
+                {
+                    json.dumps(item, sort_keys=True, ensure_ascii=False): item
+                    for item in normalized_items
+                }.values(),
                 key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=False),
             )
         if field in {"thumbnails", "subtitles", "automatic_captions"}:
@@ -268,9 +263,7 @@ def changed_metadata_fields(
     before = canonical_metadata(previous or {})
     after = canonical_metadata(current)
     return sorted(
-        field
-        for field in set(before) | set(after)
-        if before.get(field) != after.get(field)
+        field for field in set(before) | set(after) if before.get(field) != after.get(field)
     )
 
 
@@ -300,7 +293,5 @@ def finalize_worker_summary(
     result = dict(summary)
     elapsed = max(0.0, float(elapsed_seconds))
     result["elapsed_seconds"] = round(elapsed, 3)
-    result["avg_seconds_per_video"] = (
-        round(elapsed / processed, 3) if processed > 0 else None
-    )
+    result["avg_seconds_per_video"] = round(elapsed / processed, 3) if processed > 0 else None
     return result

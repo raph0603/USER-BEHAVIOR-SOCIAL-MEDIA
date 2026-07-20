@@ -49,9 +49,7 @@ def main() -> None:
     ensure_silver_tables(spark)
 
     source_table = _env("BRONZE_EVENT_LOG_TABLE", "lakehouse.bronze.event_log")
-    source_stream = spark.readStream.format("iceberg").load(source_table).select(
-        *BRONZE_COLUMNS
-    )
+    source_stream = spark.readStream.format("iceberg").load(source_table).select(*BRONZE_COLUMNS)
     run_id = _env("PIPELINE_RUN_ID", "standalone-direct")
 
     def _foreach_batch(df: DataFrame, epoch_id: int) -> None:
@@ -82,9 +80,7 @@ def main() -> None:
     if _env("PROCESSING_MODE", "continuous").lower() == "availablenow":
         query = writer.trigger(availableNow=True).start()
     else:
-        query = writer.trigger(
-            processingTime=_env("PROCESSING_TRIGGER", "30 seconds")
-        ).start()
+        query = writer.trigger(processingTime=_env("PROCESSING_TRIGGER", "30 seconds")).start()
     query.awaitTermination()
 
 

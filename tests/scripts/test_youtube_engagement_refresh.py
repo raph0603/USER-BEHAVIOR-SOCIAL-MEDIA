@@ -89,10 +89,13 @@ class YouTubeEngagementRefreshTests(unittest.TestCase):
     def test_refresh_batches_fifty_ids_and_reads_comment_count(self):
         calls = []
         targets = [self._target(index) for index in range(51)]
-        with patch.dict(os.environ, {"YOUTUBE_API_KEY": "test-key"}), patch.object(
-            insight_refresh,
-            "build",
-            return_value=FakeYouTube(calls),
+        with (
+            patch.dict(os.environ, {"YOUTUBE_API_KEY": "test-key"}),
+            patch.object(
+                insight_refresh,
+                "build",
+                return_value=FakeYouTube(calls),
+            ),
         ):
             updates = insight_refresh._refresh_youtube(targets)
 
@@ -106,10 +109,13 @@ class YouTubeEngagementRefreshTests(unittest.TestCase):
     def test_missing_video_has_explicit_status(self):
         calls = []
         target = self._target(1)
-        with patch.dict(os.environ, {"YOUTUBE_API_KEY": "test-key"}), patch.object(
-            insight_refresh,
-            "build",
-            return_value=FakeYouTube(calls, {"video-1"}),
+        with (
+            patch.dict(os.environ, {"YOUTUBE_API_KEY": "test-key"}),
+            patch.object(
+                insight_refresh,
+                "build",
+                return_value=FakeYouTube(calls, {"video-1"}),
+            ),
         ):
             updates = insight_refresh._refresh_youtube([target])
 
