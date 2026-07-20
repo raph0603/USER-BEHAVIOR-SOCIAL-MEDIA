@@ -102,6 +102,18 @@ class ContentAnalyticsContractTests(unittest.TestCase):
         self.assertIn('"youtube.metadata.changed"', source)
         self.assertIn('col("observation_id").desc_nulls_last()', source)
 
+    def test_analytics_materializes_only_applied_immutable_history(self):
+        source = (ROOT / "spark" / "jobs" / "batch" / "content_analytics.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('BRONZE_EVENT_LOG_TABLE = "lakehouse.bronze.event_log"', source)
+        self.assertIn('APPLIED_EVENTS_TABLE = "lakehouse.silver.applied_events"', source)
+        self.assertIn("def load_applied_event_history", source)
+        self.assertIn('dropDuplicates(["event_id"])', source)
+        self.assertIn('join(applied_ids, ["event_id"], "inner")', source)
+        self.assertIn('col("event_type") == "youtube.engagement.snapshot"', source)
+
     def test_nullable_source_columns_are_declared(self):
         for column in (
             "subreddit",

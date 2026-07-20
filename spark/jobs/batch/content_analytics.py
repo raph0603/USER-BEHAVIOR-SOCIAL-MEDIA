@@ -84,6 +84,9 @@ SNAPSHOT_TABLE = "lakehouse.silver.engagement_snapshots"
 TRANSCRIPT_TABLE = "lakehouse.silver.transcripts"
 CONTENT_STATS_TABLE = "lakehouse.gold.content_stats"
 USER_EVOLUTION_TABLE = "lakehouse.gold.user_evolution"
+BRONZE_EVENT_LOG_TABLE = "lakehouse.bronze.event_log"
+APPLIED_EVENTS_TABLE = "lakehouse.silver.applied_events"
+SILVER_EVENTS_TABLE = "lakehouse.silver.events"
 
 
 CREATE_CONTENTS_SQL = """
@@ -1057,8 +1060,28 @@ def build_interactions(events: DataFrame) -> DataFrame:
 
 def build_snapshots(events: DataFrame) -> DataFrame:
     normalized = normalize_events(events)
+    engagement_observed = lit(False)
+    for metric in (
+        "view_count",
+        "like_count",
+        "comment_count",
+        "reply_count",
+        "retweet_count",
+        "bookmark_count",
+        "score",
+        "follower_count",
+        "subscriber_count",
+        "subreddit_member_count",
+    ):
+        engagement_observed = engagement_observed | (
+            coalesce(col(f"{metric}_available"), col(metric).isNotNull()) & col(metric).isNotNull()
+        )
+    snapshot_event = (
+        (col("source") == "youtube") & (col("event_type") == "youtube.engagement.snapshot")
+    ) | ((col("source") != "youtube") & engagement_observed)
+    legacy_snapshot = col("event_type").isNull() & engagement_observed
     return (
-        normalized.filter(~col("is_interaction"))
+        normalized.filter((~col("is_interaction")) & (snapshot_event | legacy_snapshot))
         .withColumn(
             "snapshot_at",
             coalesce(col("observed_at"), col("metadata_refreshed_at"), col("created_at")),
@@ -1518,6 +1541,25 @@ def _create_tables(spark: SparkSession) -> None:
     )
 
 
+def load_applied_event_history(spark: SparkSession) -> DataFrame:
+    """Read immutable Bronze history only for events durably applied to Silver."""
+
+    if spark.catalog.tableExists(BRONZE_EVENT_LOG_TABLE) and spark.catalog.tableExists(
+        APPLIED_EVENTS_TABLE
+    ):
+        history = spark.table(BRONZE_EVENT_LOG_TABLE).alias("history")
+        applied_ids = (
+            spark.table(APPLIED_EVENTS_TABLE)
+            .select("event_id")
+            .dropDuplicates(["event_id"])
+            .alias("applied")
+        )
+        return history.join(applied_ids, ["event_id"], "inner").select(
+            *[col(f"history.{column}").alias(column) for column in history.columns]
+        )
+    return spark.table(SILVER_EVENTS_TABLE)
+
+
 def _merge_dataframe(
     dataframe: DataFrame,
     table: str,
@@ -1598,7 +1640,7 @@ def main() -> None:
 
     _create_tables(spark)
 
-    events = spark.table("lakehouse.silver.events")
+    events = load_applied_event_history(spark)
     contents = build_contents(events)
     interactions = build_interactions(events)
     snapshots = build_snapshots(events)
