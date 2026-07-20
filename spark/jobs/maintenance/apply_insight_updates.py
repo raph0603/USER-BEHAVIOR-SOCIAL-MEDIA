@@ -5,6 +5,7 @@ from pathlib import Path
 from pyspark.sql import SparkSession
 from pyspark.sql.types import (
     ArrayType,
+    BooleanType,
     IntegerType,
     LongType,
     StringType,
@@ -29,12 +30,26 @@ AUTHOR_COLUMNS = (
     "owner_channel_id",
     "collaborator_channel_ids",
 )
-METADATA_COLUMNS = (
-    "platform_event_id",
-)
+METADATA_COLUMNS = ("platform_event_id",)
 METRICS_REFRESH_COLUMNS = (
     "metrics_refresh_count",
     "metrics_refresh_status",
+)
+PROVENANCE_COLUMNS = (
+    "observation_id",
+    "observed_at",
+    "producer_name",
+    "producer_run_id",
+    "payload_fingerprint",
+    "collection_method",
+    "api_endpoint",
+    "provenance_json",
+    "coverage_json",
+)
+AVAILABILITY_COLUMNS = tuple(f"{column}_available" for column in METRIC_COLUMNS) + (
+    "metadata_available",
+    "transcript_available",
+    "comments_available",
 )
 
 
@@ -83,7 +98,7 @@ def _build_spark() -> SparkSession:
 
 
 def _load_updates(path: Path) -> list[dict]:
-    updates = []
+    updates: list[dict] = []
     if not path.is_file():
         return updates
     with path.open(encoding="utf-8") as source:
@@ -101,6 +116,8 @@ def _merge_updates(spark: SparkSession, table: str) -> None:
             *AUTHOR_COLUMNS,
             *METRIC_COLUMNS,
             *METRICS_REFRESH_COLUMNS,
+            *PROVENANCE_COLUMNS,
+            *AVAILABILITY_COLUMNS,
         )
     )
     assignments = (
@@ -140,18 +157,9 @@ def _merge_updates(spark: SparkSession, table: str) -> None:
 
 
 def main() -> None:
-    input_dir = Path(
-        _env("INSIGHT_REFRESH_OUTPUT_DIR", "/opt/spark/insight-refresh")
-    )
-    input_files = [
-        input_dir / f"{source}.jsonl"
-        for source in ("youtube", "x", "reddit")
-    ]
-    updates = [
-        update
-        for input_file in input_files
-        for update in _load_updates(input_file)
-    ]
+    input_dir = Path(_env("INSIGHT_REFRESH_OUTPUT_DIR", "/opt/spark/insight-refresh"))
+    input_files = [input_dir / f"{source}.jsonl" for source in ("youtube", "x", "reddit")]
+    updates = [update for input_file in input_files for update in _load_updates(input_file)]
     if not updates:
         print("No insight updates to apply")
         return
@@ -163,6 +171,7 @@ def main() -> None:
             StructField("event_ts", StringType(), False),
             StructField("source", StringType(), False),
             StructField("platform_event_id", StringType(), True),
+            *[StructField(column, StringType(), True) for column in PROVENANCE_COLUMNS],
             StructField("metadata_refreshed_at", StringType(), True),
             StructField("last_metrics_refresh_at", StringType(), True),
             StructField("next_metrics_refresh_at", StringType(), True),
@@ -174,10 +183,8 @@ def main() -> None:
                 ArrayType(StringType()),
                 True,
             ),
-            *[
-                StructField(column, LongType(), True)
-                for column in METRIC_COLUMNS
-            ],
+            *[StructField(column, LongType(), True) for column in METRIC_COLUMNS],
+            *[StructField(column, BooleanType(), True) for column in AVAILABILITY_COLUMNS],
         ]
     )
     spark = _build_spark()
@@ -189,43 +196,30 @@ def main() -> None:
     for table in ("lakehouse.bronze.events", "lakehouse.silver.events"):
         current_columns = set(spark.table(table).columns)
         if "platform_event_id" not in current_columns:
-            spark.sql(
-                f"ALTER TABLE {table} ADD COLUMN platform_event_id STRING"
-            )
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN platform_event_id STRING")
         if "metadata_refreshed_at" not in current_columns:
-            spark.sql(
-                f"ALTER TABLE {table} ADD COLUMN metadata_refreshed_at TIMESTAMP"
-            )
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN metadata_refreshed_at TIMESTAMP")
         if "owner_channel_id" not in current_columns:
-            spark.sql(
-                f"ALTER TABLE {table} ADD COLUMN owner_channel_id STRING"
-            )
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN owner_channel_id STRING")
         if "collaborator_channel_ids" not in current_columns:
-            spark.sql(
-                f"ALTER TABLE {table} ADD COLUMN "
-                "collaborator_channel_ids ARRAY<STRING>"
-            )
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN collaborator_channel_ids ARRAY<STRING>")
         if "last_metrics_refresh_at" not in current_columns:
-            spark.sql(
-                f"ALTER TABLE {table} ADD COLUMN last_metrics_refresh_at TIMESTAMP"
-            )
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN last_metrics_refresh_at TIMESTAMP")
         if "next_metrics_refresh_at" not in current_columns:
-            spark.sql(
-                f"ALTER TABLE {table} ADD COLUMN next_metrics_refresh_at TIMESTAMP"
-            )
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN next_metrics_refresh_at TIMESTAMP")
         if "metrics_refresh_count" not in current_columns:
-            spark.sql(
-                f"ALTER TABLE {table} ADD COLUMN metrics_refresh_count INT"
-            )
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN metrics_refresh_count INT")
         if "metrics_refresh_status" not in current_columns:
-            spark.sql(
-                f"ALTER TABLE {table} ADD COLUMN metrics_refresh_status STRING"
-            )
+            spark.sql(f"ALTER TABLE {table} ADD COLUMN metrics_refresh_status STRING")
         for metric_column in METRIC_COLUMNS:
             if metric_column not in current_columns:
-                spark.sql(
-                    f"ALTER TABLE {table} ADD COLUMN {metric_column} BIGINT"
-                )
+                spark.sql(f"ALTER TABLE {table} ADD COLUMN {metric_column} BIGINT")
+        for provenance_column in PROVENANCE_COLUMNS:
+            if provenance_column not in current_columns:
+                spark.sql(f"ALTER TABLE {table} ADD COLUMN {provenance_column} STRING")
+        for availability_column in AVAILABILITY_COLUMNS:
+            if availability_column not in current_columns:
+                spark.sql(f"ALTER TABLE {table} ADD COLUMN {availability_column} BOOLEAN")
         _merge_updates(spark, table)
 
     print(f"Applied {len(updates)} insight updates to Bronze and Silver")

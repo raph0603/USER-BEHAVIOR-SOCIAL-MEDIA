@@ -92,6 +92,7 @@ INSIGHT_REFRESH_SCHEMA = StructType(
         StructField("url", StringType(), False),
         StructField("event_ts", StringType(), False),
         StructField("source", StringType(), False),
+        StructField("event_id", StringType(), True),
         StructField("platform_event_id", StringType(), True),
         StructField("observation_id", StringType(), True),
         StructField("metadata_refreshed_at", StringType(), True),
@@ -117,6 +118,7 @@ INSIGHT_REFRESH_SCHEMA = StructType(
         StructField("collection_method", StringType(), True),
         StructField("api_endpoint", StringType(), True),
         StructField("payload_fingerprint", StringType(), True),
+        StructField("provenance_json", StringType(), True),
         StructField("coverage_json", StringType(), True),
         StructField("like_count_available", BooleanType(), True),
         StructField("view_count_available", BooleanType(), True),
@@ -125,6 +127,12 @@ INSIGHT_REFRESH_SCHEMA = StructType(
         StructField("retweet_count_available", BooleanType(), True),
         StructField("bookmark_count_available", BooleanType(), True),
         StructField("score_available", BooleanType(), True),
+        StructField("follower_count_available", BooleanType(), True),
+        StructField("subscriber_count_available", BooleanType(), True),
+        StructField("subreddit_member_count_available", BooleanType(), True),
+        StructField("metadata_available", BooleanType(), True),
+        StructField("transcript_available", BooleanType(), True),
+        StructField("comments_available", BooleanType(), True),
     ]
 )
 
@@ -135,6 +143,7 @@ INSIGHT_REFRESH_SCHEMA = StructType(
 
 _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS lakehouse.silver.engagement_snapshots (
+  event_id             STRING    COMMENT 'Immutable Bronze journal event identity',
   observation_id       STRING    COMMENT 'Stable source, platform ID, observed-at identity',
   source               STRING    COMMENT 'Origin platform: youtube, x, reddit, playwright',
   platform_event_id    STRING    COMMENT 'Platform-native stable identifier',
@@ -150,6 +159,9 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.engagement_snapshots (
   retweet_count        BIGINT    COMMENT 'Retweet / repost count at observation time',
   bookmark_count       BIGINT    COMMENT 'Bookmark count at observation time',
   score                BIGINT    COMMENT 'Reddit score (upvotes - downvotes) at observation time',
+  follower_count       BIGINT    COMMENT 'Author follower count when observed',
+  subscriber_count     BIGINT    COMMENT 'Channel subscriber count when observed',
+  subreddit_member_count BIGINT  COMMENT 'Community member count when observed',
   views_delta          BIGINT    COMMENT 'Non-negative views change since prior observation',
   likes_delta          BIGINT    COMMENT 'Non-negative likes change since prior observation',
   comments_delta       BIGINT    COMMENT 'Non-negative comments change since prior observation',
@@ -168,6 +180,7 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.engagement_snapshots (
   collection_method     STRING    COMMENT 'Official API, browser, or public JSON collection path',
   api_endpoint          STRING    COMMENT 'External endpoint used for this observation',
   payload_fingerprint   STRING    COMMENT 'SHA-256 of the normalized observation payload',
+  provenance_json       STRING    COMMENT 'Sanitized producer and collection provenance',
   coverage_json         STRING    COMMENT 'Explicit availability coverage for metrics',
   like_count_available  BOOLEAN   COMMENT 'Whether like_count was actually observed',
   view_count_available  BOOLEAN   COMMENT 'Whether view_count was actually observed',
@@ -176,6 +189,12 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.engagement_snapshots (
   retweet_count_available BOOLEAN COMMENT 'Whether retweet_count was actually observed',
   bookmark_count_available BOOLEAN COMMENT 'Whether bookmark_count was actually observed',
   score_available       BOOLEAN   COMMENT 'Whether score was actually observed',
+  follower_count_available BOOLEAN COMMENT 'Whether follower_count was actually observed',
+  subscriber_count_available BOOLEAN COMMENT 'Whether subscriber_count was actually observed',
+  subreddit_member_count_available BOOLEAN COMMENT 'Whether community size was actually observed',
+  metadata_available    BOOLEAN   COMMENT 'Whether metadata was available for the observation',
+  transcript_available  BOOLEAN   COMMENT 'Whether a transcript was available',
+  comments_available    BOOLEAN   COMMENT 'Whether comment content was available',
   snapshot_date        DATE      COMMENT 'Partition column derived from observed_at'
 )
 USING iceberg
@@ -186,6 +205,7 @@ TBLPROPERTIES (
 """
 
 _SNAPSHOT_COLUMNS = [
+    "event_id",
     "observation_id",
     "source",
     "platform_event_id",
@@ -201,6 +221,9 @@ _SNAPSHOT_COLUMNS = [
     "retweet_count",
     "bookmark_count",
     "score",
+    "follower_count",
+    "subscriber_count",
+    "subreddit_member_count",
     "views_delta",
     "likes_delta",
     "comments_delta",
@@ -219,6 +242,7 @@ _SNAPSHOT_COLUMNS = [
     "collection_method",
     "api_endpoint",
     "payload_fingerprint",
+    "provenance_json",
     "coverage_json",
     "like_count_available",
     "view_count_available",
@@ -227,6 +251,12 @@ _SNAPSHOT_COLUMNS = [
     "retweet_count_available",
     "bookmark_count_available",
     "score_available",
+    "follower_count_available",
+    "subscriber_count_available",
+    "subreddit_member_count_available",
+    "metadata_available",
+    "transcript_available",
+    "comments_available",
     "snapshot_date",
 ]
 
@@ -293,6 +323,7 @@ def build_snapshots_from_updates(
                 ),
             ),
         )
+        .withColumn("event_id", coalesce(col("event_id"), col("observation_id")))
         .withColumn(
             "producer_name",
             coalesce(col("producer_name"), lit("insight_refresh")),
@@ -330,6 +361,9 @@ def build_snapshots_from_updates(
         "retweet_count",
         "bookmark_count",
         "score",
+        "follower_count",
+        "subscriber_count",
+        "subreddit_member_count",
     )
     for metric in tracked_metrics:
         availability = f"{metric}_available"
@@ -338,12 +372,51 @@ def build_snapshots_from_updates(
             coalesce(col(availability), col(metric).isNotNull()),
         )
 
+    df = (
+        df.withColumn(
+            "metadata_available",
+            coalesce(
+                col("metadata_available"),
+                col("metrics_refresh_status").isin("available", "success"),
+            ),
+        )
+        .withColumn(
+            "transcript_available",
+            coalesce(col("transcript_available"), lit(False)),
+        )
+        .withColumn(
+            "comments_available",
+            coalesce(col("comments_available"), lit(False)),
+        )
+        .withColumn(
+            "provenance_json",
+            coalesce(
+                col("provenance_json"),
+                to_json(
+                    struct(
+                        "source",
+                        "producer_name",
+                        "producer_run_id",
+                        "collection_method",
+                        "api_endpoint",
+                        "observed_at",
+                    )
+                ),
+            ),
+        )
+    )
+
     df = df.withColumn(
         "coverage_json",
         coalesce(
             col("coverage_json"),
             to_json(
-                struct(*[col(f"{metric}_available").alias(metric) for metric in tracked_metrics])
+                struct(
+                    *[col(f"{metric}_available").alias(metric) for metric in tracked_metrics],
+                    col("metadata_available").alias("metadata"),
+                    col("transcript_available").alias("transcript"),
+                    col("comments_available").alias("comments"),
+                )
             ),
         ),
     ).withColumn(
@@ -526,8 +599,12 @@ def main() -> None:
         "lakehouse.silver.engagement_snapshots",
         {
             "observation_id": "STRING",
+            "event_id": "STRING",
             "score": "BIGINT",
             "bookmark_count": "BIGINT",
+            "follower_count": "BIGINT",
+            "subscriber_count": "BIGINT",
+            "subreddit_member_count": "BIGINT",
             "views_delta": "BIGINT",
             "likes_delta": "BIGINT",
             "comments_delta": "BIGINT",
@@ -546,6 +623,7 @@ def main() -> None:
             "collection_method": "STRING",
             "api_endpoint": "STRING",
             "payload_fingerprint": "STRING",
+            "provenance_json": "STRING",
             "coverage_json": "STRING",
             "like_count_available": "BOOLEAN",
             "view_count_available": "BOOLEAN",
@@ -554,6 +632,12 @@ def main() -> None:
             "retweet_count_available": "BOOLEAN",
             "bookmark_count_available": "BOOLEAN",
             "score_available": "BOOLEAN",
+            "follower_count_available": "BOOLEAN",
+            "subscriber_count_available": "BOOLEAN",
+            "subreddit_member_count_available": "BOOLEAN",
+            "metadata_available": "BOOLEAN",
+            "transcript_available": "BOOLEAN",
+            "comments_available": "BOOLEAN",
         },
     )
 

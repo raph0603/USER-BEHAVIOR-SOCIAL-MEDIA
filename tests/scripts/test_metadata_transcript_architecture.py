@@ -29,6 +29,7 @@ from common.collection import (
     safe_json_dumps,
     utc_now,
 )
+from common.event_envelope import enrich_event_envelope
 from common.transcripts import (
     TranscriptPayload,
     legacy_transcript_status,
@@ -366,6 +367,7 @@ class CanonicalEventTests(unittest.TestCase):
             "STATUS_DISABLED": "disabled",
             "STATUS_SUCCESS": "success",
             "canonical_content_id": canonical_content_id,
+            "enrich_event_envelope": enrich_event_envelope,
             "isoformat_utc": isoformat_utc,
             "safe_json_dumps": safe_json_dumps,
             "transcript_lifecycle_status": transcript_lifecycle_status,

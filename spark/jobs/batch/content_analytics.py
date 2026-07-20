@@ -26,6 +26,7 @@ try:
         length,
         lit,
         lower,
+        max as spark_max,
         regexp_extract,
         regexp_replace,
         row_number,
@@ -37,6 +38,7 @@ try:
         to_json,
         to_timestamp,
         trim,
+        unix_timestamp,
         when,
     )
 except ModuleNotFoundError as exc:
@@ -119,7 +121,30 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.contents (
   raw_text STRING,
   clean_text STRING,
   text_for_model STRING,
-  thumbnail_url STRING
+  thumbnail_url STRING,
+  event_id STRING,
+  observation_id STRING,
+  observed_at TIMESTAMP,
+  producer_name STRING,
+  producer_run_id STRING,
+  payload_fingerprint STRING,
+  collection_method STRING,
+  api_endpoint STRING,
+  provenance_json STRING,
+  coverage_json STRING,
+  like_count_available BOOLEAN,
+  view_count_available BOOLEAN,
+  comment_count_available BOOLEAN,
+  reply_count_available BOOLEAN,
+  retweet_count_available BOOLEAN,
+  bookmark_count_available BOOLEAN,
+  score_available BOOLEAN,
+  follower_count_available BOOLEAN,
+  subscriber_count_available BOOLEAN,
+  subreddit_member_count_available BOOLEAN,
+  metadata_available BOOLEAN,
+  transcript_available BOOLEAN,
+  comments_available BOOLEAN
 )
 USING iceberg
 PARTITIONED BY (event_date)
@@ -152,7 +177,30 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.interactions (
   source_specific_metadata STRING,
   raw_text STRING,
   clean_text STRING,
-  text_for_model STRING
+  text_for_model STRING,
+  event_id STRING,
+  observation_id STRING,
+  observed_at TIMESTAMP,
+  producer_name STRING,
+  producer_run_id STRING,
+  payload_fingerprint STRING,
+  collection_method STRING,
+  api_endpoint STRING,
+  provenance_json STRING,
+  coverage_json STRING,
+  like_count_available BOOLEAN,
+  view_count_available BOOLEAN,
+  comment_count_available BOOLEAN,
+  reply_count_available BOOLEAN,
+  retweet_count_available BOOLEAN,
+  bookmark_count_available BOOLEAN,
+  score_available BOOLEAN,
+  follower_count_available BOOLEAN,
+  subscriber_count_available BOOLEAN,
+  subreddit_member_count_available BOOLEAN,
+  metadata_available BOOLEAN,
+  transcript_available BOOLEAN,
+  comments_available BOOLEAN
 )
 USING iceberg
 PARTITIONED BY (event_date)
@@ -161,6 +209,8 @@ PARTITIONED BY (event_date)
 
 CREATE_SNAPSHOTS_SQL = """
 CREATE TABLE IF NOT EXISTS lakehouse.silver.engagement_snapshots (
+  event_id STRING,
+  observation_id STRING,
   content_id STRING,
   source STRING,
   platform_event_id STRING,
@@ -181,6 +231,26 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.engagement_snapshots (
   follower_count BIGINT,
   subscriber_count BIGINT,
   subreddit_member_count BIGINT,
+  producer_name STRING,
+  producer_run_id STRING,
+  payload_fingerprint STRING,
+  collection_method STRING,
+  api_endpoint STRING,
+  provenance_json STRING,
+  coverage_json STRING,
+  like_count_available BOOLEAN,
+  view_count_available BOOLEAN,
+  comment_count_available BOOLEAN,
+  reply_count_available BOOLEAN,
+  retweet_count_available BOOLEAN,
+  bookmark_count_available BOOLEAN,
+  score_available BOOLEAN,
+  follower_count_available BOOLEAN,
+  subscriber_count_available BOOLEAN,
+  subreddit_member_count_available BOOLEAN,
+  metadata_available BOOLEAN,
+  transcript_available BOOLEAN,
+  comments_available BOOLEAN,
   snapshot_date DATE
 )
 USING iceberg
@@ -282,6 +352,44 @@ PARTITIONED BY (event_date)
 """
 
 
+PROVENANCE_COLUMNS = [
+    "event_id",
+    "observation_id",
+    "observed_at",
+    "producer_name",
+    "producer_run_id",
+    "payload_fingerprint",
+    "collection_method",
+    "api_endpoint",
+    "provenance_json",
+    "coverage_json",
+    "like_count_available",
+    "view_count_available",
+    "comment_count_available",
+    "reply_count_available",
+    "retweet_count_available",
+    "bookmark_count_available",
+    "score_available",
+    "follower_count_available",
+    "subscriber_count_available",
+    "subreddit_member_count_available",
+    "metadata_available",
+    "transcript_available",
+    "comments_available",
+]
+
+PROVENANCE_COLUMN_TYPES = {
+    column: (
+        "TIMESTAMP"
+        if column == "observed_at"
+        else "BOOLEAN"
+        if column.endswith("_available")
+        else "STRING"
+    )
+    for column in PROVENANCE_COLUMNS
+}
+
+
 CONTENT_COLUMNS = [
     "content_id",
     "root_content_id",
@@ -317,6 +425,7 @@ CONTENT_COLUMNS = [
     "clean_text",
     "text_for_model",
     "thumbnail_url",
+    *PROVENANCE_COLUMNS,
 ]
 
 INTERACTION_COLUMNS = [
@@ -345,12 +454,21 @@ INTERACTION_COLUMNS = [
     "raw_text",
     "clean_text",
     "text_for_model",
+    *PROVENANCE_COLUMNS,
 ]
 
 SNAPSHOT_COLUMNS = [
+    "event_id",
+    "observation_id",
     "content_id",
     "source",
+    "platform_event_id",
+    "user_id",
+    "url",
+    "created_at",
+    "observed_at",
     "snapshot_at",
+    "age_minutes",
     "event_date",
     "view_count",
     "like_count",
@@ -362,6 +480,11 @@ SNAPSHOT_COLUMNS = [
     "follower_count",
     "subscriber_count",
     "subreddit_member_count",
+    *[
+        column
+        for column in PROVENANCE_COLUMNS
+        if column not in {"event_id", "observation_id", "observed_at"}
+    ],
     "snapshot_date",
 ]
 
@@ -443,7 +566,17 @@ USER_EVOLUTION_COLUMNS = [
 
 
 OPTIONAL_EVENT_COLUMNS = {
+    "event_id": "STRING",
+    "observation_id": "STRING",
+    "observed_at": "STRING",
     "platform_event_id": "STRING",
+    "producer_name": "STRING",
+    "producer_run_id": "STRING",
+    "payload_fingerprint": "STRING",
+    "collection_method": "STRING",
+    "api_endpoint": "STRING",
+    "provenance_json": "STRING",
+    "coverage_json": "STRING",
     "metadata_refreshed_at": "TIMESTAMP",
     "owner_channel_id": "STRING",
     "subreddit": "STRING",
@@ -470,6 +603,19 @@ OPTIONAL_EVENT_COLUMNS = {
     "follower_count": "BIGINT",
     "subscriber_count": "BIGINT",
     "subreddit_member_count": "BIGINT",
+    "like_count_available": "BOOLEAN",
+    "view_count_available": "BOOLEAN",
+    "comment_count_available": "BOOLEAN",
+    "reply_count_available": "BOOLEAN",
+    "retweet_count_available": "BOOLEAN",
+    "bookmark_count_available": "BOOLEAN",
+    "score_available": "BOOLEAN",
+    "follower_count_available": "BOOLEAN",
+    "subscriber_count_available": "BOOLEAN",
+    "subreddit_member_count_available": "BOOLEAN",
+    "metadata_available": "BOOLEAN",
+    "transcript_available": "BOOLEAN",
+    "comments_available": "BOOLEAN",
     "parent_interaction_id": "STRING",
     "conversation_id": "STRING",
     "transcript_text": "STRING",
@@ -539,6 +685,23 @@ def _with_optional_event_columns(events: DataFrame) -> DataFrame:
     for name, data_type in OPTIONAL_EVENT_COLUMNS.items():
         if name not in result.columns:
             result = result.withColumn(name, lit(None).cast(data_type))
+    for metric in (
+        "like_count",
+        "view_count",
+        "comment_count",
+        "reply_count",
+        "retweet_count",
+        "bookmark_count",
+        "score",
+        "follower_count",
+        "subscriber_count",
+        "subreddit_member_count",
+    ):
+        availability = f"{metric}_available"
+        result = result.withColumn(
+            availability,
+            coalesce(col(availability), col(metric).isNotNull()),
+        )
     return result
 
 
@@ -625,6 +788,51 @@ def normalize_events(events: DataFrame) -> DataFrame:
         prepared.withColumn(
             "created_at",
             coalesce(to_timestamp(col("published_at")), col("event_ts")),
+        )
+        .withColumn("observed_at", to_timestamp(col("observed_at")))
+        .withColumn(
+            "observation_id",
+            coalesce(
+                col("observation_id"),
+                col("event_id"),
+                sha2(
+                    concat_ws(
+                        "\u001f",
+                        col("source"),
+                        event_platform_id,
+                        col("observed_at").cast("string"),
+                    ),
+                    256,
+                ),
+            ),
+        )
+        .withColumn("event_id", coalesce(col("event_id"), col("observation_id")))
+        .withColumn(
+            "metadata_available",
+            coalesce(
+                col("metadata_available"),
+                lower(coalesce(col("metadata_status"), lit(""))) == "success",
+            ),
+        )
+        .withColumn(
+            "transcript_available",
+            coalesce(
+                col("transcript_available"),
+                lower(
+                    coalesce(
+                        col("transcript_lifecycle_status"),
+                        col("transcript_status"),
+                        lit(""),
+                    )
+                ).isin("available", "success"),
+            ),
+        )
+        .withColumn(
+            "comments_available",
+            coalesce(
+                col("comments_available"),
+                lower(coalesce(col("comments_status"), lit(""))) == "success",
+            ),
         )
         .withColumn("event_date", to_date(col("created_at")))
         .withColumn("text", text)
@@ -727,6 +935,12 @@ def build_contents(events: DataFrame) -> DataFrame:
             first("content_clean_text", ignorenulls=True).alias("clean_text"),
             first("content_text_for_model", ignorenulls=True).alias("text_for_model"),
             first("content_thumbnail_url", ignorenulls=True).alias("thumbnail_url"),
+            *(
+                first(column, ignorenulls=True).alias(column)
+                for column in PROVENANCE_COLUMNS
+                if column != "observed_at"
+            ),
+            spark_max("observed_at").alias("observed_at"),
         )
         .select(*CONTENT_COLUMNS)
     )
@@ -762,6 +976,7 @@ def build_interactions(events: DataFrame) -> DataFrame:
             "raw_text",
             "clean_text",
             "text_for_model",
+            *PROVENANCE_COLUMNS,
         )
         .dropDuplicates(["interaction_id"])
     )
@@ -773,7 +988,13 @@ def build_snapshots(events: DataFrame) -> DataFrame:
         normalized.filter(~col("is_interaction"))
         .withColumn(
             "snapshot_at",
-            coalesce(col("metadata_refreshed_at"), col("created_at")),
+            coalesce(col("observed_at"), col("metadata_refreshed_at"), col("created_at")),
+        )
+        .withColumn(
+            "age_minutes",
+            (
+                (unix_timestamp(col("snapshot_at")) - unix_timestamp(col("created_at"))) / lit(60)
+            ).cast("bigint"),
         )
         .withColumn("snapshot_date", to_date(col("snapshot_at")))
         .select(*SNAPSHOT_COLUMNS)
@@ -1035,6 +1256,7 @@ def _create_tables(spark: SparkSession) -> None:
             "clean_text": "STRING",
             "text_for_model": "STRING",
             "thumbnail_url": "STRING",
+            **PROVENANCE_COLUMN_TYPES,
         },
     )
     _ensure_columns(
@@ -1058,6 +1280,7 @@ def _create_tables(spark: SparkSession) -> None:
             "raw_text": "STRING",
             "clean_text": "STRING",
             "text_for_model": "STRING",
+            **PROVENANCE_COLUMN_TYPES,
         },
     )
     _ensure_columns(
@@ -1070,6 +1293,22 @@ def _create_tables(spark: SparkSession) -> None:
             "follower_count": "BIGINT",
             "subscriber_count": "BIGINT",
             "subreddit_member_count": "BIGINT",
+            "event_id": "STRING",
+            "observation_id": "STRING",
+            "platform_event_id": "STRING",
+            "user_id": "STRING",
+            "url": "STRING",
+            "created_at": "TIMESTAMP",
+            "observed_at": "TIMESTAMP",
+            "age_minutes": "BIGINT",
+            "producer_name": "STRING",
+            "producer_run_id": "STRING",
+            "payload_fingerprint": "STRING",
+            "collection_method": "STRING",
+            "api_endpoint": "STRING",
+            "provenance_json": "STRING",
+            "coverage_json": "STRING",
+            **{column: "BOOLEAN" for column in PROVENANCE_COLUMNS if column.endswith("_available")},
         },
     )
     _ensure_columns(
@@ -1266,7 +1505,7 @@ def main() -> None:
         snapshots,
         SNAPSHOT_TABLE,
         SNAPSHOT_COLUMNS,
-        ["content_id", "source", "snapshot_at"],
+        ["observation_id"],
         update_existing=False,
     )
     _merge_dataframe(

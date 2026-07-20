@@ -16,6 +16,9 @@ TRACKED_METRICS = (
     "retweet_count",
     "bookmark_count",
     "score",
+    "follower_count",
+    "subscriber_count",
+    "subreddit_member_count",
 )
 
 
@@ -81,6 +84,24 @@ def validate_file(path: Path, source: str) -> int:
                 and supplied_observation_id != expected_observation_id
             ):
                 raise RuntimeError(f"Invalid observation_id in {path}:{line_number}")
+            envelope_fields = (
+                "event_id",
+                "payload_fingerprint",
+                "producer_name",
+                "producer_run_id",
+                "collection_method",
+                "provenance_json",
+            )
+            if any(event.get(field) is not None for field in envelope_fields):
+                for identifier in ("event_id", "payload_fingerprint"):
+                    value = str(event.get(identifier) or "")
+                    if len(value) != 64 or any(
+                        character not in "0123456789abcdef" for character in value.lower()
+                    ):
+                        raise RuntimeError(f"Invalid {identifier} in {path}:{line_number}")
+                for field in envelope_fields[2:]:
+                    if not event.get(field):
+                        raise RuntimeError(f"Missing {field} in {path}:{line_number}")
             _validate_availability(event, path, line_number)
             key = (source, str(identity), str(observed_at))
             if key in observations:

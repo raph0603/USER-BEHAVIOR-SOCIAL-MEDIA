@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,8 +15,32 @@ from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroDeserializer, AvroSerializer
 from confluent_kafka.serialization import StringDeserializer, StringSerializer
 
+from common.event_envelope import enrich_event_envelope
+
 
 UTC = timezone.utc
+
+
+_YOUTUBE_EVENT_PROVENANCE = {
+    "discovery": ("youtube_discovery_worker", "youtube_data_api", "search.list"),
+    "metadata": ("youtube_metadata_worker", "yt_dlp", "yt-dlp"),
+    "engagement": ("youtube_metrics_worker", "youtube_data_api", "videos.list"),
+    "transcript": (
+        "youtube_transcript_worker",
+        "youtube_transcript_api",
+        "transcripts.fetch",
+    ),
+    "comment": ("youtube_comment_worker", "youtube_data_api", "commentThreads.list"),
+    "channel": ("youtube_channel_worker", "youtube_data_api", "channels.list"),
+}
+
+
+def _default_provenance(event_type: str) -> tuple[str, str | None, str | None]:
+    component = event_type.split(".", 2)[1] if event_type.count(".") >= 2 else "pipeline"
+    return _YOUTUBE_EVENT_PROVENANCE.get(
+        component,
+        ("youtube_pipeline_worker", None, None),
+    )
 
 
 def pipeline_event(
@@ -26,9 +51,14 @@ def pipeline_event(
     channel_id: str | None = None,
     collected_at: datetime | None = None,
     attempt_count: int = 1,
+    producer_name: str | None = None,
+    producer_run_id: str | None = None,
+    collection_method: str | None = None,
+    api_endpoint: str | None = None,
     **fields,
 ) -> dict:
     observed_at = (collected_at or datetime.now(UTC)).astimezone(UTC).isoformat()
+    default_producer, default_method, default_endpoint = _default_provenance(event_type)
     event = {
         "event_type": event_type,
         "event_version": "1.0",
@@ -38,6 +68,7 @@ def pipeline_event(
         "owner_channel_id": channel_id,
         "source": "youtube",
         "collected_at": observed_at,
+        "observed_at": observed_at,
         "timestamp": fields.get("published_at") or observed_at,
         "correlation_id": correlation_id or str(uuid.uuid4()),
         "attempt_count": max(1, int(attempt_count)),
@@ -50,9 +81,17 @@ def pipeline_event(
         "root_content_id": video_id,
         "conversation_id": video_id,
         "depth": 0,
+        "collector_version": os.getenv("COLLECTOR_VERSION", "1"),
+        "source_payload_version": "2",
         **fields,
     }
-    return event
+    return enrich_event_envelope(
+        event,
+        producer_name=producer_name or default_producer,
+        producer_run_id=producer_run_id,
+        collection_method=collection_method or default_method,
+        api_endpoint=api_endpoint or default_endpoint,
+    )
 
 
 class EventProducer:

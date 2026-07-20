@@ -144,20 +144,46 @@ def _build_update(
         "retweet_count_available": False,
         "bookmark_count_available": False,
         "score_available": False,
+        "follower_count_available": False,
+        "subscriber_count_available": False,
+        "subreddit_member_count_available": False,
+        "metadata_available": statistics is not None,
+        "transcript_available": False,
+        "comments_available": False,
     }
     update["observation_id"] = _observation_id(video_id, observed_at)
+    update["event_id"] = update["observation_id"]
+    update["observed_at"] = observed_value
     update["coverage_json"] = _canonical_json(
         {
-            metric: update[f"{metric}_available"]
-            for metric in (
-                "bookmark_count",
-                "comment_count",
-                "like_count",
-                "reply_count",
-                "retweet_count",
-                "score",
-                "view_count",
-            )
+            **{
+                metric: update[f"{metric}_available"]
+                for metric in (
+                    "bookmark_count",
+                    "comment_count",
+                    "like_count",
+                    "reply_count",
+                    "retweet_count",
+                    "score",
+                    "view_count",
+                    "follower_count",
+                    "subscriber_count",
+                    "subreddit_member_count",
+                )
+            },
+            "metadata": update["metadata_available"],
+            "transcript": update["transcript_available"],
+            "comments": update["comments_available"],
+        }
+    )
+    update["provenance_json"] = _canonical_json(
+        {
+            "api_endpoint": update["api_endpoint"],
+            "collection_method": update["collection_method"],
+            "observed_at": observed_value,
+            "producer_name": update["producer_name"],
+            "producer_run_id": update["producer_run_id"],
+            "source": "youtube",
         }
     )
     update["payload_fingerprint"] = hashlib.sha256(
@@ -228,10 +254,22 @@ def _outbox_events(updates: list[dict]) -> list[dict]:
             attempt_count=update.get("metrics_refresh_count") or 1,
             published_at=update.get("event_ts"),
             event_id=update["observation_id"],
+            observation_id=update["observation_id"],
+            observed_at=update.get("metadata_refreshed_at"),
+            producer_name=update.get("producer_name"),
+            producer_run_id=update.get("producer_run_id"),
+            collection_method=update.get("collection_method"),
+            api_endpoint=update.get("api_endpoint"),
             payload_fingerprint=update["payload_fingerprint"],
+            provenance_json=update.get("provenance_json"),
+            coverage_json=update.get("coverage_json"),
             view_count=update.get("view_count"),
             like_count=update.get("like_count"),
             comment_count=update.get("comment_count"),
+            follower_count=update.get("follower_count"),
+            subscriber_count=update.get("subscriber_count"),
+            subreddit_member_count=update.get("subreddit_member_count"),
+            **{name: value for name, value in update.items() if name.endswith("_available")},
             last_metrics_refresh_at=update.get("last_metrics_refresh_at"),
             next_metrics_refresh_at=update.get("next_metrics_refresh_at"),
             metrics_refresh_count=update.get("metrics_refresh_count"),

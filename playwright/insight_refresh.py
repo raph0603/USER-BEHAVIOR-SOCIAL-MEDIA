@@ -12,6 +12,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
+from common.event_envelope import enrich_event_envelope
 from common.youtube_pipeline import (
     next_metrics_refresh_at,
     parse_datetime,
@@ -32,7 +33,7 @@ METRIC_COLUMNS = (
     "subscriber_count",
     "subreddit_member_count",
 )
-SKIPPED_REFRESH_SOURCES = set()
+SKIPPED_REFRESH_SOURCES: set[str] = set()
 
 
 def _env(name: str, default: str = "") -> str:
@@ -96,8 +97,7 @@ def _youtube_growth_multiplier(
 ) -> float:
     previous_view_count = parse_count(target.get("view_count"))
     previous_observed_at = parse_datetime(
-        target.get("last_metrics_refresh_at")
-        or target.get("metadata_refreshed_at")
+        target.get("last_metrics_refresh_at") or target.get("metadata_refreshed_at")
     )
     if (
         current_view_count is None
@@ -125,12 +125,7 @@ def _refresh_youtube(targets: list[dict]) -> list[dict]:
     targets_by_id = {
         video_id: target
         for target in targets
-        if (
-            video_id := (
-                target.get("platform_event_id")
-                or _youtube_video_id(target["url"])
-            )
-        )
+        if (video_id := (target.get("platform_event_id") or _youtube_video_id(target["url"])))
     }
     youtube = build("youtube", "v3", developerKey=api_key)
     updates = []
@@ -140,9 +135,7 @@ def _refresh_youtube(targets: list[dict]) -> list[dict]:
     try:
         if usage_store:
             budget = int(_env("YOUTUBE_VIDEOS_DAILY_REQUEST_BUDGET", "500"))
-            used = usage_store.api_requests_today(
-                "videos.list", datetime.now(timezone.utc)
-            )
+            used = usage_store.api_requests_today("videos.list", datetime.now(timezone.utc))
             remaining_batches = max(0, budget - used)
             video_ids = video_ids[: remaining_batches * 50]
             if not video_ids and targets_by_id:
@@ -151,16 +144,8 @@ def _refresh_youtube(targets: list[dict]) -> list[dict]:
         for start in range(0, len(video_ids), 50):
             batch_ids = video_ids[start : start + 50]
             observed_at = datetime.now(timezone.utc)
-            response = (
-                youtube.videos()
-                .list(part="statistics", id=",".join(batch_ids))
-                .execute()
-            )
-            items_by_id = {
-                item["id"]: item
-                for item in response.get("items", [])
-                if item.get("id")
-            }
+            response = youtube.videos().list(part="statistics", id=",".join(batch_ids)).execute()
+            items_by_id = {item["id"]: item for item in response.get("items", []) if item.get("id")}
             if usage_store:
                 usage_store.record_api_usage(
                     endpoint="videos.list",
@@ -195,9 +180,7 @@ def _refresh_youtube(targets: list[dict]) -> list[dict]:
                     {
                         "like_count": parse_count(statistics.get("likeCount")),
                         "view_count": view_count,
-                        "comment_count": parse_count(
-                            statistics.get("commentCount")
-                        ),
+                        "comment_count": parse_count(statistics.get("commentCount")),
                     }
                 )
                 updates.append(update)
@@ -265,9 +248,10 @@ def _resolve_cdp_url(cdp_url: str) -> str:
     if not cdp_url.startswith(("http://", "https://")):
         return cdp_url
     parsed = urlparse(cdp_url)
-    resolved_host = socket.gethostbyname(parsed.hostname or "")
+    source_host = parsed.hostname or ""
+    resolved_host = socket.gethostbyname(source_host)
     discovery_url = _x_cdp_url_with_path(cdp_url, "/json/version").replace(
-        parsed.hostname,
+        source_host,
         resolved_host,
         1,
     )
@@ -378,9 +362,7 @@ def _refresh_x(targets: list[dict]) -> list[dict]:
                         wait_until="domcontentloaded",
                         timeout=60000,
                     )
-                    article = page.locator(
-                        'article[data-testid="tweet"]'
-                    ).first
+                    article = page.locator('article[data-testid="tweet"]').first
                     article.wait_for(state="visible", timeout=20000)
                     update = _base_update(target)
                     update.update(
@@ -474,9 +456,7 @@ def _count_reddit_reply_children(replies) -> int | None:
         count += 1
         child_data = child.get("data", {})
         if isinstance(child_data, dict):
-            nested_count = _count_reddit_reply_children(
-                child_data.get("replies")
-            )
+            nested_count = _count_reddit_reply_children(child_data.get("replies"))
             count += nested_count or 0
     return count
 
@@ -490,7 +470,7 @@ def _extract_old_reddit_comment_block(html: str, comment_id: str) -> str:
     if block_start < 0:
         block_start = start
     next_start = html.find('data-fullname="t1_', start + len(marker))
-    return html[block_start:next_start if next_start > start else len(html)]
+    return html[block_start : next_start if next_start > start else len(html)]
 
 
 def _extract_old_reddit_comment_score(block: str) -> int | None:
@@ -511,7 +491,7 @@ def _extract_old_reddit_member_count(html: str) -> int | None:
     for pattern in (
         r'<span[^>]+class="number"[^>]*>([^<]+)</span>\s*'
         r'<span[^>]+class="word"[^>]*>(?:subscribers|members)</span>',
-        r'([0-9][0-9,.kmbKMB]*)\s+(?:subscribers|members)',
+        r"([0-9][0-9,.kmbKMB]*)\s+(?:subscribers|members)",
     ):
         match = re.search(pattern, html, re.IGNORECASE)
         if match:
@@ -524,7 +504,7 @@ def _extract_old_reddit_member_count(html: str) -> int | None:
 def _extract_old_reddit_comment_count(html: str) -> int | None:
     for pattern in (
         r'<a[^>]+class="[^"]*comments[^"]*"[^>]*>([0-9][0-9,.kmbKMB]*)\s+comments?',
-        r'([0-9][0-9,.kmbKMB]*)\s+comments?',
+        r"([0-9][0-9,.kmbKMB]*)\s+comments?",
     ):
         match = re.search(pattern, html, re.IGNORECASE)
         if match:
@@ -565,13 +545,45 @@ def _refresh_reddit_from_html(target: dict, headers: dict) -> dict | None:
     return update
 
 
+def _finalize_update(update: dict) -> dict:
+    source = str(update.get("source") or "unknown").lower()
+    collection_methods = {
+        "youtube": "youtube_data_api",
+        "reddit": "reddit_public_json",
+        "x": "x_browser",
+    }
+    endpoints = {
+        "youtube": "videos.list",
+        "reddit": "comments.json",
+        "x": "post.metrics",
+    }
+    observed_at = update.get("metadata_refreshed_at")
+    event = {
+        **update,
+        "event_type": f"{source}.engagement.snapshot",
+        "event_version": "1.0",
+        "collected_at": observed_at,
+        "observed_at": observed_at,
+        "timestamp": update.get("event_ts") or observed_at,
+        "collector_version": _env("COLLECTOR_VERSION", "1"),
+        "source_payload_version": "2",
+        "metadata_available": update.get("metrics_refresh_status") in {"success", "available"},
+    }
+    return enrich_event_envelope(
+        event,
+        producer_name=f"{source}_metrics_worker",
+        producer_run_id=_env("PIPELINE_RUN_ID", "standalone"),
+        collection_method=collection_methods.get(source),
+        api_endpoint=endpoints.get(source),
+    )
+
+
 def _refresh_reddit(targets: list[dict]) -> list[dict]:
     updates = []
     headers = {
         "User-Agent": _env(
             "REDDIT_USER_AGENT",
-            "Mozilla/5.0 Chrome/124 Safari/537.36 "
-            "user-behavior-lakehouse/1.0",
+            "Mozilla/5.0 Chrome/124 Safari/537.36 user-behavior-lakehouse/1.0",
         )
     }
     timeout = int(_env("REDDIT_REFRESH_TIMEOUT_SECONDS", "15"))
@@ -606,22 +618,17 @@ def _refresh_reddit(targets: list[dict]) -> list[dict]:
                 continue
             post = _reddit_post_data(payload)
             update = _base_update(target)
-            update.update({
-                "comment_count": parse_count(post.get("num_comments")),
-                "reply_count": _count_reddit_reply_children(
-                    comment.get("replies")
-                ),
-                "score": parse_count(comment.get("score")),
-                "subreddit_member_count": parse_count(
-                    post.get("subreddit_subscribers")
-                ),
-            })
+            update.update(
+                {
+                    "comment_count": parse_count(post.get("num_comments")),
+                    "reply_count": _count_reddit_reply_children(comment.get("replies")),
+                    "score": parse_count(comment.get("score")),
+                    "subreddit_member_count": parse_count(post.get("subreddit_subscribers")),
+                }
+            )
             updates.append(update)
         except (ValueError, requests.RequestException, AttributeError) as exc:
-            print(
-                "Unable to refresh Reddit insights for "
-                f"{target['url']}: {exc}"
-            )
+            print(f"Unable to refresh Reddit insights for {target['url']}: {exc}")
     return updates
 
 
@@ -632,9 +639,7 @@ def _publish_youtube_engagement(updates: list[dict]) -> None:
 
     producer = EventProducer(
         bootstrap_servers=_env("KAFKA_BOOTSTRAP", "kafka:9092"),
-        schema_registry_url=_env(
-            "SCHEMA_REGISTRY_URL", "http://schema-registry:8081"
-        ),
+        schema_registry_url=_env("SCHEMA_REGISTRY_URL", "http://schema-registry:8081"),
         schema_path=_env("SCHEMA_PATH", "/app/schemas/playwright_event.avsc"),
     )
     events = [
@@ -652,6 +657,23 @@ def _publish_youtube_engagement(updates: list[dict]) -> None:
             metrics_refresh_count=update.get("metrics_refresh_count"),
             metrics_refresh_status=update.get("metrics_refresh_status"),
             collection_status=update.get("metrics_refresh_status"),
+            event_id=update.get("event_id"),
+            observation_id=update.get("observation_id"),
+            observed_at=update.get("observed_at"),
+            producer_name=update.get("producer_name"),
+            producer_run_id=update.get("producer_run_id"),
+            collection_method=update.get("collection_method"),
+            api_endpoint=update.get("api_endpoint"),
+            payload_fingerprint=update.get("payload_fingerprint"),
+            provenance_json=update.get("provenance_json"),
+            coverage_json=update.get("coverage_json"),
+            **{
+                f"{metric}_available": update.get(f"{metric}_available")
+                for metric in METRIC_COLUMNS
+            },
+            metadata_available=update.get("metadata_available"),
+            transcript_available=update.get("transcript_available"),
+            comments_available=update.get("comments_available"),
             payload_json=json.dumps(update, ensure_ascii=False, sort_keys=True),
         )
         for update in updates
@@ -666,9 +688,7 @@ def _publish_youtube_engagement(updates: list[dict]) -> None:
 def main() -> None:
     source = _env("INSIGHT_REFRESH_SOURCE").lower()
     if source not in {"youtube", "x", "reddit"}:
-        raise RuntimeError(
-            "INSIGHT_REFRESH_SOURCE must be youtube, x or reddit"
-        )
+        raise RuntimeError("INSIGHT_REFRESH_SOURCE must be youtube, x or reddit")
 
     targets_path = Path(
         _env(
@@ -688,7 +708,9 @@ def main() -> None:
         "x": _refresh_x,
         "reddit": _refresh_reddit,
     }
-    updates = refreshers[source](targets) if targets else []
+    updates = (
+        [_finalize_update(update) for update in refreshers[source](targets)] if targets else []
+    )
     if source == "youtube":
         _publish_youtube_engagement(updates)
 
@@ -699,9 +721,7 @@ def main() -> None:
             output.write(json.dumps(update, ensure_ascii=True) + "\n")
     temporary_path.replace(output_path)
 
-    print(
-        f"Refreshed {len(updates)} of {len(targets)} {source} insight targets"
-    )
+    print(f"Refreshed {len(updates)} of {len(targets)} {source} insight targets")
     if targets and not updates and source not in SKIPPED_REFRESH_SOURCES:
         raise RuntimeError(f"No {source} insight target could be refreshed")
 

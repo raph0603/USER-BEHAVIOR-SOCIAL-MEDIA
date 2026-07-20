@@ -52,6 +52,7 @@ from common.collection import (
     safe_json_dumps,
     utc_now,
 )
+from common.event_envelope import enrich_event_envelope
 from common.transcripts import (
     fetch_transcript,
     legacy_transcript_status,
@@ -871,7 +872,7 @@ class ProcessedState:
             [
                 (
                     source,
-                    event.get("event_id") or event.get("platform_event_id"),
+                    event.get("platform_event_id") or event.get("event_id"),
                     processed_at,
                     event.get("collection_status"),
                     event.get("metadata_status"),
@@ -1538,6 +1539,8 @@ def _prepare_event(event: dict) -> dict:
     prepared.setdefault("attempt_count", 1)
     prepared.setdefault("collector_version", _env_str("COLLECTOR_VERSION", "1"))
     prepared.setdefault("source_payload_version", "2")
+    prepared.setdefault("event_type", f"{source}.content.observed")
+    prepared.setdefault("event_version", "1.0")
     prepared.setdefault("metadata_collected_at", prepared.get("collected_at"))
     prepared.setdefault(
         "canonical_metadata",
@@ -1576,7 +1579,18 @@ def _prepare_event(event: dict) -> dict:
             }
         ),
     )
-    return prepared
+    collection_methods = {
+        "youtube": "youtube_data_api",
+        "reddit": "reddit_public_web",
+        "x": "x_browser",
+    }
+    return enrich_event_envelope(
+        prepared,
+        producer_name=_env_str("COLLECTOR_PRODUCER_NAME", "playwright_collector"),
+        producer_run_id=_env_str("PIPELINE_RUN_ID", "standalone"),
+        collection_method=collection_methods.get(source, "public_web"),
+        api_endpoint=prepared.get("api_endpoint"),
+    )
 
 
 def _parse_youtube_duration_seconds(duration: str | None) -> float | None:
