@@ -26,8 +26,14 @@ DEFAULT_CRAWLER_CONFIG = {
     ],
     "youtube_event_count": 50,
     "youtube_search_queries": [
-        '"electric vehicle" | EV | "electric car" | Tesla | '
-        '"EV charging" | "battery range"'
+        {
+            "query": "electric vehicle review|EV charging battery range",
+            "language": "en",
+        },
+        {
+            "query": "đánh giá xe điện|xe điện VinFast trạm sạc",
+            "language": "vi",
+        },
     ],
     "youtube_search_language": "en",
     "youtube_keyword_match_mode": "OR",
@@ -81,13 +87,7 @@ def _load_config(variable_key, defaults):
         return defaults.copy()
 
     config = defaults.copy()
-    config.update(
-        {
-            key: value
-            for key, value in stored_config.items()
-            if key in defaults
-        }
-    )
+    config.update({key: value for key, value in stored_config.items() if key in defaults})
     return config
 
 

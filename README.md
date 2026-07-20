@@ -7,6 +7,7 @@ This stack includes MinIO (S3-compatible) and Spark jobs that write to Iceberg t
 Architecture and operations:
 
 - [End-to-end architecture](docs/ARCHITECTURE.md)
+- [Reliability, migration, replay, and rollback runbook](docs/PIPELINE_RELIABILITY.md)
 - [Canonical event schema](docs/DATA_SCHEMA.md)
 - [Collector behavior](docs/COLLECTORS.md)
 - [Lakehouse data model](docs/data-model.md)
@@ -68,14 +69,17 @@ The DAG `user_behavior_lakehouse` runs the complete online pipeline:
 1. collect YouTube, X and Reddit data into their raw Kafka topics;
 2. clean, validate and anonymize the three raw streams in parallel, with
    separate clean topics, DLQ topics and checkpoints;
-3. merge only records marked `stage=clean` into Iceberg Bronze;
-4. after the Bronze MERGE commits, publish that micro-batch to
+3. persist valid rows in the immutable Iceberg Bronze event journal, then
+   update the compatible current-state projection;
+4. reread the committed journal rows and publish them to
    `lakehouse.bronze.for_silver`;
-5. merge the handed-off records into Iceberg Silver.
+5. merge the handed-off records into Iceberg Silver, then record their durable
+   application proofs.
 
-The Bronze write and Kafka handoff run in one `foreachBatch` callback. A
-handoff failure retries the idempotent Bronze MERGE before re-emitting the
-batch, so Silver never consumes a record ahead of its Bronze commit.
+The Bronze writes and Kafka handoff run in one `foreachBatch` callback. A
+handoff failure replays deterministic `event_id` values from the insert-only
+journal, so Silver never consumes a record ahead of its Bronze commit and can
+deduplicate every retry.
 
 The Airflow task names describe the implemented transformations. In
 particular, `sha256_hash_pii_redact_validate_*` applies salted SHA-256 user
@@ -86,9 +90,9 @@ The separate `social_clean_pipeline` DAG is retained for replaying the legacy
 sample CSV files. It is not required for the online lakehouse flow.
 
 The `user_behavior_lakehouse_no_row_checks` online DAG runs automatically every
-60 minutes by default. It succeeds when collectors and Spark jobs finish
-without an execution error, even when a run produces no new Bronze or Silver
-row. Configure its interval in `.env`:
+60 minutes by default. It allows a run with no new Bronze or Silver row, but
+still executes the quality profile and persists an explicit empty-input
+anomaly. Configure its interval in `.env`:
 
 ```env
 LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES=30
@@ -145,15 +149,18 @@ default. The shared lock prevents compaction from overlapping Bronze or Silver
 writes without creating a dependency between DAGs.
 
 The separate `refresh_recent_engagement_insights` DAG refreshes engagement
-metrics for events already stored in Silver. It runs once per day by default,
-selects events from the previous 15 days, recollects the metrics available for
-YouTube, X and Reddit, then updates the matching Bronze and Silver rows.
+metrics for events already stored in Silver. It runs every 30 minutes by
+default, but selects only rows whose source-specific next refresh is due. For
+YouTube it batches up to 50 IDs in `videos.list` requests and collects only
+view, like and comment counters. After validation, it appends an idempotent
+historical observation, merges the latest values, and materializes current
+velocity, acceleration and virality signals.
 Rows are matched by `platform_event_id` when available, with the older
 `source`, `user_id`, `url` and `event_ts` key kept as a fallback for legacy
 records. Successful refreshes persist `metadata_refreshed_at`.
 
 ```env
-INSIGHT_REFRESH_SCHEDULE_MINUTES=1440
+INSIGHT_REFRESH_SCHEDULE_MINUTES=30
 ```
 
 The trigger form exposes `lookback_days` and `max_events_per_source`. X and
@@ -345,18 +352,20 @@ docker compose exec spark-master /opt/spark/bin/spark-submit \
 Set `YOUTUBE_API_KEY` in your `.env`, then run:
 
 ```bash
-docker compose run --rm youtube-collector
+docker compose run --rm youtube-collector python /app/youtube_discovery.py
+docker compose run --rm youtube-collector python /app/youtube_metadata_worker.py
+docker compose run --rm youtube-collector python /app/youtube_transcript_worker.py
+docker compose run --rm youtube-collector python /app/youtube_comment_worker.py
+docker compose run --rm youtube-collector python /app/youtube_channel_worker.py
 ```
 
-The collector emits YouTube events with canonical metadata, a source-specific
-metadata envelope, and a sanitized source payload. These fields travel through
-Kafka and the lakehouse, so durable metadata does not depend on a temporary
-collector-container directory.
-By default, YouTube search targets English and Vietnamese
-(`YOUTUBE_SEARCH_LANGUAGES=en,vi`). Transcript selection is strict: videos
-marked Vietnamese use Vietnamese captions; all other videos use English
-captions. A caption in another language is not stored. Use
-`YOUTUBE_SEARCH_QUERIES` with `||` separators to override the search terms.
+The online DAG invokes these independent workers automatically. Discovery uses
+`search.list` only, with one structured query/language pair and one persistent
+watermark per query. The metadata worker uses `yt-dlp` without downloading
+media and retains both normalized and raw metadata. Transcripts, text comments
+and cached channel statistics have independent queues, schedules and failure
+states. See [.env.example](.env.example) for batch, budget, jitter, cooldown,
+overlap and adaptive refresh settings.
 
 ### Engagement metadata
 
@@ -476,19 +485,23 @@ the event view available for debugging.
 
 ### ML input freshness and label coverage
 
-Training requires an explicit Silver export. The pipeline rejects a missing
-export and, by default, any export older than 24 hours:
+The official training input is a precise version of
+`lakehouse.gold.training_examples`, described by a deterministic row in
+`lakehouse.gold.dataset_manifests`. Build it from official Iceberg tables with:
 
 ```bash
-python ml/run_pipeline.py --export --report
+docker compose exec -T spark-master /opt/spark/bin/spark-submit \
+  --master spark://spark-master:7077 \
+  /opt/spark/jobs/maintenance/build_training_dataset.py --dataset-version auto
 ```
 
-Each export writes a timestamped, checksum-addressed copy under
-`data/samples/exports/` plus `filtered_events.manifest.json`. Use
-`--allow-stale-input` only for an intentional reproducibility run, or change
-the limit with `--max-input-age-hours`. Engagement counters that were not
-observed remain null; rows without any observed label metric are excluded
-instead of becoming negative examples with an invented zero.
+Pass the resulting exact dataset version to the training DAG or CLI. CSV files
+remain export artifacts only and are never the official training source. Each
+manifest records source tables and Iceberg snapshots, period, filters, schema
+and dataset versions, example counts, missingness, distributions, fingerprint,
+and creation time. Engagement counters that were not observed remain null;
+rows without any observed label metric are excluded instead of becoming
+negative examples with an invented zero.
 
 ### YouTube owners and collaborators
 
@@ -501,18 +514,20 @@ the accepted collaborator list.
 A confirmed video without collaborators stores an empty list. If the watch
 page is unavailable, private, deleted, blocked by a consent or anti-bot page,
 or its undocumented structure changes, the collaborator value remains null.
-Bronze, Silver and the insight refresh job use `COALESCE`, so such failures do
-not replace previously collected owner or collaborator metadata. The refresh
-DAG retries this enrichment for recent YouTube events.
+Bronze and Silver use `COALESCE`, so such failures do not replace previously
+collected owner or collaborator metadata. The engagement refresh never calls
+this page enrichment. Collaborator access is opt-in and belongs only to an
+initial or separately scheduled metadata enrichment.
 
 `YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS` controls the public page request timeout
 and defaults to 20 seconds. `YOUTUBE_AUTHOR_FETCH_WORKERS` limits concurrent
 watch-page requests and defaults to 8. `YOUTUBE_COLLABORATOR_COLLECTION_ENABLED`
 defaults to `false` so normal collection does not depend on an undocumented
 YouTube watch-page endpoint that may return 429. Set it to `true` only when
-collaborator enrichment is required and the endpoint is available. Because it
-depends on undocumented page data, it should be monitored when YouTube changes
-its watch page.
+collaborator enrichment is explicitly required and the endpoint is available.
+Subscriber counts do not use this path: the channel worker deduplicates by
+`channel_id`, persists its cache and calls the official `channels.list`
+endpoint in batches of up to 50.
 
 YouTube collection is bounded for scheduled DAG runs.
 `YOUTUBE_COLLECTION_TIMEOUT_SECONDS` defaults to 900 seconds and stops

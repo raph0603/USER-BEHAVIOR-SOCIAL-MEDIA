@@ -128,10 +128,10 @@ class EngagementMetadataTests(unittest.TestCase):
             "subreddit_member_count",
         }
         self.assertTrue(expected.issubset(field_names))
+        self.assertIn("event_id", field_names)
         self.assertFalse(
             {
                 "crosspost_count",
-                "event_id",
                 "repost_count",
                 "share_count",
             }
@@ -154,27 +154,15 @@ class EngagementMetadataTests(unittest.TestCase):
         }
         paths = [
             ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py",
-            ROOT
-            / "spark"
-            / "jobs"
-            / "streaming"
-            / "kafka_to_iceberg_bronze.py",
+            ROOT / "spark" / "jobs" / "streaming" / "kafka_to_iceberg_bronze.py",
             ROOT / "spark" / "jobs" / "batch" / "bronze_to_silver.py",
-            ROOT
-            / "spark"
-            / "jobs"
-            / "batch"
-            / "bronze_to_silver_from_kafka.py",
-            ROOT
-            / "spark"
-            / "jobs"
-            / "maintenance"
-            / "apply_insight_updates.py",
+            ROOT / "spark" / "jobs" / "batch" / "bronze_to_silver_from_kafka.py",
+            ROOT / "spark" / "jobs" / "maintenance" / "apply_insight_updates.py",
             ROOT / "playwright" / "insight_refresh.py",
         ]
-        shared_contract = (
-            ROOT / "spark" / "jobs" / "event_contract.py"
-        ).read_text(encoding="utf-8")
+        shared_contract = (ROOT / "spark" / "jobs" / "event_contract.py").read_text(
+            encoding="utf-8"
+        )
         shared_stages = {
             "collector_stream_pipeline.py",
             "kafka_to_iceberg_bronze.py",
@@ -215,22 +203,14 @@ class EngagementMetadataTests(unittest.TestCase):
             ROOT / "schemas" / "playwright_event.avsc",
             ROOT / "playwright" / "producer.py",
             ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py",
-            ROOT
-            / "spark"
-            / "jobs"
-            / "streaming"
-            / "kafka_to_iceberg_bronze.py",
+            ROOT / "spark" / "jobs" / "streaming" / "kafka_to_iceberg_bronze.py",
             ROOT / "spark" / "jobs" / "batch" / "bronze_to_silver.py",
-            ROOT
-            / "spark"
-            / "jobs"
-            / "batch"
-            / "bronze_to_silver_from_kafka.py",
+            ROOT / "spark" / "jobs" / "batch" / "bronze_to_silver_from_kafka.py",
             ROOT / "spark" / "jobs" / "batch" / "content_analytics.py",
         ]
-        shared_contract = (
-            ROOT / "spark" / "jobs" / "event_contract.py"
-        ).read_text(encoding="utf-8")
+        shared_contract = (ROOT / "spark" / "jobs" / "event_contract.py").read_text(
+            encoding="utf-8"
+        )
         shared_stages = {
             "collector_stream_pipeline.py",
             "kafka_to_iceberg_bronze.py",
@@ -248,25 +228,21 @@ class EngagementMetadataTests(unittest.TestCase):
                     self.assertIn(field_name, source)
 
     def test_reddit_score_is_propagated_separately(self):
-        source = (ROOT / "playwright" / "insight_refresh.py").read_text(
-            encoding="utf-8"
-        )
+        source = (ROOT / "playwright" / "insight_refresh.py").read_text(encoding="utf-8")
 
         self.assertIn('"score"', source)
         self.assertNotIn('"like_count": score', source)
 
     def test_cleaning_tolerates_malformed_avro_records(self):
-        source = (
-            ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py"
-        ).read_text(encoding="utf-8")
+        source = (ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn('{"mode": "PERMISSIVE"}', source)
         self.assertNotIn("FAILFAST", source)
 
     def test_reddit_collector_discovers_recent_comments(self):
-        producer = (ROOT / "playwright" / "producer.py").read_text(
-            encoding="utf-8"
-        )
+        producer = (ROOT / "playwright" / "producer.py").read_text(encoding="utf-8")
 
         self.assertIn("LOGGER = logging.getLogger(__name__)", producer)
         self.assertIn('_env_int("PRODUCER_MAX_EVENTS", 50)', producer)
@@ -284,9 +260,7 @@ class EngagementMetadataTests(unittest.TestCase):
         self.assertNotIn("Reddit online collection found no public comments", producer)
 
     def test_x_collector_is_bounded_and_optionally_strict(self):
-        producer = (ROOT / "playwright" / "producer.py").read_text(
-            encoding="utf-8"
-        )
+        producer = (ROOT / "playwright" / "producer.py").read_text(encoding="utf-8")
 
         self.assertIn("X_SEARCH_NAVIGATION_TIMEOUT_MS", producer)
         self.assertIn("X_FAIL_ON_ERROR", producer)
@@ -299,9 +273,7 @@ class EngagementMetadataTests(unittest.TestCase):
         self.assertIn("_is_auth_or_quota_block", producer)
 
     def test_producer_emits_contract_engagement_metrics(self):
-        producer = (ROOT / "playwright" / "producer.py").read_text(
-            encoding="utf-8"
-        )
+        producer = (ROOT / "playwright" / "producer.py").read_text(encoding="utf-8")
 
         for field_name in (
             "comment_count",
@@ -313,9 +285,7 @@ class EngagementMetadataTests(unittest.TestCase):
             self.assertIn(f'"{field_name}"', producer)
 
     def test_youtube_search_supports_multiple_pages(self):
-        producer = (ROOT / "playwright" / "producer.py").read_text(
-            encoding="utf-8"
-        )
+        producer = (ROOT / "playwright" / "producer.py").read_text(encoding="utf-8")
 
         self.assertIn('page_token = response.get("nextPageToken")', producer)
         self.assertIn("while len(video_ids) < max_results:", producer)
@@ -323,9 +293,7 @@ class EngagementMetadataTests(unittest.TestCase):
         self.assertIn("YOUTUBE_TRANSCRIPT_MAX_FAILURES", producer)
 
     def test_reddit_keyword_filter_uses_word_boundaries(self):
-        producer = (ROOT / "playwright" / "producer.py").read_text(
-            encoding="utf-8"
-        )
+        producer = (ROOT / "playwright" / "producer.py").read_text(encoding="utf-8")
 
         self.assertIn("def _matches_keywords(", producer)
         self.assertIn(r'rf"\b{re.escape(normalized_keyword)}\b"', producer)
@@ -334,40 +302,54 @@ class EngagementMetadataTests(unittest.TestCase):
         class FakeElement:
             def hover(self):
                 pass
+
         class FakeLocator:
             def __init__(self, elem):
                 self.elem = elem
+
             @property
             def first(self):
                 return self.elem
+
         class FakeLinks:
             def __init__(self, texts):
                 self.texts = texts
+
             def count(self):
                 return len(self.texts)
+
             def nth(self, idx):
                 class Item:
                     def __init__(self, txt):
                         self.txt = txt
+
                     def inner_text(self, timeout=None):
                         return self.txt
+
                 return Item(self.texts[idx])
+
         class FakeHoverCard:
             def __init__(self, links):
                 self._links = links
+
             def wait_for(self, state=None, timeout=None):
                 pass
+
             def locator(self, selector):
                 return self._links
+
         class FakePage:
             def __init__(self, hover_card):
                 self._hover_card = hover_card
+
             def locator(self, selector):
                 return self._hover_card
+
         class FakeArticle:
             def __init__(self, page, first_elem):
                 self.page = page
                 self._first_elem = first_elem
+
             def locator(self, selector):
                 return FakeLocator(self._first_elem)
 
@@ -382,6 +364,7 @@ class EngagementMetadataTests(unittest.TestCase):
     def test_extract_reddit_json_member_count(self):
         import importlib.util
         from unittest.mock import patch
+
         r_module_path = ROOT / "playwright" / "reddit_json_crawler.py"
         r_spec = importlib.util.spec_from_file_location("reddit_json_crawler", r_module_path)
         reddit_json = importlib.util.module_from_spec(r_spec)
@@ -392,19 +375,10 @@ class EngagementMetadataTests(unittest.TestCase):
 
             def raise_for_status(self):
                 pass
+
             def json(self):
                 return [
-                    {
-                        "data": {
-                            "children": [
-                                {
-                                    "data": {
-                                        "subreddit_subscribers": 54321
-                                    }
-                                }
-                            ]
-                        }
-                    },
+                    {"data": {"children": [{"data": {"subreddit_subscribers": 54321}}]}},
                     {
                         "data": {
                             "children": [
@@ -417,15 +391,14 @@ class EngagementMetadataTests(unittest.TestCase):
                                         "parent_id": "p1",
                                         "created_utc": 1600000000,
                                         "score": 10,
-                                        "permalink": "/r/test/comments/123/c1/"
-                                    }
+                                        "permalink": "/r/test/comments/123/c1/",
+                                    },
                                 }
                             ]
                         }
-                    
-                    }
+                    },
                 ]
-        
+
         with patch("requests.get", return_value=FakeResponse()):
             rows = reddit_json.fetch_post_comments("https://reddit.com/r/test/comments/123")
             self.assertEqual(len(rows), 1)

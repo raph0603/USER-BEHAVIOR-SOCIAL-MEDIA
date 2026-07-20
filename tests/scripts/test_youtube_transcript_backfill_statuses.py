@@ -43,12 +43,8 @@ class YouTubeTranscriptBackfillUnitTests(unittest.TestCase):
     def test_retryability_respects_terminal_status_text_and_attempt_cap(self):
         for status in transcripts.TERMINAL_TRANSCRIPT_STATUSES:
             with self.subTest(status=status):
-                self.assertFalse(
-                    transcripts.is_retryable_transcript(status, None, 0, 5)
-                )
-        self.assertFalse(
-            transcripts.is_retryable_transcript("failed", "existing text", 1, 5)
-        )
+                self.assertFalse(transcripts.is_retryable_transcript(status, None, 0, 5))
+        self.assertFalse(transcripts.is_retryable_transcript("failed", "existing text", 1, 5))
         self.assertFalse(transcripts.is_retryable_transcript("failed", None, 5, 5))
         self.assertTrue(transcripts.is_retryable_transcript("failed", None, 4, 5))
         self.assertTrue(transcripts.is_retryable_transcript(None, None, 0, 5))
@@ -84,7 +80,7 @@ class YouTubeTranscriptBackfillUnitTests(unittest.TestCase):
                 "is_translated": True,
                 "source_language": "Spanish",
                 "source_language_code": "es",
-                "source": "translated_manual",
+                "source": "youtube_transcript_api",
                 "selection_strategy": "manual_other_language_translation",
                 "text": "one two three",
                 "segments": [
@@ -110,7 +106,13 @@ class YouTubeTranscriptBackfillUnitTests(unittest.TestCase):
         )
 
         self.assertEqual(row["transcript_status"], "success")
+        self.assertEqual(row["transcript_lifecycle_status"], "available")
         self.assertEqual(row["attempt_count"], 3)
+        self.assertEqual(row["requested_language_code"], "en")
+        self.assertEqual(row["obtained_language_code"], "en")
+        self.assertEqual(row["generation_type"], "manual")
+        self.assertEqual(row["provider"], "youtube_transcript_api")
+        self.assertIsNone(row["next_attempt_at"])
         self.assertEqual(row["language_code"], "en")
         self.assertEqual(row["source_language_code"], "es")
         self.assertFalse(row["is_generated"])
@@ -135,9 +137,11 @@ class YouTubeTranscriptBackfillUnitTests(unittest.TestCase):
             now=self.now,
         )
         self.assertEqual(row["transcript_status"], "not_available")
+        self.assertEqual(row["transcript_lifecycle_status"], "unavailable")
         self.assertEqual(row["error_code"], "NoTranscriptFound")
         self.assertIsNone(row["transcript_text"])
         self.assertEqual(row["attempt_count"], 3)
+        self.assertIsNone(row["next_attempt_at"])
 
     def test_common_operation_result_integrates_without_shape_translation(self):
         payload = TranscriptPayload(
@@ -151,9 +155,7 @@ class YouTubeTranscriptBackfillUnitTests(unittest.TestCase):
             source="youtube_transcript_api",
             selection_strategy="generated_preferred",
             text="shared result",
-            segments=(
-                {"text": "shared result", "start": 0.0, "duration": 1.0},
-            ),
+            segments=({"text": "shared result", "start": 0.0, "duration": 1.0},),
             segment_count=1,
             word_count=2,
             available_languages=({"language_code": "en"},),
@@ -175,6 +177,7 @@ class YouTubeTranscriptBackfillUnitTests(unittest.TestCase):
         )
 
         self.assertEqual(row["transcript_status"], "success")
+        self.assertEqual(row["transcript_lifecycle_status"], "available")
         self.assertEqual(row["language_code"], "en")
         self.assertEqual(row["selection_strategy"], "generated_preferred")
         self.assertEqual(row["attempt_count"], 3)
@@ -191,7 +194,8 @@ class YouTubeTranscriptBackfillUnitTests(unittest.TestCase):
             result,
             now=self.now,
         )
-        self.assertEqual(row["transcript_status"], "partial")
+        self.assertEqual(row["transcript_status"], "failed")
+        self.assertEqual(row["transcript_lifecycle_status"], "retryable_error")
         self.assertEqual(row["error_code"], "empty_transcript")
 
     def test_every_external_attempt_is_paced_even_when_fetch_raises(self):
@@ -209,6 +213,8 @@ class YouTubeTranscriptBackfillUnitTests(unittest.TestCase):
             sleeper=sleeps.append,
         )
         self.assertEqual(row["transcript_status"], "failed")
+        self.assertEqual(row["transcript_lifecycle_status"], "retryable_error")
+        self.assertIsNotNone(row["next_attempt_at"])
         self.assertEqual(row["error_code"], "runtime_error")
         self.assertEqual(sleeps, [0.5])
 
@@ -224,6 +230,8 @@ class YouTubeTranscriptBackfillUnitTests(unittest.TestCase):
             sleeper=sleeps.append,
         )
         self.assertEqual(row["transcript_status"], "failed")
+        self.assertEqual(row["transcript_lifecycle_status"], "permanent_error")
+        self.assertIsNone(row["next_attempt_at"])
         self.assertEqual(row["error_code"], "missing_video_id")
         self.assertEqual(sleeps, [0.25])
 
@@ -233,25 +241,22 @@ class YouTubeTranscriptBackfillIntegrationContractTests(unittest.TestCase):
         source = (BATCH_DIR / "youtube_transcripts.py").read_text(encoding="utf-8")
         self.assertIn("_embedded_transcript_dataframe(events)", source)
         self.assertIn("t.transcript_text = COALESCE(s.transcript_text, t.transcript_text)", source)
-        self.assertIn("WHEN t.transcript_status IN ('success', 'not_available', 'disabled')", source)
+        self.assertIn(
+            "WHEN t.transcript_status IN ('success', 'not_available', 'disabled')", source
+        )
         self.assertIn("YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS", source)
 
     def test_both_dags_forward_retry_settings(self):
-        for name in (
-            "user_behavior_lakehouse.py",
-            "user_behavior_lakehouse_no_row_checks.py",
-        ):
-            source = (ROOT / "orchestrator" / "dags" / name).read_text(
-                encoding="utf-8"
-            )
-            with self.subTest(name=name):
-                self.assertIn("YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS", source)
-                self.assertIn(
-                    "YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS",
-                    source,
-                )
-                self.assertIn("YOUTUBE_TRANSCRIPT_BACKFILL_STOP_ON_RATE_LIMIT", source)
-                self.assertIn("YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE", source)
+        source = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS", source)
+        self.assertIn(
+            "YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS",
+            source,
+        )
+        self.assertIn("YOUTUBE_TRANSCRIPT_BACKFILL_STOP_ON_RATE_LIMIT", source)
+        self.assertIn("YOUTUBE_TRANSCRIPT_BACKFILL_FAIL_ON_RETRYABLE", source)
 
     def test_backfill_runtime_settings_are_exposed_to_airflow(self):
         env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
@@ -270,15 +275,19 @@ class YouTubeTranscriptBackfillIntegrationContractTests(unittest.TestCase):
                 self.assertIn(f"{name}: ${{{name}:-{default}}}", compose)
 
     def test_no_row_checks_dag_is_scheduled_and_refreshes_content_analytics(self):
-        source = (
-            ROOT
-            / "orchestrator"
-            / "dags"
-            / "user_behavior_lakehouse_no_row_checks.py"
+        wrapper = (
+            ROOT / "orchestrator" / "dags" / "user_behavior_lakehouse_no_row_checks.py"
         ).read_text(encoding="utf-8")
-        self.assertIn('"LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES",\n        "60"', source)
+        source = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn(
-            "backfill_youtube_transcripts >> backfill_youtube_thumbnails",
+            'schedule_environment_variable="LAKEHOUSE_NO_ROW_CHECKS_SCHEDULE_MINUTES"',
+            wrapper,
+        )
+        self.assertIn("schedule_default_minutes=60", wrapper)
+        self.assertIn(
+            "append_youtube_metadata_versions >> backfill_youtube_thumbnails",
             source,
         )
         self.assertIn(
@@ -296,17 +305,34 @@ class YouTubeTranscriptBackfillIntegrationContractTests(unittest.TestCase):
         )
 
     def test_dashboard_distinguishes_transcript_statuses(self):
-        source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
+        app_source = (ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
+        presentation_source = (ROOT / "dashboard" / "youtube_presentation.py").read_text(
+            encoding="utf-8"
+        )
         for value in (
-            "TRANSCRIPT_STATUS_PRESENTATION",
+            "TRANSCRIPT_LIFECYCLE_PRESENTATION",
+            "pending",
+            "available",
+            "unavailable",
+            "disabled",
             "rate_limited",
+            "blocked",
+            "retryable_error",
+            "permanent_error",
+            "LEGACY_TRANSCRIPT_STATUS_MAP",
             "not_available",
+        ):
+            with self.subTest(value=value):
+                self.assertIn(value, presentation_source)
+
+        for value in (
             "Transcript collection has not been attempted",
+            "Transcript lifecycle",
             "Data completeness",
             "thumbnail_url",
         ):
             with self.subTest(value=value):
-                self.assertIn(value, source)
+                self.assertIn(value, app_source)
 
 
 if __name__ == "__main__":

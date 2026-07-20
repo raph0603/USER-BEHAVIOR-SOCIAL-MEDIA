@@ -8,6 +8,7 @@ and test (avoids identity leakage). Metrics: PR-AUC (primary, data is imbalanced
 + ROC-AUC. Global SHAP importance (via XGBoost pred_contribs) shows which
 features drive virality — the basis for the explanation layer.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -46,6 +47,18 @@ CONTENT_FEATURES = [
 ]
 TARGET = "viral"
 GROUP = "author_hash"
+
+
+def validate_dataset_version(df: pd.DataFrame, expected: str | None) -> None:
+    """Verify that an official model run uses one exact dataset version."""
+
+    if expected is None:
+        return
+    if "dataset_version" not in df.columns:
+        raise ValueError("Versioned training data must include dataset_version")
+    versions = sorted(df["dataset_version"].dropna().astype(str).unique())
+    if versions != [expected]:
+        raise ValueError(f"Expected exactly dataset version {expected}, received {versions}")
 
 
 def feature_columns(df: pd.DataFrame) -> list[str]:
@@ -110,20 +123,31 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train the unified viral classifier.")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA)
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
-    parser.add_argument("--bert-model-dir", type=Path, default=None,
-                        help="Folder of the Kaggle-trained BERT content model (required if data has content_score_bert).")
+    parser.add_argument(
+        "--bert-model-dir",
+        type=Path,
+        default=None,
+        help="Folder of the Kaggle-trained BERT content model (required if data has content_score_bert).",
+    )
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--dataset-version",
+        help="Exact lakehouse dataset version embedded in the model artifact.",
+    )
     args = parser.parse_args()
 
     df = pd.read_parquet(args.data)
+    validate_dataset_version(df, args.dataset_version)
     features = feature_columns(df)
     train_idx, test_idx = split_indices(df, args.test_size, args.seed)
     y = df[TARGET].astype(int)
 
     if "content_score_bert" in df.columns:
         if not args.bert_model_dir:
-            raise SystemExit("Data has 'content_score_bert' -> pass --bert-model-dir so serving uses the same BERT.")
+            raise SystemExit(
+                "Data has 'content_score_bert' -> pass --bert-model-dir so serving uses the same BERT."
+            )
         scores = df["content_score_bert"].to_numpy()  # out-of-fold from Kaggle -> leakage-free
         train_score, test_score = scores[train_idx], scores[test_idx]
         content_bundle = {"content_model_dir": str(args.bert_model_dir)}
@@ -148,7 +172,15 @@ def main() -> None:
     print(shap_importance(model, X_test).head(10).round(4))
 
     args.model.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"model": model, "features": features, **content_bundle}, args.model)
+    joblib.dump(
+        {
+            "model": model,
+            "features": features,
+            "dataset_version": args.dataset_version,
+            **content_bundle,
+        },
+        args.model,
+    )
     print(f"\nSaved -> {args.model}")
 
 

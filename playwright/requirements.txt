@@ -5,3 +5,4 @@ requests==2.32.3
 google-api-python-client==2.143.0
 tqdm==4.66.5
 youtube-transcript-api==1.2.4
+yt-dlp==2026.6.9
