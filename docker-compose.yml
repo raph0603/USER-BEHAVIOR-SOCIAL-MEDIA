@@ -36,6 +36,11 @@ x-airflow-common: &airflow-common
     BALANCE_SEED: ${BALANCE_SEED:-42}
     BALANCE_TARGET_PER_GROUP: ${BALANCE_TARGET_PER_GROUP:-0}
     BALANCE_DIMENSIONS: ${BALANCE_DIMENSIONS:-source}
+    ML_DATASET_VERSION: ${ML_DATASET_VERSION:-auto}
+    ML_LABEL_HORIZON_HOURS: ${ML_LABEL_HORIZON_HOURS:-24}
+    ML_LABEL_TOLERANCE_HOURS: ${ML_LABEL_TOLERANCE_HOURS:-24}
+    ML_VIRAL_QUANTILE: ${ML_VIRAL_QUANTILE:-0.75}
+    ML_MIN_TEXT_CHARS: ${ML_MIN_TEXT_CHARS:-3}
     DOCKER_MAINTENANCE_SCHEDULE_MINUTES: ${DOCKER_MAINTENANCE_SCHEDULE_MINUTES:-1440}
     DOCKER_MAINTENANCE_CONTAINER_AGE: ${DOCKER_MAINTENANCE_CONTAINER_AGE:-24h}
     DOCKER_MAINTENANCE_IMAGE_AGE: ${DOCKER_MAINTENANCE_IMAGE_AGE:-24h}
@@ -504,6 +509,11 @@ services:
       - MINIO_BUCKET=lakehouse
       - PRIVACY_HASH_SALT=dev-privacy-salt
       - YOUTUBE_VIRALITY_THRESHOLD=${YOUTUBE_VIRALITY_THRESHOLD:-8.0}
+      - ML_DATASET_VERSION=${ML_DATASET_VERSION:-auto}
+      - ML_LABEL_HORIZON_HOURS=${ML_LABEL_HORIZON_HOURS:-24}
+      - ML_LABEL_TOLERANCE_HOURS=${ML_LABEL_TOLERANCE_HOURS:-24}
+      - ML_VIRAL_QUANTILE=${ML_VIRAL_QUANTILE:-0.75}
+      - ML_MIN_TEXT_CHARS=${ML_MIN_TEXT_CHARS:-3}
       - KAFKA_TOPIC=${YOUTUBE_KAFKA_TOPIC:-youtube.raw.events},${X_KAFKA_TOPIC:-x.raw.events},${REDDIT_KAFKA_TOPIC:-reddit.raw.events}
       - BRONZE_KAFKA_OUT_TOPIC=${BRONZE_KAFKA_OUT_TOPIC:-lakehouse.bronze.for_silver}
       - BRONZE_INGRESS_DLQ_TOPIC=${BRONZE_INGRESS_DLQ_TOPIC:-lakehouse.bronze.ingress.dlq}
@@ -629,7 +639,11 @@ services:
     working_dir: /workspace
     volumes:
       - ${HOST_PROJECT_DIR:-.}:/workspace
-    command: python ml/run_pipeline.py --report
+      - balancing:/workspace/data/lakehouse-ml:ro
+    command: >
+      python ml/run_pipeline.py
+      --lakehouse-manifest /workspace/data/lakehouse-ml/current.json
+      --report
 
 volumes:
   airflow-logs:

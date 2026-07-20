@@ -4,6 +4,7 @@ Gold layer schemas and contracts for the classification pipeline.
 Defines:
 - ``lakehouse.gold.model_predictions``  — classifier outputs
 - ``lakehouse.gold.training_examples``  — labeled examples for retraining
+- ``lakehouse.gold.dataset_manifests``  — immutable dataset lineage manifests
 
 Design intent
 -------------
@@ -18,7 +19,7 @@ enough for initial service integration while remaining extensible.
 
 Schema versioning
 -----------------
-Both tables expose a ``schema_version`` field.  Increment
+All tables expose a ``schema_version`` field.  Increment
 ``PREDICTIONS_SCHEMA_VERSION`` / ``TRAINING_EXAMPLES_SCHEMA_VERSION``
 when adding or removing columns to keep downstream consumers in sync.
 """
@@ -35,7 +36,8 @@ from typing import List, Optional
 # ---------------------------------------------------------------------------
 
 PREDICTIONS_SCHEMA_VERSION = "v1"
-TRAINING_EXAMPLES_SCHEMA_VERSION = "v1"
+TRAINING_EXAMPLES_SCHEMA_VERSION = "v2"
+DATASET_MANIFESTS_SCHEMA_VERSION = "v1"
 
 
 # ---------------------------------------------------------------------------
@@ -81,12 +83,22 @@ MODEL_PREDICTIONS_COLUMNS = [
 
 TRAINING_EXAMPLES_DDL = """
 CREATE TABLE IF NOT EXISTS lakehouse.gold.training_examples (
+  example_id                 STRING    COMMENT 'Deterministic identity within a dataset version',
   source                     STRING    COMMENT 'Origin platform',
   platform_event_id          STRING    COMMENT 'Platform-native stable identifier',
+  observation_id             STRING    COMMENT 'Immutable engagement observation used for the label',
+  event_ts                   TIMESTAMP COMMENT 'Original content timestamp',
+  label_observed_at          TIMESTAMP COMMENT 'Observation timestamp used to derive the label',
+  author_hash                STRING    COMMENT 'Privacy-safe author identity for grouped splitting',
   text_for_model             STRING    COMMENT 'Lowercased cleaned text as used during feature extraction',
   feature_version            STRING    COMMENT 'Version of the post_features job that produced the features',
   label_horizon              STRING    COMMENT 'Time horizon used to derive label: T+1h, T+6h, T+24h, etc.',
   label_value                STRING    COMMENT 'Ground-truth label derived from engagement at label_horizon',
+  engagement_score           DOUBLE    COMMENT 'Coverage-aware score used to derive label_value',
+  engagement_observed_metrics INT      COMMENT 'Number of actually observed engagement counters',
+  engagement_coverage        DOUBLE    COMMENT 'Observed source-specific counters divided by expected counters',
+  audience_count             BIGINT    COMMENT 'Known author/channel/community audience, including a real zero',
+  audience_available         BOOLEAN   COMMENT 'True only when audience_count was actually observed',
   dataset_version            STRING    COMMENT 'Dataset build version for reproducibility',
   context_feature_snapshot   STRING    COMMENT 'JSON snapshot of context features used at labeling time (nullable)',
   schema_version             STRING    COMMENT 'Schema version for consumer compatibility',
@@ -97,16 +109,61 @@ PARTITIONED BY (example_date)
 """
 
 TRAINING_EXAMPLES_COLUMNS = [
+    "example_id",
     "source",
     "platform_event_id",
+    "observation_id",
+    "event_ts",
+    "label_observed_at",
+    "author_hash",
     "text_for_model",
     "feature_version",
     "label_horizon",
     "label_value",
+    "engagement_score",
+    "engagement_observed_metrics",
+    "engagement_coverage",
+    "audience_count",
+    "audience_available",
     "dataset_version",
     "context_feature_snapshot",
     "schema_version",
     "example_date",
+]
+
+
+DATASET_MANIFESTS_DDL = """
+CREATE TABLE IF NOT EXISTS lakehouse.gold.dataset_manifests (
+  dataset_version          STRING    COMMENT 'Deterministic version for identical inputs and filters',
+  schema_version           STRING    COMMENT 'Training-example schema version',
+  period_start             TIMESTAMP COMMENT 'Earliest original event timestamp in the dataset',
+  period_end               TIMESTAMP COMMENT 'Latest original event timestamp in the dataset',
+  source_tables_json       STRING    COMMENT 'Canonical JSON list of official input tables',
+  iceberg_snapshots_json   STRING    COMMENT 'Canonical JSON map of table to pinned Iceberg snapshot ID',
+  filters_json             STRING    COMMENT 'Canonical JSON of deterministic build filters',
+  example_count            BIGINT    COMMENT 'Number of labeled examples',
+  missing_rates_json       STRING    COMMENT 'Canonical JSON of field-level missing rates',
+  distributions_json       STRING    COMMENT 'Canonical JSON of label and source distributions',
+  dataset_fingerprint      STRING    COMMENT 'SHA-256 of input snapshots, schema, and filters',
+  created_at               TIMESTAMP COMMENT 'UTC manifest creation timestamp'
+)
+USING iceberg
+PARTITIONED BY (days(created_at))
+"""
+
+DATASET_MANIFESTS_COLUMNS = [
+    "dataset_version",
+    "schema_version",
+    "period_start",
+    "period_end",
+    "source_tables_json",
+    "iceberg_snapshots_json",
+    "filters_json",
+    "example_count",
+    "missing_rates_json",
+    "distributions_json",
+    "dataset_fingerprint",
+    "created_at",
 ]
 
 
@@ -145,6 +202,8 @@ class ModelPredictionRow:
         prediction_ts = data.get("prediction_ts")
         if isinstance(prediction_ts, str):
             prediction_ts = datetime.fromisoformat(prediction_ts)
+        if not isinstance(prediction_ts, datetime):
+            raise ValueError("prediction_ts must be an ISO timestamp or datetime")
         return cls(
             source=data["source"],
             platform_event_id=data["platform_event_id"],
@@ -177,15 +236,36 @@ class TrainingExampleRow:
     label_horizon: str  # e.g. "T+1h", "T+6h", "T+24h"
     label_value: str  # e.g. "viral", "not_viral", "pending"
     dataset_version: str
+    example_id: Optional[str] = None
+    observation_id: Optional[str] = None
+    event_ts: Optional[datetime] = None
+    label_observed_at: Optional[datetime] = None
+    author_hash: Optional[str] = None
+    engagement_score: Optional[float] = None
+    engagement_observed_metrics: int = 0
+    engagement_coverage: float = 0.0
+    audience_count: Optional[int] = None
+    audience_available: bool = False
     context_feature_snapshot: Optional[str] = None  # JSON string
     schema_version: str = TRAINING_EXAMPLES_SCHEMA_VERSION
     example_date: Optional[str] = None  # ISO date string
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        for name in ("event_ts", "label_observed_at"):
+            value = data.get(name)
+            if isinstance(value, datetime):
+                data[name] = value.isoformat()
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "TrainingExampleRow":
+        event_ts = data.get("event_ts")
+        if isinstance(event_ts, str):
+            event_ts = datetime.fromisoformat(event_ts)
+        label_observed_at = data.get("label_observed_at")
+        if isinstance(label_observed_at, str):
+            label_observed_at = datetime.fromisoformat(label_observed_at)
         return cls(
             source=data["source"],
             platform_event_id=data["platform_event_id"],
@@ -194,6 +274,16 @@ class TrainingExampleRow:
             label_horizon=data["label_horizon"],
             label_value=data["label_value"],
             dataset_version=data["dataset_version"],
+            example_id=data.get("example_id"),
+            observation_id=data.get("observation_id"),
+            event_ts=event_ts,
+            label_observed_at=label_observed_at,
+            author_hash=data.get("author_hash"),
+            engagement_score=data.get("engagement_score"),
+            engagement_observed_metrics=int(data.get("engagement_observed_metrics", 0)),
+            engagement_coverage=float(data.get("engagement_coverage", 0.0)),
+            audience_count=data.get("audience_count"),
+            audience_available=bool(data.get("audience_available", False)),
             context_feature_snapshot=data.get("context_feature_snapshot"),
             schema_version=data.get("schema_version", TRAINING_EXAMPLES_SCHEMA_VERSION),
             example_date=data.get("example_date"),
@@ -253,7 +343,7 @@ def validate_training_example(row: TrainingExampleRow) -> list[str]:
 
 def create_gold_tables(spark) -> None:
     """
-    Create the Gold namespace and both Gold tables if they do not yet exist.
+    Create the Gold namespace and its tables if they do not yet exist.
 
     Parameters
     ----------
@@ -262,3 +352,20 @@ def create_gold_tables(spark) -> None:
     spark.sql("CREATE NAMESPACE IF NOT EXISTS lakehouse.gold")
     spark.sql(MODEL_PREDICTIONS_DDL)
     spark.sql(TRAINING_EXAMPLES_DDL)
+    spark.sql(DATASET_MANIFESTS_DDL)
+    current_columns = set(spark.table("lakehouse.gold.training_examples").columns)
+    additive_columns = {
+        "example_id": "STRING",
+        "observation_id": "STRING",
+        "event_ts": "TIMESTAMP",
+        "label_observed_at": "TIMESTAMP",
+        "author_hash": "STRING",
+        "engagement_score": "DOUBLE",
+        "engagement_observed_metrics": "INT",
+        "engagement_coverage": "DOUBLE",
+        "audience_count": "BIGINT",
+        "audience_available": "BOOLEAN",
+    }
+    for name, data_type in additive_columns.items():
+        if name not in current_columns:
+            spark.sql(f"ALTER TABLE lakehouse.gold.training_examples ADD COLUMN {name} {data_type}")
