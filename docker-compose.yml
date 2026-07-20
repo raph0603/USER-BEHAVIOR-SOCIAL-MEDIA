@@ -71,6 +71,9 @@ x-airflow-common: &airflow-common
     X_DLQ_KAFKA_TOPIC: ${X_DLQ_KAFKA_TOPIC:-x.dlq.events}
     REDDIT_DLQ_KAFKA_TOPIC: ${REDDIT_DLQ_KAFKA_TOPIC:-reddit.dlq.events}
     BRONZE_KAFKA_OUT_TOPIC: ${BRONZE_KAFKA_OUT_TOPIC:-lakehouse.bronze.for_silver}
+    BRONZE_INGRESS_DLQ_TOPIC: ${BRONZE_INGRESS_DLQ_TOPIC:-lakehouse.bronze.ingress.dlq}
+    KAFKA_FAIL_ON_DATA_LOSS: ${KAFKA_FAIL_ON_DATA_LOSS:-true}
+    ALLOW_KAFKA_DATA_LOSS: ${ALLOW_KAFKA_DATA_LOSS:-false}
     YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
     YOUTUBE_SEARCH_QUERIES: ${YOUTUBE_SEARCH_QUERIES:-electric vehicle review||EV charging battery range||đánh giá xe điện||xe điện VinFast trạm sạc}
     YOUTUBE_SEARCH_LANGUAGES: ${YOUTUBE_SEARCH_LANGUAGES:-en,vi}
@@ -484,6 +487,9 @@ services:
       - YOUTUBE_VIRALITY_THRESHOLD=${YOUTUBE_VIRALITY_THRESHOLD:-8.0}
       - KAFKA_TOPIC=${YOUTUBE_KAFKA_TOPIC:-youtube.raw.events},${X_KAFKA_TOPIC:-x.raw.events},${REDDIT_KAFKA_TOPIC:-reddit.raw.events}
       - BRONZE_KAFKA_OUT_TOPIC=${BRONZE_KAFKA_OUT_TOPIC:-lakehouse.bronze.for_silver}
+      - BRONZE_INGRESS_DLQ_TOPIC=${BRONZE_INGRESS_DLQ_TOPIC:-lakehouse.bronze.ingress.dlq}
+      - KAFKA_FAIL_ON_DATA_LOSS=${KAFKA_FAIL_ON_DATA_LOSS:-true}
+      - ALLOW_KAFKA_DATA_LOSS=${ALLOW_KAFKA_DATA_LOSS:-false}
       # Tuning knobs consumed by Spark jobs
       - SPARK_WORKER_COUNT=4
       - SPARK_WORKER_CORES=1
@@ -517,6 +523,8 @@ services:
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
       - MINIO_BUCKET=lakehouse
       - PRIVACY_HASH_SALT=dev-privacy-salt
+      - KAFKA_FAIL_ON_DATA_LOSS=${KAFKA_FAIL_ON_DATA_LOSS:-true}
+      - ALLOW_KAFKA_DATA_LOSS=${ALLOW_KAFKA_DATA_LOSS:-false}
       # Tunables for scaling
       - SPARK_WORKER_CORES=2
       - SPARK_WORKER_MEMORY=2G

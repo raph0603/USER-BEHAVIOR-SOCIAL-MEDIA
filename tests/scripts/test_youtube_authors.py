@@ -195,6 +195,13 @@ class YouTubeAuthorTests(unittest.TestCase):
 
         for path in paths[-4:]:
             source = path.read_text(encoding="utf-8")
+            if path.name in {
+                "bronze_to_silver.py",
+                "bronze_to_silver_from_kafka.py",
+            }:
+                source += (
+                    ROOT / "spark" / "jobs" / "pipeline" / "silver_merge.py"
+                ).read_text(encoding="utf-8")
             with self.subTest(coalesce_path=path):
                 self.assertIn("COALESCE", source)
 

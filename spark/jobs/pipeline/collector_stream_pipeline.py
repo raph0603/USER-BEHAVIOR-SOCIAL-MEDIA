@@ -26,6 +26,7 @@ from cleaning import clean_text, invalid_reason, prepare_text_for_model
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from event_contract import EVENT_COLUMNS, spark_struct_type
+from pipeline.reliability import fail_on_data_loss_option
 
 
 def _env(name: str, default: str) -> str:
@@ -160,12 +161,29 @@ def main() -> None:
     spark = _build_spark(f"collector-event-cleaning-{platform}")
     spark.sparkContext.setLogLevel("WARN")
 
+    fail_on_data_loss = fail_on_data_loss_option(
+        os.getenv("KAFKA_FAIL_ON_DATA_LOSS", "true"),
+        allow_data_loss=os.getenv("ALLOW_KAFKA_DATA_LOSS", "false"),
+    )
+    if fail_on_data_loss == "false":
+        print(
+            json.dumps(
+                {
+                    "level": "warning",
+                    "event": "kafka_data_loss_override",
+                    "stage": f"clean_{platform}",
+                    "topics": [source_topic],
+                },
+                sort_keys=True,
+            )
+        )
+
     raw = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", kafka_bootstrap)
         .option("subscribe", source_topic)
         .option("startingOffsets", starting_offsets)
-        .option("failOnDataLoss", "false")
+        .option("failOnDataLoss", fail_on_data_loss)
         .load()
     )
 

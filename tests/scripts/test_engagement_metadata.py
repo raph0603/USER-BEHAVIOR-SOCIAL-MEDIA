@@ -128,10 +128,10 @@ class EngagementMetadataTests(unittest.TestCase):
             "subreddit_member_count",
         }
         self.assertTrue(expected.issubset(field_names))
+        self.assertIn("event_id", field_names)
         self.assertFalse(
             {
                 "crosspost_count",
-                "event_id",
                 "repost_count",
                 "share_count",
             }

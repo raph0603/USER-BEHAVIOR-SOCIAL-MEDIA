@@ -14,7 +14,9 @@ EVENT_FIELD_TYPES = {
     "timestamp": "string",
     "source": "string",
     "error": "string",
+    "event_id": "string",
     "platform_event_id": "string",
+    "payload_fingerprint": "string",
     "owner_channel_id": "string",
     "subreddit": "string",
     "subreddit_title": "string",
@@ -116,6 +118,32 @@ EVENT_COLUMNS = tuple(EVENT_FIELD_TYPES)
 BRONZE_COLUMNS = EVENT_COLUMNS + ("metadata_refreshed_at", "event_ts")
 SILVER_COLUMNS = BRONZE_COLUMNS + ("event_date",)
 
+BRONZE_EVENT_LOG_METADATA_TYPES = {
+    "kafka_topic": "string",
+    "kafka_partition": "int",
+    "kafka_offset": "long",
+    "kafka_timestamp": "timestamp",
+    "bronze_epoch_id": "long",
+    "bronze_run_id": "string",
+    "ingested_at": "timestamp",
+}
+BRONZE_EVENT_LOG_COLUMNS = BRONZE_COLUMNS + tuple(BRONZE_EVENT_LOG_METADATA_TYPES)
+
+BRONZE_DLQ_TYPES = {
+    "dlq_id": "string",
+    "kafka_topic": "string",
+    "kafka_partition": "int",
+    "kafka_offset": "long",
+    "kafka_timestamp": "timestamp",
+    "category": "string",
+    "payload_fingerprint": "string",
+    "protected_payload": "string",
+    "failed_at": "timestamp",
+    "bronze_epoch_id": "long",
+    "bronze_run_id": "string",
+}
+BRONZE_DLQ_COLUMNS = tuple(BRONZE_DLQ_TYPES)
+
 OUTCOME_STATUS_COLUMNS = frozenset(
     {
         "collection_status",
@@ -141,6 +169,24 @@ ICEBERG_TYPES = {
     "metadata_refreshed_at": "TIMESTAMP",
     "event_ts": "TIMESTAMP",
     "event_date": "DATE",
+    **{
+        name: {
+            "string": "STRING",
+            "long": "BIGINT",
+            "int": "INT",
+            "timestamp": "TIMESTAMP",
+        }[data_type]
+        for name, data_type in BRONZE_EVENT_LOG_METADATA_TYPES.items()
+    },
+    **{
+        name: {
+            "string": "STRING",
+            "long": "BIGINT",
+            "int": "INT",
+            "timestamp": "TIMESTAMP",
+        }[data_type]
+        for name, data_type in BRONZE_DLQ_TYPES.items()
+    },
 }
 
 
