@@ -22,6 +22,15 @@ class InsightRefreshDagContractTests(unittest.TestCase):
         ):
             self.assertIn(f'task_id="{task_id}"', source)
         self.assertIn(
+            "youtube-collector python /app/youtube_metrics_worker.py",
+            source,
+        )
+        self.assertIn("validate_refresh_output >> append_snapshots", source)
+        self.assertIn(
+            "append_snapshots >> apply_updates >> compute_velocity >> release_lock",
+            source,
+        )
+        self.assertNotIn(
             "validate_refresh_output >> [append_snapshots, apply_updates]",
             source,
         )
@@ -70,6 +79,55 @@ class InsightRefreshValidationTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(RuntimeError, "Duplicate observation"):
+                validator.validate_file(path, "youtube")
+
+    def test_deterministic_observation_and_known_zero_are_accepted(self):
+        validator = self._validator()
+        observed_at = "2026-07-17T00:00:00+00:00"
+        observation_id = validator.deterministic_observation_id("youtube", "video-1", observed_at)
+        event = {
+            "source": "youtube",
+            "platform_event_id": "video-1",
+            "metadata_refreshed_at": observed_at,
+            "observation_id": observation_id,
+            "view_count": 0,
+            "view_count_available": True,
+            "like_count": None,
+            "like_count_available": False,
+            "coverage_json": json.dumps({"view_count": True, "like_count": False}),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "youtube.jsonl"
+            path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            self.assertEqual(validator.validate_file(path, "youtube"), 1)
+
+    def test_metric_availability_mismatch_is_rejected(self):
+        validator = self._validator()
+        event = {
+            "source": "youtube",
+            "platform_event_id": "video-1",
+            "metadata_refreshed_at": "2026-07-17T00:00:00+00:00",
+            "view_count": None,
+            "view_count_available": True,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "youtube.jsonl"
+            path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "availability mismatch"):
+                validator.validate_file(path, "youtube")
+
+    def test_invalid_observation_id_is_rejected(self):
+        validator = self._validator()
+        event = {
+            "source": "youtube",
+            "platform_event_id": "video-1",
+            "metadata_refreshed_at": "2026-07-17T00:00:00+00:00",
+            "observation_id": "not-deterministic",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "youtube.jsonl"
+            path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "Invalid observation_id"):
                 validator.validate_file(path, "youtube")
 
 

@@ -146,8 +146,8 @@ with DAG(
         execution_timeout=timedelta(minutes=30),
         bash_command=docker_compose(
             "run --rm --no-deps "
-            "-e INSIGHT_REFRESH_SOURCE=youtube "
-            "youtube-collector python /app/insight_refresh.py"
+            "-e PIPELINE_RUN_ID={{ dag.dag_id }}__{{ run_id }} "
+            "youtube-collector python /app/youtube_metrics_worker.py"
         ),
     )
 
@@ -251,6 +251,5 @@ with DAG(
     acquire_lock >> reset_output >> export_targets
     export_targets >> [refresh_youtube, refresh_x, refresh_reddit]
     [refresh_youtube, refresh_x, refresh_reddit] >> validate_refresh_output
-    validate_refresh_output >> [append_snapshots, apply_updates]
-    append_snapshots >> compute_velocity
-    [compute_velocity, apply_updates] >> release_lock
+    validate_refresh_output >> append_snapshots
+    append_snapshots >> apply_updates >> compute_velocity >> release_lock

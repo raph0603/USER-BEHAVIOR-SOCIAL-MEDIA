@@ -11,8 +11,9 @@ time-horizon labels (T+1h, T+6h, T+24h, …) can be built later for
 retraining.
 
 The table is **append-only** — no row is ever modified after insertion.
-The ``observed_at`` + ``platform_event_id`` / ``(source, url)`` triplet
-uniquely identifies an observation.
+``observation_id`` deterministically identifies a source identity at one
+observation timestamp. Writes use a no-match-only Iceberg MERGE so retries and
+concurrent Airflow attempts cannot append the same observation twice.
 
 Run modes
 ---------
@@ -31,13 +32,16 @@ from pyspark.sql.functions import (
     lit,
     row_number,
     sha2,
+    struct,
     to_date,
+    to_json,
     to_timestamp,
     unix_timestamp,
     when,
 )
 from pyspark.sql.types import (
     ArrayType,
+    BooleanType,
     DoubleType,
     LongType,
     IntegerType,
@@ -89,11 +93,13 @@ INSIGHT_REFRESH_SCHEMA = StructType(
         StructField("event_ts", StringType(), False),
         StructField("source", StringType(), False),
         StructField("platform_event_id", StringType(), True),
+        StructField("observation_id", StringType(), True),
         StructField("metadata_refreshed_at", StringType(), True),
         StructField("last_metrics_refresh_at", StringType(), True),
         StructField("next_metrics_refresh_at", StringType(), True),
         StructField("metrics_refresh_count", IntegerType(), True),
         StructField("metrics_refresh_status", StringType(), True),
+        StructField("metrics_error_code", StringType(), True),
         StructField("owner_channel_id", StringType(), True),
         StructField("collaborator_channel_ids", ArrayType(StringType()), True),
         StructField("like_count", LongType(), True),
@@ -106,6 +112,19 @@ INSIGHT_REFRESH_SCHEMA = StructType(
         StructField("follower_count", LongType(), True),
         StructField("subscriber_count", LongType(), True),
         StructField("subreddit_member_count", LongType(), True),
+        StructField("producer_name", StringType(), True),
+        StructField("producer_run_id", StringType(), True),
+        StructField("collection_method", StringType(), True),
+        StructField("api_endpoint", StringType(), True),
+        StructField("payload_fingerprint", StringType(), True),
+        StructField("coverage_json", StringType(), True),
+        StructField("like_count_available", BooleanType(), True),
+        StructField("view_count_available", BooleanType(), True),
+        StructField("comment_count_available", BooleanType(), True),
+        StructField("reply_count_available", BooleanType(), True),
+        StructField("retweet_count_available", BooleanType(), True),
+        StructField("bookmark_count_available", BooleanType(), True),
+        StructField("score_available", BooleanType(), True),
     ]
 )
 
@@ -143,6 +162,20 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.engagement_snapshots (
   engagement_rate      DOUBLE    COMMENT 'Likes plus comments divided by views',
   views_acceleration   DOUBLE    COMMENT 'Change in views per hour divided by elapsed hours',
   metrics_refresh_status STRING  COMMENT 'Outcome of the metrics observation',
+  metrics_error_code    STRING    COMMENT 'Normalized collection error when metrics are unavailable',
+  producer_name         STRING    COMMENT 'Worker or collector that produced the observation',
+  producer_run_id       STRING    COMMENT 'Stable orchestration or worker run identifier',
+  collection_method     STRING    COMMENT 'Official API, browser, or public JSON collection path',
+  api_endpoint          STRING    COMMENT 'External endpoint used for this observation',
+  payload_fingerprint   STRING    COMMENT 'SHA-256 of the normalized observation payload',
+  coverage_json         STRING    COMMENT 'Explicit availability coverage for metrics',
+  like_count_available  BOOLEAN   COMMENT 'Whether like_count was actually observed',
+  view_count_available  BOOLEAN   COMMENT 'Whether view_count was actually observed',
+  comment_count_available BOOLEAN COMMENT 'Whether comment_count was actually observed',
+  reply_count_available BOOLEAN   COMMENT 'Whether reply_count was actually observed',
+  retweet_count_available BOOLEAN COMMENT 'Whether retweet_count was actually observed',
+  bookmark_count_available BOOLEAN COMMENT 'Whether bookmark_count was actually observed',
+  score_available       BOOLEAN   COMMENT 'Whether score was actually observed',
   snapshot_date        DATE      COMMENT 'Partition column derived from observed_at'
 )
 USING iceberg
@@ -180,6 +213,20 @@ _SNAPSHOT_COLUMNS = [
     "engagement_rate",
     "views_acceleration",
     "metrics_refresh_status",
+    "metrics_error_code",
+    "producer_name",
+    "producer_run_id",
+    "collection_method",
+    "api_endpoint",
+    "payload_fingerprint",
+    "coverage_json",
+    "like_count_available",
+    "view_count_available",
+    "comment_count_available",
+    "reply_count_available",
+    "retweet_count_available",
+    "bookmark_count_available",
+    "score_available",
     "snapshot_date",
 ]
 
@@ -189,9 +236,16 @@ _SNAPSHOT_COLUMNS = [
 # ---------------------------------------------------------------------------
 
 
-def _non_negative_delta(current: str, previous: str):
+def _non_negative_delta(
+    current: str,
+    previous: str,
+    current_available: str,
+    previous_available: str,
+):
     return when(
-        col(current).isNull()
+        ~coalesce(col(current_available), lit(False))
+        | ~coalesce(col(previous_available), lit(False))
+        | col(current).isNull()
         | col(previous).isNull()
         | (col(current) < col(previous)),
         lit(None).cast("bigint"),
@@ -219,24 +273,96 @@ def build_snapshots_from_updates(
         .withColumn("observed_at", to_timestamp(col("metadata_refreshed_at")))
         .withColumn(
             "age_minutes",
-            (
-                (unix_timestamp(col("observed_at")) - unix_timestamp(col("created_at")))
-                / 60
-            ).cast("bigint"),
+            ((unix_timestamp(col("observed_at")) - unix_timestamp(col("created_at"))) / 60).cast(
+                "bigint"
+            ),
         )
         .withColumn("snapshot_date", to_date(col("observed_at")))
         .withColumn(
             "observation_id",
+            coalesce(
+                col("observation_id"),
+                sha2(
+                    concat_ws(
+                        "\u001f",
+                        coalesce(col("source"), lit("")),
+                        coalesce(col("platform_event_id"), col("url"), lit("")),
+                        coalesce(col("observed_at").cast("string"), lit("")),
+                    ),
+                    256,
+                ),
+            ),
+        )
+        .withColumn(
+            "producer_name",
+            coalesce(col("producer_name"), lit("insight_refresh")),
+        )
+        .withColumn(
+            "producer_run_id",
+            coalesce(
+                col("producer_run_id"),
+                lit(_env("PIPELINE_RUN_ID", "standalone")),
+            ),
+        )
+        .withColumn(
+            "collection_method",
+            coalesce(
+                col("collection_method"),
+                when(col("source") == "youtube", lit("youtube_data_api"))
+                .when(col("source") == "reddit", lit("reddit_public_json"))
+                .otherwise(lit("playwright_browser")),
+            ),
+        )
+        .withColumn(
+            "api_endpoint",
+            coalesce(
+                col("api_endpoint"),
+                when(col("source") == "youtube", lit("videos.list")),
+            ),
+        )
+    )
+
+    tracked_metrics = (
+        "like_count",
+        "view_count",
+        "comment_count",
+        "reply_count",
+        "retweet_count",
+        "bookmark_count",
+        "score",
+    )
+    for metric in tracked_metrics:
+        availability = f"{metric}_available"
+        df = df.withColumn(
+            availability,
+            coalesce(col(availability), col(metric).isNotNull()),
+        )
+
+    df = df.withColumn(
+        "coverage_json",
+        coalesce(
+            col("coverage_json"),
+            to_json(
+                struct(*[col(f"{metric}_available").alias(metric) for metric in tracked_metrics])
+            ),
+        ),
+    ).withColumn(
+        "payload_fingerprint",
+        coalesce(
+            col("payload_fingerprint"),
             sha2(
-                concat_ws(
-                    "\u001f",
-                    coalesce(col("source"), lit("")),
-                    coalesce(col("platform_event_id"), col("url"), lit("")),
-                    coalesce(col("observed_at").cast("string"), lit("")),
+                to_json(
+                    struct(
+                        "source",
+                        "platform_event_id",
+                        "observed_at",
+                        *tracked_metrics,
+                        "coverage_json",
+                    )
                 ),
                 256,
             ),
-        )
+        ),
     )
 
     if previous_snapshots is None:
@@ -246,6 +372,9 @@ def build_snapshots_from_updates(
             ("previous_like_count", "bigint"),
             ("previous_comment_count", "bigint"),
             ("previous_views_per_hour", "double"),
+            ("previous_view_count_available", "boolean"),
+            ("previous_like_count_available", "boolean"),
+            ("previous_comment_count_available", "boolean"),
         ):
             df = df.withColumn(name, lit(None).cast(data_type))
     else:
@@ -257,6 +386,9 @@ def build_snapshots_from_updates(
             col("like_count").alias("previous_like_count"),
             col("comment_count").alias("previous_comment_count"),
             col("views_per_hour").alias("previous_views_per_hour"),
+            col("view_count_available").alias("previous_view_count_available"),
+            col("like_count_available").alias("previous_like_count_available"),
+            col("comment_count_available").alias("previous_comment_count_available"),
         )
         df = df.join(previous, ["source", "platform_event_id"], "left")
 
@@ -266,24 +398,36 @@ def build_snapshots_from_updates(
             when(
                 col("previous_observed_at").isNotNull()
                 & (col("observed_at") > col("previous_observed_at")),
-                (
-                    unix_timestamp(col("observed_at"))
-                    - unix_timestamp(col("previous_observed_at"))
-                )
+                (unix_timestamp(col("observed_at")) - unix_timestamp(col("previous_observed_at")))
                 / lit(3600.0),
             ).cast("double"),
         )
         .withColumn(
             "views_delta",
-            _non_negative_delta("view_count", "previous_view_count"),
+            _non_negative_delta(
+                "view_count",
+                "previous_view_count",
+                "view_count_available",
+                "previous_view_count_available",
+            ),
         )
         .withColumn(
             "likes_delta",
-            _non_negative_delta("like_count", "previous_like_count"),
+            _non_negative_delta(
+                "like_count",
+                "previous_like_count",
+                "like_count_available",
+                "previous_like_count_available",
+            ),
         )
         .withColumn(
             "comments_delta",
-            _non_negative_delta("comment_count", "previous_comment_count"),
+            _non_negative_delta(
+                "comment_count",
+                "previous_comment_count",
+                "comment_count_available",
+                "previous_comment_count_available",
+            ),
         )
         .withColumn(
             "views_per_hour",
@@ -302,35 +446,40 @@ def build_snapshots_from_updates(
         .withColumn(
             "comments_per_hour",
             when(
-                (col("hours_since_previous") > 0)
-                & col("comments_delta").isNotNull(),
+                (col("hours_since_previous") > 0) & col("comments_delta").isNotNull(),
                 col("comments_delta") / col("hours_since_previous"),
             ).cast("double"),
         )
         .withColumn(
             "like_rate",
             when(
-                (col("view_count") > 0) & col("like_count").isNotNull(),
+                coalesce(col("view_count_available"), lit(False))
+                & coalesce(col("like_count_available"), lit(False))
+                & (col("view_count") > 0)
+                & col("like_count").isNotNull(),
                 col("like_count") / col("view_count"),
             ).cast("double"),
         )
         .withColumn(
             "comment_rate",
             when(
-                (col("view_count") > 0) & col("comment_count").isNotNull(),
+                coalesce(col("view_count_available"), lit(False))
+                & coalesce(col("comment_count_available"), lit(False))
+                & (col("view_count") > 0)
+                & col("comment_count").isNotNull(),
                 col("comment_count") / col("view_count"),
             ).cast("double"),
         )
         .withColumn(
             "engagement_rate",
             when(
-                (col("view_count") > 0)
-                & (col("like_count").isNotNull() | col("comment_count").isNotNull()),
-                (
-                    coalesce(col("like_count"), lit(0))
-                    + coalesce(col("comment_count"), lit(0))
-                )
-                / col("view_count"),
+                coalesce(col("view_count_available"), lit(False))
+                & coalesce(col("like_count_available"), lit(False))
+                & coalesce(col("comment_count_available"), lit(False))
+                & (col("view_count") > 0)
+                & col("like_count").isNotNull()
+                & col("comment_count").isNotNull(),
+                (col("like_count") + col("comment_count")) / col("view_count"),
             ).cast("double"),
         )
         .withColumn(
@@ -391,13 +540,25 @@ def main() -> None:
             "engagement_rate": "DOUBLE",
             "views_acceleration": "DOUBLE",
             "metrics_refresh_status": "STRING",
+            "metrics_error_code": "STRING",
+            "producer_name": "STRING",
+            "producer_run_id": "STRING",
+            "collection_method": "STRING",
+            "api_endpoint": "STRING",
+            "payload_fingerprint": "STRING",
+            "coverage_json": "STRING",
+            "like_count_available": "BOOLEAN",
+            "view_count_available": "BOOLEAN",
+            "comment_count_available": "BOOLEAN",
+            "reply_count_available": "BOOLEAN",
+            "retweet_count_available": "BOOLEAN",
+            "bookmark_count_available": "BOOLEAN",
+            "score_available": "BOOLEAN",
         },
     )
 
     input_dir = Path(_env("INSIGHT_REFRESH_OUTPUT_DIR", "/opt/spark/insight-refresh"))
-    input_files = [
-        input_dir / f"{source}.jsonl" for source in ("youtube", "x", "reddit")
-    ]
+    input_files = [input_dir / f"{source}.jsonl" for source in ("youtube", "x", "reddit")]
 
     updates = []
     for input_file in input_files:
@@ -418,9 +579,7 @@ def main() -> None:
         current_snapshots.withColumn(
             "_previous_rank",
             row_number().over(
-                Window.partitionBy("source", "platform_event_id").orderBy(
-                    col("observed_at").desc()
-                )
+                Window.partitionBy("source", "platform_event_id").orderBy(col("observed_at").desc())
             ),
         )
         .filter(col("_previous_rank") == 1)
@@ -437,19 +596,23 @@ def main() -> None:
         return
 
     snapshots_df = snapshots_df.dropDuplicates(["observation_id"])
-    existing_ids = current_snapshots.filter(col("observation_id").isNotNull()).select(
-        "observation_id"
+    snapshot_rows = snapshots_df.count()
+    snapshots_df.createOrReplaceTempView("engagement_snapshot_candidates")
+    rendered_columns = ", ".join(_SNAPSHOT_COLUMNS)
+    rendered_values = ", ".join(f"source.{name}" for name in _SNAPSHOT_COLUMNS)
+    # The no-match-only MERGE preserves immutable history while closing the
+    # anti-join/append race between concurrent Airflow attempts.
+    spark.sql(
+        f"""
+        MERGE INTO lakehouse.silver.engagement_snapshots AS target
+        USING engagement_snapshot_candidates AS source
+        ON target.observation_id = source.observation_id
+        WHEN NOT MATCHED THEN
+          INSERT ({rendered_columns}) VALUES ({rendered_values})
+        """
     )
-    snapshots_df = snapshots_df.join(existing_ids, ["observation_id"], "left_anti")
-    if snapshots_df.rdd.isEmpty():
-        print("No new engagement snapshots after idempotence check")
-        spark.stop()
-        return
 
-    # Append-only: only unseen observations are inserted; no row is updated.
-    snapshots_df.writeTo("lakehouse.silver.engagement_snapshots").append()
-
-    print(f"Appended {len(updates)} engagement snapshots")
+    print(f"Merged {snapshot_rows} idempotent engagement snapshot candidates")
     spark.stop()
 
 

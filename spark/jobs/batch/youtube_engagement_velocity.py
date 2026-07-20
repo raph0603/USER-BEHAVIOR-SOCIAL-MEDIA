@@ -6,13 +6,13 @@ import os
 
 from pyspark.sql import SparkSession, Window
 from pyspark.sql.functions import (
-    coalesce,
     col,
     current_timestamp,
     lit,
     log1p,
     row_number,
     to_date,
+    when,
 )
 
 
@@ -57,15 +57,26 @@ def build_latest_velocity(snapshots, threshold: float):
         .filter(col("_rank") == 1)
         .drop("_rank")
     )
+    inputs_available = (
+        col("views_per_hour").isNotNull()
+        & col("engagement_rate").isNotNull()
+        & col("views_acceleration").isNotNull()
+    )
     score = (
-        log1p(coalesce(col("views_per_hour"), lit(0.0)))
-        + coalesce(col("engagement_rate"), lit(0.0)) * lit(10.0)
-        + coalesce(col("views_acceleration"), lit(0.0)) / lit(1000.0)
+        log1p(col("views_per_hour"))
+        + col("engagement_rate") * lit(10.0)
+        + col("views_acceleration") / lit(1000.0)
     )
     return (
         latest.withColumn("video_id", col("platform_event_id"))
-        .withColumn("virality_score", score.cast("double"))
-        .withColumn("is_viral", (score >= lit(threshold)).cast("boolean"))
+        .withColumn(
+            "virality_score",
+            when(inputs_available, score).cast("double"),
+        )
+        .withColumn(
+            "is_viral",
+            when(inputs_available, score >= lit(threshold)).cast("boolean"),
+        )
         .withColumn("updated_at", current_timestamp())
         .withColumn("snapshot_date", to_date(col("observed_at")))
         .select(
@@ -123,9 +134,7 @@ def main() -> None:
         """
     )
     threshold = float(_env("YOUTUBE_VIRALITY_THRESHOLD", "8.0"))
-    latest = build_latest_velocity(
-        spark.table("lakehouse.silver.engagement_snapshots"), threshold
-    )
+    latest = build_latest_velocity(spark.table("lakehouse.silver.engagement_snapshots"), threshold)
     latest.createOrReplaceTempView("youtube_velocity_updates")
     spark.sql(
         f"""

@@ -2,9 +2,53 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
+
+
+TRACKED_METRICS = (
+    "like_count",
+    "view_count",
+    "comment_count",
+    "reply_count",
+    "retweet_count",
+    "bookmark_count",
+    "score",
+)
+
+
+def deterministic_observation_id(source: str, identity: str, observed_at: str) -> str:
+    value = f"{source}\x1f{identity}\x1f{observed_at}"
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _validate_availability(event: dict, path: Path, line_number: int) -> None:
+    explicit: dict[str, bool] = {}
+    for metric in TRACKED_METRICS:
+        availability = f"{metric}_available"
+        if availability not in event:
+            continue
+        flag = event[availability]
+        if not isinstance(flag, bool):
+            raise RuntimeError(f"Invalid availability flag in {path}:{line_number}: {availability}")
+        if flag != (event.get(metric) is not None):
+            raise RuntimeError(f"Metric availability mismatch in {path}:{line_number}: {metric}")
+        explicit[metric] = flag
+
+    raw_coverage = event.get("coverage_json")
+    if raw_coverage is None:
+        return
+    try:
+        coverage = json.loads(raw_coverage) if isinstance(raw_coverage, str) else raw_coverage
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid coverage JSON in {path}:{line_number}") from exc
+    if not isinstance(coverage, dict):
+        raise RuntimeError(f"Invalid coverage object in {path}:{line_number}")
+    for metric, expected in explicit.items():
+        if coverage.get(metric) is not expected:
+            raise RuntimeError(f"Coverage mismatch in {path}:{line_number}: {metric}")
 
 
 def validate_file(path: Path, source: str) -> int:
@@ -27,9 +71,17 @@ def validate_file(path: Path, source: str) -> int:
             identity = event.get("platform_event_id") or event.get("url")
             observed_at = event.get("metadata_refreshed_at")
             if not identity or not observed_at:
-                raise RuntimeError(
-                    f"Missing observation identity in {path}:{line_number}"
-                )
+                raise RuntimeError(f"Missing observation identity in {path}:{line_number}")
+            expected_observation_id = deterministic_observation_id(
+                source, str(identity), str(observed_at)
+            )
+            supplied_observation_id = event.get("observation_id")
+            if (
+                supplied_observation_id is not None
+                and supplied_observation_id != expected_observation_id
+            ):
+                raise RuntimeError(f"Invalid observation_id in {path}:{line_number}")
+            _validate_availability(event, path, line_number)
             key = (source, str(identity), str(observed_at))
             if key in observations:
                 raise RuntimeError(f"Duplicate observation in {path}:{line_number}: {key}")
@@ -39,9 +91,7 @@ def validate_file(path: Path, source: str) -> int:
 
 
 def main() -> None:
-    output_dir = Path(
-        os.getenv("INSIGHT_REFRESH_OUTPUT_DIR", "/app/insight-refresh")
-    )
+    output_dir = Path(os.getenv("INSIGHT_REFRESH_OUTPUT_DIR", "/app/insight-refresh"))
     counts = {
         source: validate_file(output_dir / f"{source}.jsonl", source)
         for source in ("youtube", "x", "reddit")

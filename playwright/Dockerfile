@@ -16,6 +16,7 @@ COPY playwright/youtube_metadata_worker.py /app/youtube_metadata_worker.py
 COPY playwright/youtube_transcript_worker.py /app/youtube_transcript_worker.py
 COPY playwright/youtube_comment_worker.py /app/youtube_comment_worker.py
 COPY playwright/youtube_channel_worker.py /app/youtube_channel_worker.py
+COPY playwright/youtube_metrics_worker.py /app/youtube_metrics_worker.py
 COPY common/ /app/common/
 COPY schemas/ /app/schemas/
 COPY API/ /app/api/
