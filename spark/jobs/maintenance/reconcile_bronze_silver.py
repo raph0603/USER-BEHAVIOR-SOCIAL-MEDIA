@@ -82,7 +82,8 @@ def build_report(
     missing_count = missing.count()
     oldest_age: float | None = None
     if missing_count:
-        oldest = missing.agg(spark_min("ingested_at").alias("oldest")).first()["oldest"]
+        oldest_row = missing.agg(spark_min("ingested_at").alias("oldest")).first()
+        oldest = oldest_row["oldest"] if oldest_row is not None else None
         if oldest is not None:
             if oldest.tzinfo is None:
                 oldest = oldest.replace(tzinfo=timezone.utc)

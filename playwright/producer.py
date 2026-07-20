@@ -2895,18 +2895,22 @@ def main() -> None:
                     _env_float("YOUTUBE_SLEEP_SECONDS", 0.5),
                     comment_max_pages,
                 )
+                transcript_result: OperationResult[Any]
                 if transcripts_disabled:
-                    result_factory = (
-                        OperationResult.rate_limited
-                        if transcript_circuit_retryable
-                        else OperationResult.disabled
-                    )
-                    transcript_result = result_factory(
-                        error_code="transcript_circuit_open",
-                        error_message="Transcript collection is disabled for this batch",
-                        attempt_count=attempt_count,
-                        completed_at=utc_now(),
-                    )
+                    if transcript_circuit_retryable:
+                        transcript_result = OperationResult.rate_limited(
+                            error_code="transcript_circuit_open",
+                            error_message="Transcript collection is disabled for this batch",
+                            attempt_count=attempt_count,
+                            completed_at=utc_now(),
+                        )
+                    else:
+                        transcript_result = OperationResult.disabled(
+                            error_code="transcript_circuit_open",
+                            error_message="Transcript collection is disabled for this batch",
+                            attempt_count=attempt_count,
+                            completed_at=utc_now(),
+                        )
                 else:
                     transcript_result = _fetch_youtube_transcript(
                         video_id,

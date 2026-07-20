@@ -635,20 +635,37 @@ def _result_from_error(
     completed_at: datetime,
 ) -> OperationResult[TranscriptPayload]:
     classification = classify_transcript_error(error)
-    kwargs = {
-        "error_code": classification.error_code,
-        "error_message": classification.error_message,
-        "attempt_count": attempt_count,
-        "started_at": started_at,
-        "completed_at": completed_at,
-    }
     if classification.status == STATUS_DISABLED:
-        return OperationResult.disabled(**kwargs)
+        return OperationResult.disabled(
+            error_code=classification.error_code,
+            error_message=classification.error_message,
+            attempt_count=attempt_count,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
     if classification.status == STATUS_NOT_AVAILABLE:
-        return OperationResult.unavailable(**kwargs)
+        return OperationResult.unavailable(
+            error_code=classification.error_code,
+            error_message=classification.error_message,
+            attempt_count=attempt_count,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
     if classification.status == STATUS_RATE_LIMITED:
-        return OperationResult.rate_limited(**kwargs)
-    return OperationResult.failed(**kwargs)
+        return OperationResult.rate_limited(
+            error_code=classification.error_code,
+            error_message=classification.error_message,
+            attempt_count=attempt_count,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
+    return OperationResult.failed(
+        error_code=classification.error_code,
+        error_message=classification.error_message,
+        attempt_count=attempt_count,
+        started_at=started_at,
+        completed_at=completed_at,
+    )
 
 
 def fetch_transcript(

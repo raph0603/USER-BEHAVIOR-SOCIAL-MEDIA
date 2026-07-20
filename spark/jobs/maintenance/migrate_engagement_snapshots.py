@@ -227,6 +227,8 @@ def main(argv: list[str] | None = None) -> int:
 
         _ensure_columns(spark)
         audit, candidate = audit_snapshots(spark)
+        if candidate is None:
+            raise RuntimeError(f"{TABLE} disappeared during migration")
         if audit["duplicate_observation_ids"]:
             _, backup = _validated_staging_switch(candidate)
             result["migration_strategy"] = "validated_staging_switch"

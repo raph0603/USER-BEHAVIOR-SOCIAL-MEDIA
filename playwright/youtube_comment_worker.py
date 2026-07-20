@@ -184,7 +184,7 @@ def main() -> None:
                 )
                 latency_ms = (time.monotonic() - request_started) * 1000
                 remaining_budget = max(0, remaining_budget - pages)
-                next_attempt = attempted_at + comment_refresh_interval(
+                next_refresh_at = attempted_at + comment_refresh_interval(
                     row.get("published_at"), attempted_at
                 )
                 result = {
@@ -200,7 +200,7 @@ def main() -> None:
                     attempt_count=attempt_count,
                     comments_status="success",
                     comments_collected_at=attempted_at.isoformat(),
-                    next_attempt_at=next_attempt.isoformat(),
+                    next_attempt_at=next_refresh_at.isoformat(),
                     payload_json=json.dumps(result, ensure_ascii=False, sort_keys=True),
                 )
                 with state.transaction():
@@ -219,7 +219,7 @@ def main() -> None:
                     )
                     state.record_comment_ids(
                         row["video_id"],
-                        [comment.get("id") for comment in comments],
+                        [str(comment["id"]) for comment in comments if comment.get("id")],
                         attempted_at,
                     )
                     state.record_request_result(
@@ -227,7 +227,7 @@ def main() -> None:
                         video_id=row["video_id"],
                         status="available",
                         attempted_at=attempted_at,
-                        next_attempt_at=next_attempt,
+                        next_attempt_at=next_refresh_at,
                         result=result,
                     )
                     state.enqueue_outbox(
@@ -246,7 +246,7 @@ def main() -> None:
                 status_code = int(getattr(getattr(exc, "resp", None), "status", 0) or 0)
                 permanent = status_code in {400, 404}
                 status = "permanent_error" if permanent else "retryable_error"
-                next_attempt = None if permanent else attempted_at + timedelta(hours=6)
+                retry_at = None if permanent else attempted_at + timedelta(hours=6)
                 error_code = f"youtube_http_{status_code or 'error'}"
                 event = pipeline_event(
                     "youtube.comment.failed",
@@ -255,7 +255,7 @@ def main() -> None:
                     collected_at=attempted_at,
                     attempt_count=attempt_count,
                     comments_status=status,
-                    next_attempt_at=(next_attempt.isoformat() if next_attempt else None),
+                    next_attempt_at=(retry_at.isoformat() if retry_at else None),
                     error_code=error_code,
                     error_message=str(exc)[:1000],
                 )
@@ -280,7 +280,7 @@ def main() -> None:
                         video_id=row["video_id"],
                         status=status,
                         attempted_at=attempted_at,
-                        next_attempt_at=next_attempt,
+                        next_attempt_at=retry_at,
                         error_class=error_code,
                         error_message=str(exc),
                     )
@@ -295,7 +295,7 @@ def main() -> None:
             except BaseException as exc:
                 latency_ms = (time.monotonic() - request_started) * 1000
                 remaining_budget = max(0, remaining_budget - 1)
-                next_attempt = attempted_at + timedelta(hours=6)
+                retry_at = attempted_at + timedelta(hours=6)
                 error_code = type(exc).__name__
                 event = pipeline_event(
                     "youtube.comment.failed",
@@ -304,7 +304,7 @@ def main() -> None:
                     collected_at=attempted_at,
                     attempt_count=attempt_count,
                     comments_status="retryable_error",
-                    next_attempt_at=next_attempt.isoformat(),
+                    next_attempt_at=retry_at.isoformat(),
                     error_code=error_code,
                     error_message=str(exc)[:1000],
                 )
@@ -329,7 +329,7 @@ def main() -> None:
                         video_id=row["video_id"],
                         status="retryable_error",
                         attempted_at=attempted_at,
-                        next_attempt_at=next_attempt,
+                        next_attempt_at=retry_at,
                         error_class=error_code,
                         error_message=str(exc),
                     )

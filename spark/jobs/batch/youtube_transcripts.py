@@ -55,8 +55,8 @@ except ModuleNotFoundError as exc:
     if exc.name != "pyspark" and not str(exc.name or "").startswith("pyspark."):
         raise
     PYSPARK_IMPORT_ERROR = exc
-    DataFrame = Any
-    SparkSession = Any
+    DataFrame = Any  # type: ignore[misc, assignment]
+    SparkSession = Any  # type: ignore[misc, assignment]
 
 
 JOBS_DIR = Path(__file__).resolve().parents[1]

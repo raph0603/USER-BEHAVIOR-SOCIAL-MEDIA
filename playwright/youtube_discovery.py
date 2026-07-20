@@ -173,11 +173,14 @@ def main() -> None:
                 initial_lookback=lookback,
                 now=started_at,
             )
+            published_after_iso = isoformat(after)
+            if published_after_iso is None:
+                raise RuntimeError("A discovery watermark could not be serialized")
             request_started = time.monotonic()
             items, calls = search_query(
                 youtube,
                 spec,
-                published_after_value=isoformat(after).replace("+00:00", "Z"),
+                published_after_value=published_after_iso.replace("+00:00", "Z"),
                 backfill=backfill,
                 max_pages=min(max_pages, remaining_budget),
                 order=order,

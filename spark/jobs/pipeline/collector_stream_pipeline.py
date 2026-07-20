@@ -85,8 +85,8 @@ def _registered_avro_schemas(registry_url: str, subject: str) -> list[tuple[int,
 def _decode_confluent_avro(metadata, registry_url: str, subject: str):
     """Decode each record with the writer schema identified by its wire header."""
 
-    schema_id = expr("conv(hex(substring(value, 2, 4)), 16, 10)").cast("int")
-    framed = metadata.withColumn("_schema_id", schema_id).withColumn(
+    schema_id_column = expr("conv(hex(substring(value, 2, 4)), 16, 10)").cast("int")
+    framed = metadata.withColumn("_schema_id", schema_id_column).withColumn(
         "_avro_value", expr("substring(value, 6, length(value) - 5)")
     )
     registered_schemas = _registered_avro_schemas(registry_url, subject)

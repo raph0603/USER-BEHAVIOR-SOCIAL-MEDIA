@@ -505,6 +505,8 @@ def _manifest_for(
             )
         ]
     ).first()
+    if period is None or missing_counts is None:
+        raise RuntimeError("Training example aggregates unexpectedly returned no row")
     missing_rates = {
         name: missing_rate(int(missing_counts[name] or 0), example_count)
         for name in missing_counts.asDict()
