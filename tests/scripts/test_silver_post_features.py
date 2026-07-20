@@ -14,9 +14,16 @@ import os
 import unittest
 from pathlib import Path
 
+import pytest
+
+
+pytestmark = pytest.mark.spark
+
 ROOT = Path(__file__).resolve().parents[2]
-bat_wrapper = str(ROOT / "tests" / "scripts" / "run_python.bat")
-os.environ["PYSPARK_PYTHON"] = bat_wrapper
+if os.name == "nt":
+    os.environ["PYSPARK_PYTHON"] = str(ROOT / "tests" / "scripts" / "run_python.bat")
+else:
+    os.environ["PYSPARK_PYTHON"] = sys.executable
 os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
 # Add the batch jobs folder to the path so we can import the module
@@ -86,9 +93,7 @@ class PostFeatureComputationTests(unittest.TestCase):
         self.assertEqual(row["mention_count"], 2)
 
     def test_url_count(self):
-        df = self._make_df(
-            "Visit https://example.com and http://foo.bar", "visit and"
-        )
+        df = self._make_df("Visit https://example.com and http://foo.bar", "visit and")
         row = spf.compute_post_features(df).collect()[0]
         self.assertEqual(row["url_count"], 2)
 

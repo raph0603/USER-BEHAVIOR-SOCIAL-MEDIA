@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 
 EVENT_FIELD_TYPES = {
     "user_id": "string",
@@ -240,7 +243,7 @@ def spark_struct_type(*extra_fields: tuple[str, str]):
         TimestampType,
     )
 
-    factories = {
+    factories: dict[str, Callable[[], Any]] = {
         "string": StringType,
         "long": LongType,
         "int": IntegerType,

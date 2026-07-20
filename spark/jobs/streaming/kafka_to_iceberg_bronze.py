@@ -38,7 +38,7 @@ from event_contract import (
     merge_assignment,
     spark_struct_type,
 )
-from pipeline.reliability import fail_on_data_loss_option
+from pipeline.reliability import fail_on_data_loss_option, guarded_test_fault_enabled
 
 
 EVENT_LOG_TABLE = "lakehouse.bronze.event_log"
@@ -172,7 +172,7 @@ def _merge_current_projection(events: DataFrame, *, epoch_id: int) -> int:
               {updates}
             WHEN NOT MATCHED THEN
               INSERT ({rendered_columns})
-              VALUES ({', '.join(f's.{name}' for name in columns)})
+              VALUES ({", ".join(f"s.{name}" for name in columns)})
             """
         )
         return row_count
@@ -212,10 +212,7 @@ def _ensure_tables(spark: SparkSession) -> None:
     _ensure_columns(
         spark,
         EVENT_LOG_TABLE,
-        {
-            column: ICEBERG_TYPES[column]
-            for column in BRONZE_EVENT_LOG_COLUMNS
-        },
+        {column: ICEBERG_TYPES[column] for column in BRONZE_EVENT_LOG_COLUMNS},
     )
     _ensure_columns(
         spark,
@@ -237,18 +234,13 @@ def main() -> None:
     )
     value_format = _env("KAFKA_VALUE_FORMAT", "json").lower()
     if value_format != "json":
-        raise ValueError(
-            f"Unsupported KAFKA_VALUE_FORMAT={value_format!r}; expected json"
-        )
+        raise ValueError(f"Unsupported KAFKA_VALUE_FORMAT={value_format!r}; expected json")
 
     bucket = _env("MINIO_BUCKET", "lakehouse")
     warehouse = f"s3a://{bucket}/warehouse"
     checkpoint_key = kafka_topics.replace(",", "__")
     checkpoint_version = _env("BRONZE_CHECKPOINT_VERSION", "event_log_v1")
-    checkpoint = (
-        f"s3a://{bucket}/checkpoints/bronze/events/"
-        f"{checkpoint_version}/{checkpoint_key}"
-    )
+    checkpoint = f"s3a://{bucket}/checkpoints/bronze/events/{checkpoint_version}/{checkpoint_key}"
 
     spark = _build_spark("kafka-to-iceberg-bronze", warehouse)
     spark.sparkContext.setLogLevel("WARN")
@@ -257,6 +249,11 @@ def main() -> None:
     fail_on_data_loss = fail_on_data_loss_option(
         os.getenv("KAFKA_FAIL_ON_DATA_LOSS", "true"),
         allow_data_loss=os.getenv("ALLOW_KAFKA_DATA_LOSS", "false"),
+    )
+    fail_after_commit = guarded_test_fault_enabled(
+        os.getenv("PIPELINE_TEST_FAIL_AFTER_BRONZE_COMMIT", "false"),
+        test_mode=os.getenv("PIPELINE_TEST_MODE", "false"),
+        fault_name="PIPELINE_TEST_FAIL_AFTER_BRONZE_COMMIT",
     )
     if fail_on_data_loss == "false":
         print(
@@ -288,9 +285,7 @@ def main() -> None:
         col("timestamp").alias("_kafka_timestamp"),
         col("value").cast("string").alias("_raw_value"),
     )
-    decoded = metadata.withColumn(
-        "_data", from_json(col("_raw_value"), event_schema)
-    ).select(
+    decoded = metadata.withColumn("_data", from_json(col("_raw_value"), event_schema)).select(
         "_kafka_topic",
         "_kafka_partition",
         "_kafka_offset",
@@ -386,9 +381,7 @@ def main() -> None:
                         to_json(
                             struct(
                                 lit(True).alias("redacted"),
-                                length(col("_raw_value").cast("binary")).alias(
-                                    "byte_length"
-                                ),
+                                length(col("_raw_value").cast("binary")).alias("byte_length"),
                                 col("payload_fingerprint").alias("sha256"),
                             )
                         ),
@@ -410,9 +403,7 @@ def main() -> None:
                     dlq.select("dlq_id"), ["dlq_id"], "inner"
                 )
                 (
-                    committed_dlq.select(
-                        to_json(struct(*BRONZE_DLQ_COLUMNS)).alias("value")
-                    )
+                    committed_dlq.select(to_json(struct(*BRONZE_DLQ_COLUMNS)).alias("value"))
                     .write.format("kafka")
                     .option("kafka.bootstrap.servers", kafka_bootstrap)
                     .option("topic", dlq_out_topic)
@@ -458,16 +449,32 @@ def main() -> None:
                 columns=BRONZE_EVENT_LOG_COLUMNS,
                 view_name=f"bronze_event_log_{epoch_id}",
             )
+            if fail_after_commit:
+                print(
+                    json.dumps(
+                        {
+                            "event": "test_fault_injected",
+                            "fault": "after_bronze_event_log_commit",
+                            "epoch_id": epoch_id,
+                        },
+                        sort_keys=True,
+                    )
+                )
+                raise RuntimeError("injected failure after Bronze event-log commit")
 
             batch_ids = journal_rows.select("event_id").dropDuplicates(["event_id"])
-            committed = spark.table(EVENT_LOG_TABLE).join(
-                batch_ids, ["event_id"], "inner"
-            ).select(*BRONZE_COLUMNS)
+            committed = (
+                spark.table(EVENT_LOG_TABLE)
+                .join(batch_ids, ["event_id"], "inner")
+                .select(*BRONZE_COLUMNS)
+            )
             projected_rows = _merge_current_projection(committed, epoch_id=epoch_id)
 
-            committed_after_projection = spark.table(EVENT_LOG_TABLE).join(
-                batch_ids, ["event_id"], "inner"
-            ).select(*BRONZE_COLUMNS)
+            committed_after_projection = (
+                spark.table(EVENT_LOG_TABLE)
+                .join(batch_ids, ["event_id"], "inner")
+                .select(*BRONZE_COLUMNS)
+            )
             (
                 committed_after_projection.select(
                     col("event_id").cast("string").alias("key"),

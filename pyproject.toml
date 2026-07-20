@@ -7,6 +7,9 @@ addopts = [
 ]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "spark: tests that require a local JVM-backed PySpark runtime",
+]
 
 [tool.ruff]
 target-version = "py310"

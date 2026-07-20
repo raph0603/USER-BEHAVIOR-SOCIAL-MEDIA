@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT / "spark" / "jobs"))
 from pipeline.reliability import (  # noqa: E402
     deterministic_event_id,
     fail_on_data_loss_option,
+    guarded_test_fault_enabled,
     payload_fingerprint,
     protected_payload_envelope,
 )
@@ -97,24 +98,54 @@ class DataLossPolicyTests(unittest.TestCase):
             fail_on_data_loss_option("sometimes")
 
 
+class TestFaultPolicyTests(unittest.TestCase):
+    def test_fault_is_disabled_by_default(self):
+        self.assertFalse(
+            guarded_test_fault_enabled(
+                None,
+                test_mode=None,
+                fault_name="PIPELINE_TEST_FAIL_AFTER_BRONZE_COMMIT",
+            )
+        )
+
+    def test_fault_requires_explicit_test_mode(self):
+        with self.assertRaisesRegex(ValueError, "PIPELINE_TEST_MODE"):
+            guarded_test_fault_enabled(
+                "true",
+                test_mode="false",
+                fault_name="PIPELINE_TEST_FAIL_AFTER_BRONZE_COMMIT",
+            )
+
+        self.assertTrue(
+            guarded_test_fault_enabled(
+                "true",
+                test_mode="true",
+                fault_name="PIPELINE_TEST_FAIL_AFTER_BRONZE_COMMIT",
+            )
+        )
+
+
 class PipelineStructureTests(unittest.TestCase):
     def test_bronze_journal_precedes_projection_and_handoff(self):
-        source = (
-            ROOT / "spark" / "jobs" / "streaming" / "kafka_to_iceberg_bronze.py"
-        ).read_text(encoding="utf-8")
+        source = (ROOT / "spark" / "jobs" / "streaming" / "kafka_to_iceberg_bronze.py").read_text(
+            encoding="utf-8"
+        )
 
         journal = source.index("table=EVENT_LOG_TABLE")
         projection = source.index("_merge_current_projection(committed")
         handoff = source.index("committed_after_projection.select")
         self.assertLess(journal, projection)
         self.assertLess(projection, handoff)
+        fault = source.index("if fail_after_commit:", journal)
+        self.assertLess(journal, fault)
+        self.assertLess(fault, projection)
         self.assertIn("INGRESS_DLQ_TABLE", source)
         self.assertIn("protected_payload", source)
 
     def test_silver_records_applied_id_only_after_state_merge(self):
-        source = (
-            ROOT / "spark" / "jobs" / "pipeline" / "silver_merge.py"
-        ).read_text(encoding="utf-8")
+        source = (ROOT / "spark" / "jobs" / "pipeline" / "silver_merge.py").read_text(
+            encoding="utf-8"
+        )
 
         current = source.index("_merge_current_state(unapplied")
         applied = source.index("_record_applied_events(unapplied", current)
@@ -134,13 +165,9 @@ class PipelineStructureTests(unittest.TestCase):
                 self.assertIn("fail_on_data_loss_option", source)
 
     def test_event_id_is_additive_in_avro_and_spark_contracts(self):
-        avro = json.loads(
-            (ROOT / "schemas" / "playwright_event.avsc").read_text(encoding="utf-8")
-        )
+        avro = json.loads((ROOT / "schemas" / "playwright_event.avsc").read_text(encoding="utf-8"))
         fields = {field["name"]: field for field in avro["fields"]}
-        spark_contract = (
-            ROOT / "spark" / "jobs" / "event_contract.py"
-        ).read_text(encoding="utf-8")
+        spark_contract = (ROOT / "spark" / "jobs" / "event_contract.py").read_text(encoding="utf-8")
 
         self.assertEqual(fields["event_id"]["default"], None)
         self.assertEqual(fields["payload_fingerprint"]["default"], None)

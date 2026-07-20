@@ -15,6 +15,11 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
+
+pytestmark = pytest.mark.spark
+
 ROOT = Path(__file__).resolve().parents[2]
 os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
 os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)

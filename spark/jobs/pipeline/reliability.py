@@ -42,10 +42,22 @@ def fail_on_data_loss_option(
     if enabled:
         return "true"
     if not parse_boolean(allow_data_loss, name="ALLOW_KAFKA_DATA_LOSS"):
-        raise ValueError(
-            "KAFKA_FAIL_ON_DATA_LOSS=false requires ALLOW_KAFKA_DATA_LOSS=true"
-        )
+        raise ValueError("KAFKA_FAIL_ON_DATA_LOSS=false requires ALLOW_KAFKA_DATA_LOSS=true")
     return "false"
+
+
+def guarded_test_fault_enabled(
+    requested: str | bool | None,
+    *,
+    test_mode: str | bool | None,
+    fault_name: str,
+) -> bool:
+    """Allow destructive fault injection only behind an explicit test-mode guard."""
+
+    enabled = parse_boolean("false" if requested is None else requested, name=fault_name)
+    if enabled and not parse_boolean(test_mode, name="PIPELINE_TEST_MODE"):
+        raise ValueError(f"{fault_name}=true requires PIPELINE_TEST_MODE=true")
+    return enabled
 
 
 def canonical_payload_bytes(payload: Mapping[str, Any]) -> bytes:
