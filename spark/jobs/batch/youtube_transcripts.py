@@ -158,6 +158,18 @@ TRANSCRIPT_COLUMN_TYPES = {
     "transcript_source": "STRING",
     "provider": "STRING",
     "selection_strategy": "STRING",
+    "model": "STRING",
+    "fallback_reason": "STRING",
+    "prompt_version": "STRING",
+    "generated_by_model": "BOOLEAN",
+    "source_content_version": "STRING",
+    "primary_attempt_count": "BIGINT",
+    "fallback_attempt_count": "BIGINT",
+    "primary_last_attempt_at": "TIMESTAMP",
+    "fallback_last_attempt_at": "TIMESTAMP",
+    "primary_result_json": "STRING",
+    "fallback_result_json": "STRING",
+    "warnings_json": "STRING",
     "error_code": "STRING",
     "error_message": "STRING",
     "attempt_count": "BIGINT",
@@ -204,6 +216,18 @@ EVENT_OPTIONAL_COLUMNS = {
     "transcript_source_language_code": "STRING",
     "transcript_source": "STRING",
     "transcript_selection_strategy": "STRING",
+    "transcript_model": "STRING",
+    "transcript_fallback_reason": "STRING",
+    "transcript_prompt_version": "STRING",
+    "transcript_generated_by_model": "BOOLEAN",
+    "transcript_source_content_version": "STRING",
+    "transcript_primary_attempt_count": "BIGINT",
+    "transcript_fallback_attempt_count": "BIGINT",
+    "transcript_primary_last_attempt_at": "TIMESTAMP",
+    "transcript_fallback_last_attempt_at": "TIMESTAMP",
+    "transcript_primary_result_json": "STRING",
+    "transcript_fallback_result_json": "STRING",
+    "transcript_warnings_json": "STRING",
     "transcript_segment_count": "BIGINT",
     "transcript_available_languages": "ARRAY<STRING>",
     "transcript_available_languages_json": "STRING",
@@ -271,6 +295,18 @@ def _transcript_schema():
             StructField("transcript_source", StringType(), True),
             StructField("provider", StringType(), True),
             StructField("selection_strategy", StringType(), True),
+            StructField("model", StringType(), True),
+            StructField("fallback_reason", StringType(), True),
+            StructField("prompt_version", StringType(), True),
+            StructField("generated_by_model", BooleanType(), True),
+            StructField("source_content_version", StringType(), True),
+            StructField("primary_attempt_count", LongType(), True),
+            StructField("fallback_attempt_count", LongType(), True),
+            StructField("primary_last_attempt_at", TimestampType(), True),
+            StructField("fallback_last_attempt_at", TimestampType(), True),
+            StructField("primary_result_json", StringType(), True),
+            StructField("fallback_result_json", StringType(), True),
+            StructField("warnings_json", StringType(), True),
             StructField("error_code", StringType(), True),
             StructField("error_message", StringType(), True),
             StructField("attempt_count", LongType(), False),
@@ -638,6 +674,18 @@ def _result_to_row(
             "transcript_source": payload.get("source") or "youtube_transcript_api",
             "provider": payload.get("source") or "youtube_transcript_api",
             "selection_strategy": payload.get("selection_strategy"),
+            "model": payload.get("model"),
+            "fallback_reason": payload.get("fallback_reason"),
+            "prompt_version": payload.get("prompt_version"),
+            "generated_by_model": payload.get("generated_by_model"),
+            "source_content_version": payload.get("source_content_version"),
+            "primary_attempt_count": row["attempt_count"],
+            "fallback_attempt_count": 0,
+            "primary_last_attempt_at": completed_at,
+            "fallback_last_attempt_at": None,
+            "primary_result_json": None,
+            "fallback_result_json": None,
+            "warnings_json": _json_or_none(payload.get("warnings")),
             "error_code": error_code,
             "error_message": error_message,
             "last_attempt_at": completed_at,
@@ -899,6 +947,36 @@ def _merge_transcript_dataframe(spark: SparkSession, dataframe: DataFrame) -> No
           t.transcript_source = COALESCE(s.transcript_source, t.transcript_source),
           t.provider = COALESCE(s.provider, t.provider),
           t.selection_strategy = COALESCE(s.selection_strategy, t.selection_strategy),
+          t.model = COALESCE(s.model, t.model),
+          t.fallback_reason = COALESCE(s.fallback_reason, t.fallback_reason),
+          t.prompt_version = COALESCE(s.prompt_version, t.prompt_version),
+          t.generated_by_model = COALESCE(
+            s.generated_by_model, t.generated_by_model
+          ),
+          t.source_content_version = COALESCE(
+            s.source_content_version, t.source_content_version
+          ),
+          t.primary_attempt_count = GREATEST(
+            COALESCE(s.primary_attempt_count, 0),
+            COALESCE(t.primary_attempt_count, 0)
+          ),
+          t.fallback_attempt_count = GREATEST(
+            COALESCE(s.fallback_attempt_count, 0),
+            COALESCE(t.fallback_attempt_count, 0)
+          ),
+          t.primary_last_attempt_at = COALESCE(
+            s.primary_last_attempt_at, t.primary_last_attempt_at
+          ),
+          t.fallback_last_attempt_at = COALESCE(
+            s.fallback_last_attempt_at, t.fallback_last_attempt_at
+          ),
+          t.primary_result_json = COALESCE(
+            s.primary_result_json, t.primary_result_json
+          ),
+          t.fallback_result_json = COALESCE(
+            s.fallback_result_json, t.fallback_result_json
+          ),
+          t.warnings_json = COALESCE(s.warnings_json, t.warnings_json),
           t.error_code = CASE
             WHEN s.transcript_lifecycle_status = 'available' THEN NULL
             WHEN t.transcript_lifecycle_status = 'available' THEN t.error_code
@@ -1090,6 +1168,26 @@ def _embedded_transcript_dataframe(events: DataFrame) -> DataFrame:
                 lit("youtube_transcript_api"),
             ).alias("provider"),
             col("transcript_selection_strategy").alias("selection_strategy"),
+            col("transcript_model").alias("model"),
+            col("transcript_fallback_reason").alias("fallback_reason"),
+            col("transcript_prompt_version").alias("prompt_version"),
+            col("transcript_generated_by_model").alias("generated_by_model"),
+            col("transcript_source_content_version").alias("source_content_version"),
+            col("transcript_primary_attempt_count").cast("bigint").alias(
+                "primary_attempt_count"
+            ),
+            col("transcript_fallback_attempt_count").cast("bigint").alias(
+                "fallback_attempt_count"
+            ),
+            to_timestamp(col("transcript_primary_last_attempt_at")).alias(
+                "primary_last_attempt_at"
+            ),
+            to_timestamp(col("transcript_fallback_last_attempt_at")).alias(
+                "fallback_last_attempt_at"
+            ),
+            col("transcript_primary_result_json").alias("primary_result_json"),
+            col("transcript_fallback_result_json").alias("fallback_result_json"),
+            col("transcript_warnings_json").alias("warnings_json"),
             col("transcript_error_code").alias("error_code"),
             col("transcript_error_message").alias("error_message"),
             coalesce(col("transcript_attempt_count"), col("attempt_count"), lit(1))

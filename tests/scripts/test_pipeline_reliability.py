@@ -142,6 +142,49 @@ class PipelineStructureTests(unittest.TestCase):
         self.assertIn("INGRESS_DLQ_TABLE", source)
         self.assertIn("protected_payload", source)
 
+    def test_bronze_projection_aligns_legacy_temporal_columns(self):
+        source = (ROOT / "spark" / "jobs" / "streaming" / "kafka_to_iceberg_bronze.py").read_text(
+            encoding="utf-8"
+        )
+
+        align = source.index("def _align_projection_temporal_types")
+        merge = source.index("def _merge_current_projection")
+        create_view = source.index("projection.createOrReplaceTempView", merge)
+        self.assertLess(align, merge)
+        self.assertIn("_align_projection_temporal_types(_latest_projection(events))", source)
+        self.assertLess(merge, create_view)
+        self.assertIn("isinstance(field.dataType, TimestampType)", source)
+        self.assertIn("isinstance(field.dataType, DateType)", source)
+
+    def test_bronze_projection_combines_complementary_updates(self):
+        source = (ROOT / "spark" / "jobs" / "streaming" / "kafka_to_iceberg_bronze.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("last(col(column), ignorenulls=True)", source)
+        self.assertIn("Window.unboundedFollowing", source)
+
+    def test_silver_projection_aligns_legacy_temporal_columns(self):
+        source = (ROOT / "spark" / "jobs" / "pipeline" / "silver_merge.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("def _align_current_temporal_types", source)
+        self.assertIn(
+            "_align_current_temporal_types(_latest_current_state(events))",
+            source,
+        )
+        self.assertIn("isinstance(field.dataType, TimestampType)", source)
+        self.assertIn("isinstance(field.dataType, DateType)", source)
+
+    def test_silver_projection_combines_complementary_updates(self):
+        source = (ROOT / "spark" / "jobs" / "pipeline" / "silver_merge.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("last(col(column), ignorenulls=True)", source)
+        self.assertIn("Window.unboundedFollowing", source)
+
     def test_silver_records_applied_id_only_after_state_merge(self):
         source = (ROOT / "spark" / "jobs" / "pipeline" / "silver_merge.py").read_text(
             encoding="utf-8"

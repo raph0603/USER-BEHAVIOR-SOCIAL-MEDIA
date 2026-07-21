@@ -260,6 +260,24 @@ class AvroCompatibilityTests(unittest.TestCase):
         self.assertIn("unregistered_writer_schema", source)
         self.assertIn("_decode_error", source)
 
+    def test_cleaner_selects_writer_schemas_per_kafka_topic(self):
+        source = (ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("subjects_by_topic: Mapping[str, str]", source)
+        self.assertIn('col("_kafka_topic") == lit(topic)', source)
+        self.assertIn('source_topic.split(",")', source)
+        self.assertIn('{topic: f"{topic}-value" for topic in source_topics}', source)
+
+    def test_cleaner_accepts_component_results_without_content_text(self):
+        source = (ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('endswith(".result")', source)
+        self.assertIn(".when(~component_result, invalid_reason", source)
+
     def test_online_cleaning_uses_the_post_migration_checkpoint(self):
         paths = (
             ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py",
@@ -269,8 +287,8 @@ class AvroCompatibilityTests(unittest.TestCase):
         for path in paths:
             with self.subTest(path=path):
                 source = path.read_text(encoding="utf-8")
-                self.assertIn("pre_bronze_v4", source)
-                self.assertNotIn("pre_bronze_v3", source)
+                self.assertIn("pre_bronze_v5", source)
+                self.assertNotIn("pre_bronze_v4", source)
 
 
 class ProcessedStateTests(unittest.TestCase):

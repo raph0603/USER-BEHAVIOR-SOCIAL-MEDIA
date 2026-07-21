@@ -8,9 +8,9 @@ def test_fixture_is_deterministic_and_has_one_replay_and_one_malformed_event():
     second = build_fixture_messages()
 
     assert first == second
-    assert len(first) == 16
+    assert len(first) == 17
     valid_messages = [json.loads(message) for message in first[:-1]]
-    assert len({event["event_id"] for event in valid_messages}) == 14
+    assert len({event["event_id"] for event in valid_messages}) == 15
     assert valid_messages[-1] == valid_messages[3]
     assert "must-never-be-persisted" in first[-1]
 
@@ -24,7 +24,7 @@ def test_fixture_covers_snapshots_languages_relations_and_missingness():
         event for event in events if event.get("event_type") == "youtube.transcript.result"
     ]
 
-    assert len(events) == 14
+    assert len(events) == 15
     assert len(youtube_snapshots) == 4
     assert {event["platform_event_id"] for event in youtube_snapshots} == {
         "video-en",
@@ -38,6 +38,14 @@ def test_fixture_covers_snapshots_languages_relations_and_missingness():
         "available",
         "unavailable",
     }
+    gemini = next(event for event in transcripts if event["platform_event_id"] == "video-vi")
+    assert gemini["transcript_provider"] == "gemini"
+    assert gemini["transcript_generation_type"] == "model_generated"
+    private = next(
+        event for event in transcripts if event["platform_event_id"] == "video-private"
+    )
+    assert private["transcript_fallback_attempt_count"] == 0
+    assert private["transcript_error_code"] == "video_private"
     assert any(
         event.get("view_count") == 0 and event.get("view_count_available") is True
         for event in youtube_snapshots

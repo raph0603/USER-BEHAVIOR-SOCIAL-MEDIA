@@ -127,6 +127,11 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.contents (
   clean_text STRING,
   text_for_model STRING,
   thumbnail_url STRING,
+  thumbnail_width BIGINT,
+  thumbnail_height BIGINT,
+  thumbnail_source STRING,
+  thumbnail_available BOOLEAN,
+  thumbnail_updated_at STRING,
   event_id STRING,
   observation_id STRING,
   observed_at TIMESTAMP,
@@ -294,6 +299,18 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.transcripts (
   transcript_source STRING,
   provider STRING,
   selection_strategy STRING,
+  model STRING,
+  fallback_reason STRING,
+  prompt_version STRING,
+  generated_by_model BOOLEAN,
+  source_content_version STRING,
+  primary_attempt_count BIGINT,
+  fallback_attempt_count BIGINT,
+  primary_last_attempt_at TIMESTAMP,
+  fallback_last_attempt_at TIMESTAMP,
+  primary_result_json STRING,
+  fallback_result_json STRING,
+  warnings_json STRING,
   error_code STRING,
   error_message STRING,
   attempt_count BIGINT,
@@ -447,6 +464,11 @@ CONTENT_COLUMNS = [
     "clean_text",
     "text_for_model",
     "thumbnail_url",
+    "thumbnail_width",
+    "thumbnail_height",
+    "thumbnail_source",
+    "thumbnail_available",
+    "thumbnail_updated_at",
     *PROVENANCE_COLUMNS,
 ]
 
@@ -537,6 +559,18 @@ TRANSCRIPT_COLUMNS = [
     "transcript_source",
     "provider",
     "selection_strategy",
+    "model",
+    "fallback_reason",
+    "prompt_version",
+    "generated_by_model",
+    "source_content_version",
+    "primary_attempt_count",
+    "fallback_attempt_count",
+    "primary_last_attempt_at",
+    "fallback_last_attempt_at",
+    "primary_result_json",
+    "fallback_result_json",
+    "warnings_json",
     "error_code",
     "error_message",
     "attempt_count",
@@ -549,6 +583,20 @@ TRANSCRIPT_COLUMNS = [
     "updated_at",
     "event_date",
 ]
+TRANSCRIPT_PROVENANCE_COLUMN_TYPES = {
+    "model": "STRING",
+    "fallback_reason": "STRING",
+    "prompt_version": "STRING",
+    "generated_by_model": "BOOLEAN",
+    "source_content_version": "STRING",
+    "primary_attempt_count": "BIGINT",
+    "fallback_attempt_count": "BIGINT",
+    "primary_last_attempt_at": "TIMESTAMP",
+    "fallback_last_attempt_at": "TIMESTAMP",
+    "primary_result_json": "STRING",
+    "fallback_result_json": "STRING",
+    "warnings_json": "STRING",
+}
 
 CONTENT_STATS_COLUMNS = [
     "content_id",
@@ -632,6 +680,11 @@ OPTIONAL_EVENT_COLUMNS = {
     "clean_text": "STRING",
     "text_for_model": "STRING",
     "thumbnail_url": "STRING",
+    "thumbnail_width": "BIGINT",
+    "thumbnail_height": "BIGINT",
+    "thumbnail_source": "STRING",
+    "thumbnail_available": "BOOLEAN",
+    "thumbnail_updated_at": "STRING",
     "score": "BIGINT",
     "like_count": "BIGINT",
     "view_count": "BIGINT",
@@ -693,6 +746,18 @@ OPTIONAL_EVENT_COLUMNS = {
     "transcript_provider": "STRING",
     "transcript_source": "STRING",
     "transcript_selection_strategy": "STRING",
+    "transcript_model": "STRING",
+    "transcript_fallback_reason": "STRING",
+    "transcript_prompt_version": "STRING",
+    "transcript_generated_by_model": "BOOLEAN",
+    "transcript_source_content_version": "STRING",
+    "transcript_primary_attempt_count": "INT",
+    "transcript_fallback_attempt_count": "INT",
+    "transcript_primary_last_attempt_at": "STRING",
+    "transcript_fallback_last_attempt_at": "STRING",
+    "transcript_primary_result_json": "STRING",
+    "transcript_fallback_result_json": "STRING",
+    "transcript_warnings_json": "STRING",
     "transcript_segment_count": "BIGINT",
     "transcript_available_languages": "ARRAY<STRING>",
     "transcript_available_languages_json": "STRING",
@@ -788,7 +853,10 @@ def normalize_events(events: DataFrame) -> DataFrame:
         256,
     )
     event_content_id = coalesce(col("content_id"), derived_event_content_id)
-    root_content_id = coalesce(col("root_content_id"), derived_root_content_id)
+    root_content_id = when(
+        col("source") == "youtube",
+        derived_root_content_id,
+    ).otherwise(coalesce(col("root_content_id"), derived_root_content_id))
     immediate_parent_content_id = coalesce(
         col("parent_content_id"),
         when(col("source") == "reddit", root_content_id),
@@ -865,10 +933,9 @@ def normalize_events(events: DataFrame) -> DataFrame:
         .withColumn("event_id", coalesce(col("event_id"), col("observation_id")))
         .withColumn(
             "metadata_available",
-            coalesce(
-                col("metadata_available"),
-                lower(coalesce(col("metadata_status"), lit(""))) == "success",
-            ),
+            coalesce(col("metadata_available"), lit(False))
+            | (lower(coalesce(col("metadata_status"), lit(""))) == "success")
+            | col("metadata_refreshed_at").isNotNull(),
         )
         .withColumn(
             "transcript_available",
@@ -915,6 +982,11 @@ def normalize_events(events: DataFrame) -> DataFrame:
             ),
         )
         .withColumn("content_thumbnail_url", thumbnail_url)
+        .withColumn("content_thumbnail_width", col("thumbnail_width"))
+        .withColumn("content_thumbnail_height", col("thumbnail_height"))
+        .withColumn("content_thumbnail_source", col("thumbnail_source"))
+        .withColumn("content_thumbnail_available", col("thumbnail_available"))
+        .withColumn("content_thumbnail_updated_at", col("thumbnail_updated_at"))
         .withColumn("platform_content_id", root_platform_id)
         .withColumn("derived_subreddit", derived_subreddit)
         .withColumn("event_content_id", event_content_id)
@@ -982,7 +1054,12 @@ def build_contents(events: DataFrame) -> DataFrame:
             first("language", ignorenulls=True).alias("language"),
             first("conversation_id", ignorenulls=True).alias("conversation_id"),
             first("collection_status", ignorenulls=True).alias("collection_status"),
-            first("metadata_status", ignorenulls=True).alias("metadata_status"),
+            when(
+                spark_max(col("metadata_available").cast("int")) == 1,
+                lit("success"),
+            )
+            .otherwise(first("metadata_status", ignorenulls=True))
+            .alias("metadata_status"),
             first("transcript_status", ignorenulls=True).alias("transcript_status"),
             first("comments_status", ignorenulls=True).alias("comments_status"),
             spark_max(
@@ -1001,6 +1078,7 @@ def build_contents(events: DataFrame) -> DataFrame:
                             "youtube.metadata.changed",
                         )
                         | (lower(coalesce(col("metadata_status"), lit(""))) == "success")
+                        | col("metadata_available")
                     ),
                     col("event_metadata_at"),
                 )
@@ -1011,6 +1089,11 @@ def build_contents(events: DataFrame) -> DataFrame:
             first("content_clean_text", ignorenulls=True).alias("clean_text"),
             first("content_text_for_model", ignorenulls=True).alias("text_for_model"),
             first("content_thumbnail_url", ignorenulls=True).alias("thumbnail_url"),
+            first("content_thumbnail_width", ignorenulls=True).alias("thumbnail_width"),
+            first("content_thumbnail_height", ignorenulls=True).alias("thumbnail_height"),
+            first("content_thumbnail_source", ignorenulls=True).alias("thumbnail_source"),
+            first("content_thumbnail_available", ignorenulls=True).alias("thumbnail_available"),
+            first("content_thumbnail_updated_at", ignorenulls=True).alias("thumbnail_updated_at"),
             *(
                 first(column, ignorenulls=True).alias(column)
                 for column in PROVENANCE_COLUMNS
@@ -1077,7 +1160,8 @@ def build_snapshots(events: DataFrame) -> DataFrame:
             coalesce(col(f"{metric}_available"), col(metric).isNotNull()) & col(metric).isNotNull()
         )
     snapshot_event = (
-        (col("source") == "youtube") & (col("event_type") == "youtube.engagement.snapshot")
+        (col("source") == "youtube")
+        & ((col("event_type") == "youtube.engagement.snapshot") | engagement_observed)
     ) | ((col("source") != "youtube") & engagement_observed)
     legacy_snapshot = col("event_type").isNull() & engagement_observed
     return (
@@ -1187,6 +1271,22 @@ def build_transcripts(events: DataFrame) -> DataFrame:
                 lit("youtube_transcript_api"),
             ).alias("provider"),
             col("transcript_selection_strategy").alias("selection_strategy"),
+            col("transcript_model").alias("model"),
+            col("transcript_fallback_reason").alias("fallback_reason"),
+            col("transcript_prompt_version").alias("prompt_version"),
+            col("transcript_generated_by_model").alias("generated_by_model"),
+            col("transcript_source_content_version").alias("source_content_version"),
+            col("transcript_primary_attempt_count").cast("bigint").alias("primary_attempt_count"),
+            col("transcript_fallback_attempt_count").cast("bigint").alias("fallback_attempt_count"),
+            to_timestamp(col("transcript_primary_last_attempt_at")).alias(
+                "primary_last_attempt_at"
+            ),
+            to_timestamp(col("transcript_fallback_last_attempt_at")).alias(
+                "fallback_last_attempt_at"
+            ),
+            col("transcript_primary_result_json").alias("primary_result_json"),
+            col("transcript_fallback_result_json").alias("fallback_result_json"),
+            col("transcript_warnings_json").alias("warnings_json"),
             col("transcript_error_code").alias("error_code"),
             col("transcript_error_message").alias("error_message"),
             coalesce(col("transcript_attempt_count"), col("attempt_count"))
@@ -1235,8 +1335,32 @@ def build_content_stats(contents: DataFrame, interactions: DataFrame, snapshots:
         col("snapshot_at").desc_nulls_last(),
         col("observation_id").desc_nulls_last(),
     )
+    all_snapshots_window = latest_window.rowsBetween(
+        Window.unboundedPreceding,
+        Window.unboundedFollowing,
+    )
+    latest_snapshots = snapshots
+    for metric in (
+        "view_count",
+        "like_count",
+        "comment_count",
+        "reply_count",
+        "retweet_count",
+        "bookmark_count",
+    ):
+        observed = (
+            coalesce(col(f"{metric}_available"), col(metric).isNotNull()) & col(metric).isNotNull()
+        )
+        latest_value = f"_latest_known_{metric}"
+        latest_snapshots = latest_snapshots.withColumn(
+            latest_value,
+            first(when(observed, col(metric)), ignorenulls=True).over(all_snapshots_window),
+        ).withColumn(
+            f"{latest_value}_available",
+            col(latest_value).isNotNull(),
+        )
     latest_snapshots = (
-        snapshots.withColumn("_rank", row_number().over(latest_window))
+        latest_snapshots.withColumn("_rank", row_number().over(latest_window))
         .filter(col("_rank") == 1)
         .drop("_rank")
     )
@@ -1250,12 +1374,12 @@ def build_content_stats(contents: DataFrame, interactions: DataFrame, snapshots:
         .join(
             latest_snapshots.select(
                 "content_id",
-                col("view_count").alias("latest_view_count"),
-                col("like_count").alias("latest_like_count"),
-                col("comment_count").alias("latest_comment_count"),
-                col("reply_count").alias("latest_reply_count"),
-                col("retweet_count").alias("latest_retweet_count"),
-                col("bookmark_count").alias("latest_bookmark_count"),
+                col("_latest_known_view_count").alias("latest_view_count"),
+                col("_latest_known_like_count").alias("latest_like_count"),
+                col("_latest_known_comment_count").alias("latest_comment_count"),
+                col("_latest_known_reply_count").alias("latest_reply_count"),
+                col("_latest_known_retweet_count").alias("latest_retweet_count"),
+                col("_latest_known_bookmark_count").alias("latest_bookmark_count"),
                 col("snapshot_at").alias("latest_snapshot_at"),
                 col("observation_id").alias("latest_snapshot_observation_id"),
                 col("producer_name").alias("latest_snapshot_producer_name"),
@@ -1264,12 +1388,18 @@ def build_content_stats(contents: DataFrame, interactions: DataFrame, snapshots:
                 col("api_endpoint").alias("latest_snapshot_api_endpoint"),
                 col("provenance_json").alias("latest_snapshot_provenance_json"),
                 col("coverage_json").alias("latest_snapshot_coverage_json"),
-                col("view_count_available").alias("latest_view_count_available"),
-                col("like_count_available").alias("latest_like_count_available"),
-                col("comment_count_available").alias("latest_comment_count_available"),
-                col("reply_count_available").alias("latest_reply_count_available"),
-                col("retweet_count_available").alias("latest_retweet_count_available"),
-                col("bookmark_count_available").alias("latest_bookmark_count_available"),
+                col("_latest_known_view_count_available").alias("latest_view_count_available"),
+                col("_latest_known_like_count_available").alias("latest_like_count_available"),
+                col("_latest_known_comment_count_available").alias(
+                    "latest_comment_count_available"
+                ),
+                col("_latest_known_reply_count_available").alias("latest_reply_count_available"),
+                col("_latest_known_retweet_count_available").alias(
+                    "latest_retweet_count_available"
+                ),
+                col("_latest_known_bookmark_count_available").alias(
+                    "latest_bookmark_count_available"
+                ),
             ),
             "content_id",
             "left",
@@ -1370,6 +1500,11 @@ def _create_tables(spark: SparkSession) -> None:
             "clean_text": "STRING",
             "text_for_model": "STRING",
             "thumbnail_url": "STRING",
+            "thumbnail_width": "BIGINT",
+            "thumbnail_height": "BIGINT",
+            "thumbnail_source": "STRING",
+            "thumbnail_available": "BOOLEAN",
+            "thumbnail_updated_at": "STRING",
             **PROVENANCE_COLUMN_TYPES,
         },
     )
@@ -1450,6 +1585,7 @@ def _create_tables(spark: SparkSession) -> None:
             "transcript_source": "STRING",
             "provider": "STRING",
             "selection_strategy": "STRING",
+            **TRANSCRIPT_PROVENANCE_COLUMN_TYPES,
             "error_code": "STRING",
             "error_message": "STRING",
             "attempt_count": "BIGINT",
@@ -1632,6 +1768,37 @@ def _merge_dataframe(
     )
 
 
+def _delete_legacy_youtube_content_aliases(spark: SparkSession) -> None:
+    """Remove pre-canonical rows that split one YouTube video into two entities."""
+
+    canonical_from_platform_id = "sha2(concat('youtube:', platform_content_id), 256)"
+    canonical_from_video_id = "sha2(concat('youtube:', video_id), 256)"
+    canonical_from_url = "sha2(concat('youtube:', regexp_extract(url, '[?&]v=([^&]+)', 1)), 256)"
+    spark.sql(
+        f"""
+        DELETE FROM {TRANSCRIPT_TABLE}
+        WHERE video_id IS NOT NULL
+          AND content_id <> {canonical_from_video_id}
+        """
+    )
+    spark.sql(
+        f"""
+        DELETE FROM {CONTENT_STATS_TABLE}
+        WHERE source = 'youtube'
+          AND regexp_extract(url, '[?&]v=([^&]+)', 1) <> ''
+          AND content_id <> {canonical_from_url}
+        """
+    )
+    spark.sql(
+        f"""
+        DELETE FROM {CONTENT_TABLE}
+        WHERE source = 'youtube'
+          AND platform_content_id IS NOT NULL
+          AND content_id <> {canonical_from_platform_id}
+        """
+    )
+
+
 def main() -> None:
     bucket = _env("MINIO_BUCKET", "lakehouse")
     warehouse = f"s3a://{bucket}/warehouse"
@@ -1680,6 +1847,7 @@ def main() -> None:
         USER_EVOLUTION_COLUMNS,
         ["user_id_hash", "source", "event_date"],
     )
+    _delete_legacy_youtube_content_aliases(spark)
 
     spark.stop()
 

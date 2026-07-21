@@ -14,17 +14,20 @@ from pyspark.sql.functions import (
     concat_ws,
     current_timestamp,
     from_json,
+    last,
     length,
     lit,
     row_number,
     sha2,
     struct,
+    to_date,
     to_json,
     to_timestamp,
     trim,
     when,
 )
 from pyspark.storagelevel import StorageLevel
+from pyspark.sql.types import DateType, TimestampType
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from event_contract import (
@@ -115,7 +118,7 @@ def _merge_insert_only(
 
 
 def _latest_projection(events: DataFrame) -> DataFrame:
-    """Choose one deterministic current-state update per business identity."""
+    """Combine complementary event updates per business identity."""
 
     business_id = coalesce(
         col("platform_event_id"),
@@ -127,19 +130,48 @@ def _latest_projection(events: DataFrame) -> DataFrame:
         to_timestamp(col("timestamp")),
         col("event_ts"),
     )
-    window = Window.partitionBy("source", "_business_id").orderBy(
+    base = events.withColumn("_business_id", business_id).withColumn("_projection_order", ordering)
+    full_window = (
+        Window.partitionBy("source", "_business_id")
+        .orderBy(col("_projection_order").asc_nulls_first(), col("event_id").asc())
+        .rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)
+    )
+    latest_window = Window.partitionBy("source", "_business_id").orderBy(
         ordering.desc_nulls_last(), col("event_id").desc()
     )
     return (
-        events.withColumn("_business_id", business_id)
-        .withColumn("_projection_rank", row_number().over(window))
+        base.select(
+            *[
+                last(col(column), ignorenulls=True).over(full_window).alias(column)
+                for column in events.columns
+            ],
+            row_number().over(latest_window).alias("_projection_rank"),
+        )
         .filter(col("_projection_rank") == 1)
-        .drop("_business_id", "_projection_rank")
+        .drop("_projection_rank")
     )
 
 
+def _align_projection_temporal_types(events: DataFrame) -> DataFrame:
+    """Cast ISO event strings to temporal types retained by an existing table."""
+
+    aligned = events
+    source_fields = {field.name: field.dataType for field in events.schema.fields}
+    for field in events.sparkSession.table(CURRENT_TABLE).schema.fields:
+        source_type = source_fields.get(field.name)
+        if source_type is None or source_type == field.dataType:
+            continue
+        if isinstance(field.dataType, TimestampType):
+            aligned = aligned.withColumn(field.name, to_timestamp(col(field.name)))
+        elif isinstance(field.dataType, DateType):
+            aligned = aligned.withColumn(field.name, to_date(col(field.name)))
+    return aligned
+
+
 def _merge_current_projection(events: DataFrame, *, epoch_id: int) -> int:
-    projection = _latest_projection(events).persist(StorageLevel.MEMORY_AND_DISK)
+    projection = _align_projection_temporal_types(_latest_projection(events)).persist(
+        StorageLevel.MEMORY_AND_DISK
+    )
     try:
         row_count = projection.count()
         if row_count == 0:

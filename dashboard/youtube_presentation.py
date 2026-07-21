@@ -8,6 +8,11 @@ from typing import Any
 
 import pandas as pd  # type: ignore[import-untyped]
 
+from common.youtube_thumbnails import (
+    deterministic_thumbnail_url,
+    safe_youtube_thumbnail_url,
+)
+
 
 TRANSCRIPT_LIFECYCLE_PRESENTATION = {
     "pending": ("info", "Transcript collection is pending for this video."),
@@ -94,6 +99,11 @@ TRANSCRIPT_CARD_COLUMNS = (
     "generation_type",
     "is_translated",
     "provider",
+    "model",
+    "fallback_reason",
+    "prompt_version",
+    "generated_by_model",
+    "selection_strategy",
     "attempt_count",
     "last_attempt_at",
     "next_attempt_at",
@@ -225,6 +235,51 @@ def transcript_status_presentation(row: Any) -> tuple[str, str, str]:
     return status, level, message
 
 
+def transcript_provenance_label(row: Any) -> str:
+    """Return an explicit user-facing origin without implying official captions."""
+
+    status = transcript_lifecycle_status(row)
+    if status != "available":
+        return {
+            "pending": "En attente",
+            "retryable_error": "Erreur réessayable",
+            "rate_limited": "Erreur réessayable",
+            "blocked": "Erreur réessayable",
+        }.get(status, "Indisponible")
+    provider = str(_row_value(row, "latest_transcript_provider", "provider") or "").strip().lower()
+    if provider == "gemini":
+        return "Transcription générée depuis la vidéo avec Gemini"
+    translated = availability_flag(
+        _row_value(row, "latest_transcript_is_translated", "is_translated")
+    )
+    generation_type = (
+        str(_row_value(row, "latest_transcript_generation_type", "generation_type") or "")
+        .strip()
+        .lower()
+    )
+    if translated:
+        return "Sous-titres YouTube traduits"
+    if generation_type == "automatic":
+        return "Sous-titres YouTube automatiques"
+    return "Sous-titres YouTube manuels"
+
+
+def youtube_thumbnail_display_url(row: Any) -> str | None:
+    """Return a safe stored URL or the no-network deterministic display fallback."""
+
+    stored_url = safe_youtube_thumbnail_url(_row_value(row, "thumbnail_url"))
+    if stored_url:
+        return stored_url
+    video_id = _row_value(
+        row,
+        "platform_content_id",
+        "platform_event_id",
+        "video_id",
+        "conversation_id",
+    )
+    return deterministic_thumbnail_url(video_id)
+
+
 def latest_rows_by_content(
     dataframe: pd.DataFrame,
     sort_candidates: tuple[str, ...] = (
@@ -257,6 +312,27 @@ def _merge_latest_snapshot_fallback(
     )
     if latest_snapshots.empty or "content_id" not in display_rows.columns:
         return display_rows
+
+    for metric, _label in SNAPSHOT_METRICS:
+        if metric not in engagement_snapshots.columns:
+            continue
+        available_column = f"{metric}_available"
+        known_mask = engagement_snapshots.apply(
+            lambda row: metric_is_available(
+                row.get(metric),
+                row.get(available_column),
+            ),
+            axis=1,
+        )
+        latest_known = latest_rows_by_content(
+            engagement_snapshots.loc[known_mask],
+            sort_candidates=("snapshot_at", "observed_at", "observation_id"),
+        )
+        if latest_known.empty:
+            continue
+        known_values = latest_known.set_index("content_id")[metric]
+        latest_snapshots[metric] = latest_snapshots["content_id"].map(known_values)
+        latest_snapshots[available_column] = latest_snapshots[metric].notna()
 
     source_to_target = {
         "snapshot_at": "latest_snapshot_at",
@@ -404,16 +480,25 @@ def youtube_data_completeness(row: Any) -> tuple[int, int, dict[str, bool]]:
         _row_value(row, "transcript_available_any"),
         fallback=transcript_lifecycle_status(row) == "available",
     )
-    metadata_available = has_value(_row_value(row, "last_enriched_at")) or (
-        availability_flag(_row_value(row, "metadata_available"))
+    metadata_available = (
+        has_value(_row_value(row, "last_enriched_at"))
+        or availability_flag(_row_value(row, "metadata_available"))
+        or str(_row_value(row, "metadata_status") or "").strip().lower() == "success"
     )
     comments_status = _row_value(row, "comments_status")
     comments_available = availability_flag(
         _row_value(row, "comments_available"),
         fallback=(has_value(comments_status) and str(comments_status).strip().lower() == "success"),
+    ) or metric_is_available(
+        _row_value(row, "latest_comment_count", "comment_count"),
+        _row_value(
+            row,
+            "latest_comment_count_available",
+            "comment_count_available",
+        ),
     )
     checks = {
-        "thumbnail": has_value(_row_value(row, "thumbnail_url")),
+        "thumbnail": bool(youtube_thumbnail_display_url(row)),
         "metadata": metadata_available,
         "transcript": transcript_available,
         "views": metric_is_available(

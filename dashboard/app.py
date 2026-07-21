@@ -30,9 +30,11 @@ from youtube_presentation import (
     metric_is_available,
     provenance_summary,
     transcript_lifecycle_status,
+    transcript_provenance_label,
     transcript_retry_warning,
     transcript_status_presentation,
     youtube_data_completeness,
+    youtube_thumbnail_display_url,
 )
 
 
@@ -2295,9 +2297,9 @@ def render_content_analytics():
             for position, (_, video_row) in enumerate(youtube_display.head(30).iterrows()):
                 with card_columns[position % 3]:
                     with st.container(border=True):
-                        thumbnail_url = video_row.get("thumbnail_url")
-                        if has_dashboard_value(thumbnail_url):
-                            st.image(str(thumbnail_url), width=120)
+                        thumbnail_url = youtube_thumbnail_display_url(video_row)
+                        if thumbnail_url:
+                            st.image(thumbnail_url, width=120)
                         else:
                             st.caption("No thumbnail")
                         st.markdown(f"**{format_optional_text(video_row.get('title'))}**")
@@ -2334,6 +2336,7 @@ def render_content_analytics():
                                 ]
                             )
                         )
+                        st.caption(transcript_provenance_label(video_row))
                         st.caption(
                             " | ".join(
                                 [
@@ -2424,6 +2427,7 @@ def render_content_analytics():
                 transcript_row = video_transcripts.iloc[0]
                 status, level, message = transcript_status_presentation(transcript_row)
                 st.caption(f"Transcript lifecycle: {status.replace('_', ' ')}")
+                st.caption(transcript_provenance_label(transcript_row))
                 if status != "available":
                     getattr(st, level)(message)
                 transcript_detail_columns = [
@@ -2436,6 +2440,11 @@ def render_content_analytics():
                         "is_generated",
                         "is_translated",
                         "provider",
+                        "model",
+                        "fallback_reason",
+                        "prompt_version",
+                        "generated_by_model",
+                        "selection_strategy",
                         "attempt_count",
                         "last_attempt_at",
                         "next_attempt_at",

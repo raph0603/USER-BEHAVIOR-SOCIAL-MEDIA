@@ -65,6 +65,38 @@ class ContentAnalyticsContractTests(unittest.TestCase):
                 self.assertIn(column, ca.SNAPSHOT_COLUMNS)
                 self.assertIn(column, ca.CREATE_SNAPSHOTS_SQL)
 
+    def test_silver_transcripts_preserve_fallback_provenance(self):
+        for column in (
+            "model",
+            "fallback_reason",
+            "prompt_version",
+            "generated_by_model",
+            "source_content_version",
+            "primary_attempt_count",
+            "fallback_attempt_count",
+            "primary_result_json",
+            "fallback_result_json",
+            "warnings_json",
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, ca.TRANSCRIPT_COLUMNS)
+                self.assertIn(column, ca.CREATE_TRANSCRIPTS_SQL)
+                self.assertIn(column, ca.TRANSCRIPT_PROVENANCE_COLUMN_TYPES)
+
+        self.assertIn("provider", ca.TRANSCRIPT_COLUMNS)
+        self.assertIn("provider", ca.CREATE_TRANSCRIPTS_SQL)
+
+        for source_column in (
+            "transcript_model",
+            "transcript_fallback_reason",
+            "transcript_prompt_version",
+            "transcript_generated_by_model",
+            "transcript_primary_attempt_count",
+            "transcript_fallback_attempt_count",
+        ):
+            with self.subTest(source_column=source_column):
+                self.assertIn(source_column, ca.OPTIONAL_EVENT_COLUMNS)
+
     def test_gold_contracts(self):
         for column in (
             "interaction_count",
@@ -101,6 +133,10 @@ class ContentAnalyticsContractTests(unittest.TestCase):
         self.assertIn('"youtube.metadata.observed"', source)
         self.assertIn('"youtube.metadata.changed"', source)
         self.assertIn('col("observation_id").desc_nulls_last()', source)
+        self.assertIn('col("metadata_refreshed_at").isNotNull()', source)
+        self.assertIn("| engagement_observed", source)
+        self.assertIn('f"_latest_known_{metric}"', source)
+        self.assertIn("first(when(observed, col(metric)), ignorenulls=True)", source)
 
     def test_analytics_materializes_only_applied_immutable_history(self):
         source = (ROOT / "spark" / "jobs" / "batch" / "content_analytics.py").read_text(
@@ -145,6 +181,17 @@ class ContentAnalyticsContractTests(unittest.TestCase):
         self.assertIn('regexp_extract(col("url"), r"/comments/([^/]+)", 1)', source)
         self.assertIn('regexp_extract(col("url"), r"/status/(\\d+)", 1)', source)
         self.assertIn('regexp_extract(col("url"), r"[?&]v=([^&]+)", 1)', source)
+
+    def test_youtube_component_events_use_the_canonical_video_content_id(self):
+        source = (ROOT / "spark" / "jobs" / "batch" / "content_analytics.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('col("source") == "youtube"', source)
+        self.assertIn("derived_root_content_id", source)
+        self.assertIn("def _delete_legacy_youtube_content_aliases", source)
+        self.assertIn("content_id <> {canonical_from_video_id}", source)
+        self.assertIn("_delete_legacy_youtube_content_aliases(spark)", source)
 
     def test_reddit_contents_do_not_use_comment_text_as_post_content(self):
         source = (ROOT / "spark" / "jobs" / "batch" / "content_analytics.py").read_text(
