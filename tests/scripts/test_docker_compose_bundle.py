@@ -44,6 +44,17 @@ class DockerComposeBundleTests(unittest.TestCase):
         self.assertIn("PROJECT_IMAGE_TAG: ${PROJECT_IMAGE_TAG:-latest}", compose)
         self.assertIn("MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}", compose)
 
+    def test_airflow_passes_gemini_configuration_to_scheduled_collectors(self):
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertIn("GEMINI_API_KEY: ${GEMINI_API_KEY:-}", compose)
+        self.assertIn(
+            "GEMINI_TRANSCRIPT_FALLBACK_ENABLED: "
+            "${GEMINI_TRANSCRIPT_FALLBACK_ENABLED:-false}",
+            compose,
+        )
+        self.assertIn("- GEMINI_API_KEY=${GEMINI_API_KEY:-}", compose)
+
 
 if __name__ == "__main__":
     unittest.main()
