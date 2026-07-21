@@ -246,17 +246,17 @@ def transcript_provenance_label(row: Any) -> str:
             "rate_limited": "Erreur réessayable",
             "blocked": "Erreur réessayable",
         }.get(status, "Indisponible")
-    provider = str(
-        _row_value(row, "latest_transcript_provider", "provider") or ""
-    ).strip().lower()
+    provider = str(_row_value(row, "latest_transcript_provider", "provider") or "").strip().lower()
     if provider == "gemini":
         return "Transcription générée depuis la vidéo avec Gemini"
     translated = availability_flag(
         _row_value(row, "latest_transcript_is_translated", "is_translated")
     )
-    generation_type = str(
-        _row_value(row, "latest_transcript_generation_type", "generation_type") or ""
-    ).strip().lower()
+    generation_type = (
+        str(_row_value(row, "latest_transcript_generation_type", "generation_type") or "")
+        .strip()
+        .lower()
+    )
     if translated:
         return "Sous-titres YouTube traduits"
     if generation_type == "automatic":
@@ -312,6 +312,27 @@ def _merge_latest_snapshot_fallback(
     )
     if latest_snapshots.empty or "content_id" not in display_rows.columns:
         return display_rows
+
+    for metric, _label in SNAPSHOT_METRICS:
+        if metric not in engagement_snapshots.columns:
+            continue
+        available_column = f"{metric}_available"
+        known_mask = engagement_snapshots.apply(
+            lambda row: metric_is_available(
+                row.get(metric),
+                row.get(available_column),
+            ),
+            axis=1,
+        )
+        latest_known = latest_rows_by_content(
+            engagement_snapshots.loc[known_mask],
+            sort_candidates=("snapshot_at", "observed_at", "observation_id"),
+        )
+        if latest_known.empty:
+            continue
+        known_values = latest_known.set_index("content_id")[metric]
+        latest_snapshots[metric] = latest_snapshots["content_id"].map(known_values)
+        latest_snapshots[available_column] = latest_snapshots[metric].notna()
 
     source_to_target = {
         "snapshot_at": "latest_snapshot_at",
@@ -459,13 +480,22 @@ def youtube_data_completeness(row: Any) -> tuple[int, int, dict[str, bool]]:
         _row_value(row, "transcript_available_any"),
         fallback=transcript_lifecycle_status(row) == "available",
     )
-    metadata_available = has_value(_row_value(row, "last_enriched_at")) or (
-        availability_flag(_row_value(row, "metadata_available"))
+    metadata_available = (
+        has_value(_row_value(row, "last_enriched_at"))
+        or availability_flag(_row_value(row, "metadata_available"))
+        or str(_row_value(row, "metadata_status") or "").strip().lower() == "success"
     )
     comments_status = _row_value(row, "comments_status")
     comments_available = availability_flag(
         _row_value(row, "comments_available"),
         fallback=(has_value(comments_status) and str(comments_status).strip().lower() == "success"),
+    ) or metric_is_available(
+        _row_value(row, "latest_comment_count", "comment_count"),
+        _row_value(
+            row,
+            "latest_comment_count_available",
+            "comment_count_available",
+        ),
     )
     checks = {
         "thumbnail": bool(youtube_thumbnail_display_url(row)),

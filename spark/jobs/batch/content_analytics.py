@@ -930,10 +930,9 @@ def normalize_events(events: DataFrame) -> DataFrame:
         .withColumn("event_id", coalesce(col("event_id"), col("observation_id")))
         .withColumn(
             "metadata_available",
-            coalesce(
-                col("metadata_available"),
-                lower(coalesce(col("metadata_status"), lit(""))) == "success",
-            ),
+            coalesce(col("metadata_available"), lit(False))
+            | (lower(coalesce(col("metadata_status"), lit(""))) == "success")
+            | col("metadata_refreshed_at").isNotNull(),
         )
         .withColumn(
             "transcript_available",
@@ -1052,7 +1051,12 @@ def build_contents(events: DataFrame) -> DataFrame:
             first("language", ignorenulls=True).alias("language"),
             first("conversation_id", ignorenulls=True).alias("conversation_id"),
             first("collection_status", ignorenulls=True).alias("collection_status"),
-            first("metadata_status", ignorenulls=True).alias("metadata_status"),
+            when(
+                spark_max(col("metadata_available").cast("int")) == 1,
+                lit("success"),
+            )
+            .otherwise(first("metadata_status", ignorenulls=True))
+            .alias("metadata_status"),
             first("transcript_status", ignorenulls=True).alias("transcript_status"),
             first("comments_status", ignorenulls=True).alias("comments_status"),
             spark_max(
@@ -1071,6 +1075,7 @@ def build_contents(events: DataFrame) -> DataFrame:
                             "youtube.metadata.changed",
                         )
                         | (lower(coalesce(col("metadata_status"), lit(""))) == "success")
+                        | col("metadata_available")
                     ),
                     col("event_metadata_at"),
                 )
@@ -1084,12 +1089,8 @@ def build_contents(events: DataFrame) -> DataFrame:
             first("content_thumbnail_width", ignorenulls=True).alias("thumbnail_width"),
             first("content_thumbnail_height", ignorenulls=True).alias("thumbnail_height"),
             first("content_thumbnail_source", ignorenulls=True).alias("thumbnail_source"),
-            first("content_thumbnail_available", ignorenulls=True).alias(
-                "thumbnail_available"
-            ),
-            first("content_thumbnail_updated_at", ignorenulls=True).alias(
-                "thumbnail_updated_at"
-            ),
+            first("content_thumbnail_available", ignorenulls=True).alias("thumbnail_available"),
+            first("content_thumbnail_updated_at", ignorenulls=True).alias("thumbnail_updated_at"),
             *(
                 first(column, ignorenulls=True).alias(column)
                 for column in PROVENANCE_COLUMNS
@@ -1156,7 +1157,8 @@ def build_snapshots(events: DataFrame) -> DataFrame:
             coalesce(col(f"{metric}_available"), col(metric).isNotNull()) & col(metric).isNotNull()
         )
     snapshot_event = (
-        (col("source") == "youtube") & (col("event_type") == "youtube.engagement.snapshot")
+        (col("source") == "youtube")
+        & ((col("event_type") == "youtube.engagement.snapshot") | engagement_observed)
     ) | ((col("source") != "youtube") & engagement_observed)
     legacy_snapshot = col("event_type").isNull() & engagement_observed
     return (
@@ -1271,12 +1273,8 @@ def build_transcripts(events: DataFrame) -> DataFrame:
             col("transcript_prompt_version").alias("prompt_version"),
             col("transcript_generated_by_model").alias("generated_by_model"),
             col("transcript_source_content_version").alias("source_content_version"),
-            col("transcript_primary_attempt_count")
-            .cast("bigint")
-            .alias("primary_attempt_count"),
-            col("transcript_fallback_attempt_count")
-            .cast("bigint")
-            .alias("fallback_attempt_count"),
+            col("transcript_primary_attempt_count").cast("bigint").alias("primary_attempt_count"),
+            col("transcript_fallback_attempt_count").cast("bigint").alias("fallback_attempt_count"),
             to_timestamp(col("transcript_primary_last_attempt_at")).alias(
                 "primary_last_attempt_at"
             ),
@@ -1334,8 +1332,32 @@ def build_content_stats(contents: DataFrame, interactions: DataFrame, snapshots:
         col("snapshot_at").desc_nulls_last(),
         col("observation_id").desc_nulls_last(),
     )
+    all_snapshots_window = latest_window.rowsBetween(
+        Window.unboundedPreceding,
+        Window.unboundedFollowing,
+    )
+    latest_snapshots = snapshots
+    for metric in (
+        "view_count",
+        "like_count",
+        "comment_count",
+        "reply_count",
+        "retweet_count",
+        "bookmark_count",
+    ):
+        observed = (
+            coalesce(col(f"{metric}_available"), col(metric).isNotNull()) & col(metric).isNotNull()
+        )
+        latest_value = f"_latest_known_{metric}"
+        latest_snapshots = latest_snapshots.withColumn(
+            latest_value,
+            first(when(observed, col(metric)), ignorenulls=True).over(all_snapshots_window),
+        ).withColumn(
+            f"{latest_value}_available",
+            col(latest_value).isNotNull(),
+        )
     latest_snapshots = (
-        snapshots.withColumn("_rank", row_number().over(latest_window))
+        latest_snapshots.withColumn("_rank", row_number().over(latest_window))
         .filter(col("_rank") == 1)
         .drop("_rank")
     )
@@ -1349,12 +1371,12 @@ def build_content_stats(contents: DataFrame, interactions: DataFrame, snapshots:
         .join(
             latest_snapshots.select(
                 "content_id",
-                col("view_count").alias("latest_view_count"),
-                col("like_count").alias("latest_like_count"),
-                col("comment_count").alias("latest_comment_count"),
-                col("reply_count").alias("latest_reply_count"),
-                col("retweet_count").alias("latest_retweet_count"),
-                col("bookmark_count").alias("latest_bookmark_count"),
+                col("_latest_known_view_count").alias("latest_view_count"),
+                col("_latest_known_like_count").alias("latest_like_count"),
+                col("_latest_known_comment_count").alias("latest_comment_count"),
+                col("_latest_known_reply_count").alias("latest_reply_count"),
+                col("_latest_known_retweet_count").alias("latest_retweet_count"),
+                col("_latest_known_bookmark_count").alias("latest_bookmark_count"),
                 col("snapshot_at").alias("latest_snapshot_at"),
                 col("observation_id").alias("latest_snapshot_observation_id"),
                 col("producer_name").alias("latest_snapshot_producer_name"),
@@ -1363,12 +1385,18 @@ def build_content_stats(contents: DataFrame, interactions: DataFrame, snapshots:
                 col("api_endpoint").alias("latest_snapshot_api_endpoint"),
                 col("provenance_json").alias("latest_snapshot_provenance_json"),
                 col("coverage_json").alias("latest_snapshot_coverage_json"),
-                col("view_count_available").alias("latest_view_count_available"),
-                col("like_count_available").alias("latest_like_count_available"),
-                col("comment_count_available").alias("latest_comment_count_available"),
-                col("reply_count_available").alias("latest_reply_count_available"),
-                col("retweet_count_available").alias("latest_retweet_count_available"),
-                col("bookmark_count_available").alias("latest_bookmark_count_available"),
+                col("_latest_known_view_count_available").alias("latest_view_count_available"),
+                col("_latest_known_like_count_available").alias("latest_like_count_available"),
+                col("_latest_known_comment_count_available").alias(
+                    "latest_comment_count_available"
+                ),
+                col("_latest_known_reply_count_available").alias("latest_reply_count_available"),
+                col("_latest_known_retweet_count_available").alias(
+                    "latest_retweet_count_available"
+                ),
+                col("_latest_known_bookmark_count_available").alias(
+                    "latest_bookmark_count_available"
+                ),
             ),
             "content_id",
             "left",

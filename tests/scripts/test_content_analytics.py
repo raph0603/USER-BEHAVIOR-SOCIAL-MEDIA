@@ -133,6 +133,10 @@ class ContentAnalyticsContractTests(unittest.TestCase):
         self.assertIn('"youtube.metadata.observed"', source)
         self.assertIn('"youtube.metadata.changed"', source)
         self.assertIn('col("observation_id").desc_nulls_last()', source)
+        self.assertIn('col("metadata_refreshed_at").isNotNull()', source)
+        self.assertIn("| engagement_observed", source)
+        self.assertIn('f"_latest_known_{metric}"', source)
+        self.assertIn("first(when(observed, col(metric)), ignorenulls=True)", source)
 
     def test_analytics_materializes_only_applied_immutable_history(self):
         source = (ROOT / "spark" / "jobs" / "batch" / "content_analytics.py").read_text(

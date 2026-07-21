@@ -59,6 +59,19 @@ class DashboardMetricAvailabilityTests(unittest.TestCase):
         self.assertEqual(format_available_metric(0, False), "N/A")
         self.assertEqual(format_available_metric(pd.NA, True), "N/A")
 
+    def test_completeness_uses_known_comment_count_and_legacy_metadata_status(self):
+        _, _, checks = youtube_data_completeness(
+            {
+                "metadata_status": "success",
+                "comments_available": False,
+                "latest_comment_count": 7,
+                "latest_comment_count_available": True,
+            }
+        )
+
+        self.assertTrue(checks["metadata"])
+        self.assertTrue(checks["comments"])
+
     def test_coverage_prefers_explicit_flags(self):
         row = {
             "latest_view_count": 0,
@@ -170,6 +183,41 @@ class DashboardTranscriptLifecycleTests(unittest.TestCase):
 
 
 class DashboardFreshnessTableTests(unittest.TestCase):
+    def test_newer_incomplete_snapshot_does_not_erase_known_comment_count(self):
+        contents = pd.DataFrame([{"content_id": "video-1", "title": "Video"}])
+        snapshots = pd.DataFrame(
+            [
+                {
+                    "content_id": "video-1",
+                    "snapshot_at": "2026-07-19T00:00:00Z",
+                    "observation_id": "known",
+                    "comment_count": 7,
+                    "comment_count_available": True,
+                },
+                {
+                    "content_id": "video-1",
+                    "snapshot_at": "2026-07-20T00:00:00Z",
+                    "observation_id": "incomplete",
+                    "comment_count": None,
+                    "comment_count_available": False,
+                },
+            ]
+        )
+
+        result = build_youtube_display_rows(
+            contents,
+            pd.DataFrame(),
+            pd.DataFrame(),
+            snapshots,
+        )
+
+        self.assertEqual(result.iloc[0]["latest_comment_count"], 7)
+        self.assertTrue(result.iloc[0]["latest_comment_count_available"])
+        self.assertEqual(
+            result.iloc[0]["latest_snapshot_at"],
+            "2026-07-20T00:00:00Z",
+        )
+
     def test_mixed_grain_joins_do_not_duplicate_video_cards(self):
         contents = pd.DataFrame(
             [
