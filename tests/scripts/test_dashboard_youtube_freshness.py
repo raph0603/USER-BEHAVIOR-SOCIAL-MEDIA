@@ -21,6 +21,7 @@ from youtube_presentation import (  # noqa: E402
     transcript_retry_warning,
     transcript_status_presentation,
     youtube_data_completeness,
+    youtube_thumbnail_display_url,
 )
 
 
@@ -30,6 +31,27 @@ class DashboardMetricAvailabilityTests(unittest.TestCase):
             with self.subTest(value=value):
                 _, _, checks = youtube_data_completeness({"thumbnail_url": value})
                 self.assertFalse(checks["thumbnail"])
+
+    def test_missing_thumbnail_uses_safe_video_id_fallback(self):
+        row = {"thumbnail_url": None, "platform_content_id": "wDWFGSq3jz4"}
+
+        self.assertEqual(
+            youtube_thumbnail_display_url(row),
+            "https://img.youtube.com/vi/wDWFGSq3jz4/default.jpg",
+        )
+        _, _, checks = youtube_data_completeness(row)
+        self.assertTrue(checks["thumbnail"])
+
+    def test_unsafe_thumbnail_is_replaced_by_safe_fallback(self):
+        row = {
+            "thumbnail_url": "https://example.test/thumbnail.jpg",
+            "platform_content_id": "wDWFGSq3jz4",
+        }
+
+        self.assertEqual(
+            youtube_thumbnail_display_url(row),
+            "https://img.youtube.com/vi/wDWFGSq3jz4/default.jpg",
+        )
 
     def test_known_zero_is_not_rendered_as_unknown(self):
         self.assertEqual(format_available_metric(0, True), "0")

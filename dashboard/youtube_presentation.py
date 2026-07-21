@@ -8,7 +8,10 @@ from typing import Any
 
 import pandas as pd  # type: ignore[import-untyped]
 
-from common.youtube_thumbnails import safe_youtube_thumbnail_url
+from common.youtube_thumbnails import (
+    deterministic_thumbnail_url,
+    safe_youtube_thumbnail_url,
+)
 
 
 TRANSCRIPT_LIFECYCLE_PRESENTATION = {
@@ -261,6 +264,22 @@ def transcript_provenance_label(row: Any) -> str:
     return "Sous-titres YouTube manuels"
 
 
+def youtube_thumbnail_display_url(row: Any) -> str | None:
+    """Return a safe stored URL or the no-network deterministic display fallback."""
+
+    stored_url = safe_youtube_thumbnail_url(_row_value(row, "thumbnail_url"))
+    if stored_url:
+        return stored_url
+    video_id = _row_value(
+        row,
+        "platform_content_id",
+        "platform_event_id",
+        "video_id",
+        "conversation_id",
+    )
+    return deterministic_thumbnail_url(video_id)
+
+
 def latest_rows_by_content(
     dataframe: pd.DataFrame,
     sort_candidates: tuple[str, ...] = (
@@ -449,9 +468,7 @@ def youtube_data_completeness(row: Any) -> tuple[int, int, dict[str, bool]]:
         fallback=(has_value(comments_status) and str(comments_status).strip().lower() == "success"),
     )
     checks = {
-        "thumbnail": bool(
-            safe_youtube_thumbnail_url(_row_value(row, "thumbnail_url"))
-        ),
+        "thumbnail": bool(youtube_thumbnail_display_url(row)),
         "metadata": metadata_available,
         "transcript": transcript_available,
         "views": metric_is_available(

@@ -10,8 +10,6 @@ import plotly.express as px
 import requests
 import streamlit as st
 
-from common.youtube_thumbnails import safe_youtube_thumbnail_url
-
 from airflow_monitoring import AirflowClient
 from loaders import get_iceberg_config, load_iceberg_data, load_optional_iceberg_table
 from manual_import import (
@@ -36,6 +34,7 @@ from youtube_presentation import (
     transcript_retry_warning,
     transcript_status_presentation,
     youtube_data_completeness,
+    youtube_thumbnail_display_url,
 )
 
 
@@ -2298,9 +2297,7 @@ def render_content_analytics():
             for position, (_, video_row) in enumerate(youtube_display.head(30).iterrows()):
                 with card_columns[position % 3]:
                     with st.container(border=True):
-                        thumbnail_url = safe_youtube_thumbnail_url(
-                            video_row.get("thumbnail_url")
-                        )
+                        thumbnail_url = youtube_thumbnail_display_url(video_row)
                         if thumbnail_url:
                             st.image(thumbnail_url, width=120)
                         else:
