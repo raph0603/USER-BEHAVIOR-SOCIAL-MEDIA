@@ -853,7 +853,10 @@ def normalize_events(events: DataFrame) -> DataFrame:
         256,
     )
     event_content_id = coalesce(col("content_id"), derived_event_content_id)
-    root_content_id = coalesce(col("root_content_id"), derived_root_content_id)
+    root_content_id = when(
+        col("source") == "youtube",
+        derived_root_content_id,
+    ).otherwise(coalesce(col("root_content_id"), derived_root_content_id))
     immediate_parent_content_id = coalesce(
         col("parent_content_id"),
         when(col("source") == "reddit", root_content_id),
@@ -1765,6 +1768,37 @@ def _merge_dataframe(
     )
 
 
+def _delete_legacy_youtube_content_aliases(spark: SparkSession) -> None:
+    """Remove pre-canonical rows that split one YouTube video into two entities."""
+
+    canonical_from_platform_id = "sha2(concat('youtube:', platform_content_id), 256)"
+    canonical_from_video_id = "sha2(concat('youtube:', video_id), 256)"
+    canonical_from_url = "sha2(concat('youtube:', regexp_extract(url, '[?&]v=([^&]+)', 1)), 256)"
+    spark.sql(
+        f"""
+        DELETE FROM {TRANSCRIPT_TABLE}
+        WHERE video_id IS NOT NULL
+          AND content_id <> {canonical_from_video_id}
+        """
+    )
+    spark.sql(
+        f"""
+        DELETE FROM {CONTENT_STATS_TABLE}
+        WHERE source = 'youtube'
+          AND regexp_extract(url, '[?&]v=([^&]+)', 1) <> ''
+          AND content_id <> {canonical_from_url}
+        """
+    )
+    spark.sql(
+        f"""
+        DELETE FROM {CONTENT_TABLE}
+        WHERE source = 'youtube'
+          AND platform_content_id IS NOT NULL
+          AND content_id <> {canonical_from_platform_id}
+        """
+    )
+
+
 def main() -> None:
     bucket = _env("MINIO_BUCKET", "lakehouse")
     warehouse = f"s3a://{bucket}/warehouse"
@@ -1813,6 +1847,7 @@ def main() -> None:
         USER_EVOLUTION_COLUMNS,
         ["user_id_hash", "source", "event_date"],
     )
+    _delete_legacy_youtube_content_aliases(spark)
 
     spark.stop()
 

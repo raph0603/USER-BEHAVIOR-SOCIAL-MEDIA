@@ -182,6 +182,17 @@ class ContentAnalyticsContractTests(unittest.TestCase):
         self.assertIn('regexp_extract(col("url"), r"/status/(\\d+)", 1)', source)
         self.assertIn('regexp_extract(col("url"), r"[?&]v=([^&]+)", 1)', source)
 
+    def test_youtube_component_events_use_the_canonical_video_content_id(self):
+        source = (ROOT / "spark" / "jobs" / "batch" / "content_analytics.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('col("source") == "youtube"', source)
+        self.assertIn("derived_root_content_id", source)
+        self.assertIn("def _delete_legacy_youtube_content_aliases", source)
+        self.assertIn("content_id <> {canonical_from_video_id}", source)
+        self.assertIn("_delete_legacy_youtube_content_aliases(spark)", source)
+
     def test_reddit_contents_do_not_use_comment_text_as_post_content(self):
         source = (ROOT / "spark" / "jobs" / "batch" / "content_analytics.py").read_text(
             encoding="utf-8"
