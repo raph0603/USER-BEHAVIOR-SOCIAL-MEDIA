@@ -3,6 +3,7 @@ import re
 import sys
 import json
 from pathlib import Path
+from typing import Mapping
 from urllib.parse import quote
 from urllib.request import urlopen
 
@@ -82,27 +83,36 @@ def _registered_avro_schemas(registry_url: str, subject: str) -> list[tuple[int,
     return schemas
 
 
-def _decode_confluent_avro(metadata, registry_url: str, subject: str):
-    """Decode each record with the writer schema identified by its wire header."""
+def _decode_confluent_avro(
+    metadata,
+    registry_url: str,
+    subjects_by_topic: Mapping[str, str],
+):
+    """Decode each record with the schema registered for its topic and wire header."""
 
     schema_id_column = expr("conv(hex(substring(value, 2, 4)), 16, 10)").cast("int")
     framed = metadata.withColumn("_schema_id", schema_id_column).withColumn(
         "_avro_value", expr("substring(value, 6, length(value) - 5)")
     )
-    registered_schemas = _registered_avro_schemas(registry_url, subject)
-    known_schema_ids = [schema_id for schema_id, _ in registered_schemas]
     decoded_json = lit(None).cast("string")
-    for schema_id, writer_schema in reversed(registered_schemas):
-        decoded_json = when(
-            col("_schema_id") == lit(schema_id),
-            to_json(
-                from_avro(
-                    col("_avro_value"),
-                    writer_schema,
-                    {"mode": "PERMISSIVE"},
-                )
-            ),
-        ).otherwise(decoded_json)
+    known_writer_schema = lit(False)
+    for topic, subject in subjects_by_topic.items():
+        registered_schemas = _registered_avro_schemas(registry_url, subject)
+        for schema_id, writer_schema in reversed(registered_schemas):
+            matches_writer = (col("_kafka_topic") == lit(topic)) & (
+                col("_schema_id") == lit(schema_id)
+            )
+            known_writer_schema = known_writer_schema | matches_writer
+            decoded_json = when(
+                matches_writer,
+                to_json(
+                    from_avro(
+                        col("_avro_value"),
+                        writer_schema,
+                        {"mode": "PERMISSIVE"},
+                    )
+                ),
+            ).otherwise(decoded_json)
 
     return (
         framed.withColumn("_decoded_json", decoded_json)
@@ -120,8 +130,11 @@ def _decode_confluent_avro(metadata, registry_url: str, subject: str):
         .withColumn(
             "_decode_error",
             when(
-                ~col("_schema_id").isin(known_schema_ids),
-                expr("concat('unregistered_schema_id:', cast(_schema_id as string))"),
+                ~known_writer_schema,
+                expr(
+                    "concat('unregistered_writer_schema:', _kafka_topic, ':', "
+                    "cast(_schema_id as string))"
+                ),
             ).otherwise(lit(None).cast("string")),
         )
     )
@@ -150,7 +163,7 @@ def main() -> None:
     starting_offsets = _env("CLEAN_STARTING_OFFSETS", "earliest")
     trigger_interval = _env("CLEAN_TRIGGER", "10 seconds")
     trigger_mode = _env("CLEAN_TRIGGER_MODE", "processing_time").lower()
-    checkpoint_version = _env("CLEAN_CHECKPOINT_VERSION", "pre_bronze_v4")
+    checkpoint_version = _env("CLEAN_CHECKPOINT_VERSION", "pre_bronze_v5")
     checkpoint_key = re.sub(r"[^a-zA-Z0-9._-]+", "_", source_topic)
 
     spark = _build_spark(f"collector-event-cleaning-{platform}")
@@ -190,10 +203,11 @@ def main() -> None:
     )
     if value_format == "avro":
         Path(schema_path).read_text(encoding="utf-8")
+        source_topics = tuple(topic.strip() for topic in source_topic.split(",") if topic.strip())
         decoded = _decode_confluent_avro(
             metadata,
             schema_registry_url,
-            f"{source_topic}-value",
+            {topic: f"{topic}-value" for topic in source_topics},
         )
     elif value_format == "json":
         event_schema = spark_struct_type()
@@ -234,6 +248,7 @@ def main() -> None:
         .withColumn("error", clean_text(col("error")))
     )
 
+    component_result = coalesce(col("event_type"), lit("")).endswith(".result")
     reason = (
         when(
             protected["_decode_error"].isNotNull(),
@@ -243,7 +258,8 @@ def main() -> None:
         .when(protected["url"].isNull(), lit("missing_url"))
         .when(protected["timestamp"].isNull(), lit("missing_timestamp"))
         .when(protected["error"].isNotNull(), lit("collector_error"))
-        .otherwise(invalid_reason(protected["title"]))
+        .when(~component_result, invalid_reason(protected["title"]))
+        .otherwise(lit(None).cast("string"))
     )
     validated = protected.withColumn("_invalid_reason", reason)
 

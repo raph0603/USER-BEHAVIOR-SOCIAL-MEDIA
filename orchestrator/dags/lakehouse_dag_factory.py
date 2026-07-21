@@ -100,7 +100,7 @@ def clean_stream_command(
       -e CLEAN_KAFKA_TOPIC="${{{clean_variable}:-{clean_default}}}" \\
       -e DLQ_KAFKA_TOPIC="${{{dlq_variable}:-{dlq_default}}}" \\
       -e CLEAN_SOURCE_VALUE_FORMAT=avro \\
-      -e CLEAN_CHECKPOINT_VERSION=pre_bronze_v4 \\
+      -e CLEAN_CHECKPOINT_VERSION=pre_bronze_v5 \\
       -e CLEAN_TRIGGER_MODE=available_now \\
       spark-master /bin/bash -lc "set -o pipefail; mkdir -p /tmp/user-behavior-lakehouse; /opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/jobs/pipeline/collector_stream_pipeline.py 2>&1 | tee /tmp/user-behavior-lakehouse/clean_{platform}.log"
     """
