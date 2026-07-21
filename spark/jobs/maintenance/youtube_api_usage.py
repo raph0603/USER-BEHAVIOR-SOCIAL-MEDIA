@@ -66,6 +66,9 @@ USAGE_SCHEMA = StructType(
         StructField("reserved_units", IntegerType(), True),
         StructField("remaining_units", IntegerType(), True),
         StructField("reserve_remaining_units", IntegerType(), True),
+        StructField("video_minutes", DoubleType(), False),
+        StructField("daily_video_minutes_budget", DoubleType(), True),
+        StructField("remaining_video_minutes", DoubleType(), True),
         StructField("priority", StringType(), True),
         StructField("cache_hit_count", IntegerType(), False),
         StructField("cache_miss_count", IntegerType(), False),
@@ -215,6 +218,13 @@ def load_usage(path: Path) -> list[dict[str, Any]]:
                 "reserved_units": _optional_integer(row.get("reserved_units")),
                 "remaining_units": _optional_integer(row.get("remaining_units")),
                 "reserve_remaining_units": _optional_integer(row.get("reserve_remaining_units")),
+                "video_minutes": max(0.0, _optional_float(row.get("video_minutes")) or 0.0),
+                "daily_video_minutes_budget": _optional_float(
+                    row.get("daily_video_minutes_budget")
+                ),
+                "remaining_video_minutes": _optional_float(
+                    row.get("remaining_video_minutes")
+                ),
                 "priority": row.get("priority"),
                 "cache_hit_count": max(0, _integer(row.get("cache_hit_count"))),
                 "cache_miss_count": max(0, _integer(row.get("cache_miss_count"))),
@@ -342,6 +352,9 @@ def _ensure_tables(spark: SparkSession) -> None:
           reserved_units INT,
           remaining_units INT,
           reserve_remaining_units INT,
+          video_minutes DOUBLE,
+          daily_video_minutes_budget DOUBLE,
+          remaining_video_minutes DOUBLE,
           priority STRING,
           cache_hit_count INT,
           cache_miss_count INT,
@@ -358,6 +371,14 @@ def _ensure_tables(spark: SparkSession) -> None:
         PARTITIONED BY (days(observed_at))
         """
     )
+    current_usage_columns = set(spark.table(EXTERNAL_USAGE_TABLE).columns)
+    for name, data_type in {
+        "video_minutes": "DOUBLE",
+        "daily_video_minutes_budget": "DOUBLE",
+        "remaining_video_minutes": "DOUBLE",
+    }.items():
+        if name not in current_usage_columns:
+            spark.sql(f"ALTER TABLE {EXTERNAL_USAGE_TABLE} ADD COLUMN {name} {data_type}")
     spark.sql(
         f"""
         CREATE TABLE IF NOT EXISTS {PIPELINE_HEALTH_TABLE} (
@@ -482,7 +503,8 @@ def _merge_insert_only(frame: DataFrame, *, table: str, key: str, view: str) -> 
     rows = frame.count()
     if not rows:
         return 0
-    frame.createOrReplaceTempView(view)
+    target_columns = frame.sparkSession.table(table).columns
+    frame.select(*target_columns).createOrReplaceTempView(view)
     frame.sparkSession.sql(
         f"""
         MERGE INTO {table} AS target

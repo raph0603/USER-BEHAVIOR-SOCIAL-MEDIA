@@ -1,4 +1,4 @@
-"""Backfill YouTube low-resolution thumbnail URLs without using API quota."""
+"""Backfill YouTube thumbnail URL strings without fetching image bytes."""
 
 from __future__ import annotations
 
@@ -41,8 +41,13 @@ for import_root in (JOBS_DIR, REPOSITORY_ROOT):
     if import_path not in sys.path:
         sys.path.insert(0, import_path)
 
+from common.youtube_thumbnails import deterministic_thumbnail_url  # noqa: E402
+
 
 EVENT_TABLE = "lakehouse.silver.events"
+SAFE_THUMBNAIL_URL_REGEX = (
+    r"^https://(?:img\.youtube\.com|i[1-9]?\.ytimg\.com)/(?:vi|vi_webp|an_webp)/"
+)
 
 
 def _env(name: str, default: str) -> str:
@@ -52,7 +57,7 @@ def _env(name: str, default: str) -> str:
 
 def _require_pyspark() -> None:
     if PYSPARK_IMPORT_ERROR is not None:
-        raise RuntimeError("PySpark is required to execute thumbnail backfill") from (
+        raise RuntimeError("PySpark is required to execute thumbnail URL backfill") from (
             PYSPARK_IMPORT_ERROR
         )
 
@@ -83,17 +88,29 @@ def _build_spark(app_name: str, warehouse: str) -> SparkSession:
 
 
 def low_resolution_thumbnail_url(video_id: str) -> str:
-    """Return YouTube's public low-resolution thumbnail URL for a video id."""
+    """Return the public URL fallback; retained for DAG and test compatibility."""
 
-    return f"https://img.youtube.com/vi/{video_id}/default.jpg"
+    result = deterministic_thumbnail_url(video_id)
+    if result is None:
+        raise ValueError("video_id cannot form a safe thumbnail URL")
+    return result
 
 
 def _ensure_columns(spark: SparkSession) -> None:
     current_columns = set(spark.table(EVENT_TABLE).columns)
     if "thumbnail_url" not in current_columns:
         spark.sql(f"ALTER TABLE {EVENT_TABLE} ADD COLUMN thumbnail_url STRING")
-    if "updated_at" not in current_columns:
-        spark.sql(f"ALTER TABLE {EVENT_TABLE} ADD COLUMN updated_at STRING")
+    additive_columns = {
+        "thumbnail_width": "BIGINT",
+        "thumbnail_height": "BIGINT",
+        "thumbnail_source": "STRING",
+        "thumbnail_available": "BOOLEAN",
+        "thumbnail_updated_at": "STRING",
+        "updated_at": "STRING",
+    }
+    for name, data_type in additive_columns.items():
+        if name not in current_columns:
+            spark.sql(f"ALTER TABLE {EVENT_TABLE} ADD COLUMN {name} {data_type}")
 
 
 def _prepare_youtube_events(events: DataFrame) -> DataFrame:
@@ -149,12 +166,15 @@ def _prepare_youtube_events(events: DataFrame) -> DataFrame:
 
 def _thumbnail_candidates(events: DataFrame, *, limit: int) -> DataFrame:
     prepared = _prepare_youtube_events(events)
+    safe_url = lower(trim(col("thumbnail_url"))).rlike(SAFE_THUMBNAIL_URL_REGEX)
     candidates = (
         prepared.filter(
             col("thumbnail_url").isNull()
             | (length(trim(col("thumbnail_url"))) == 0)
+            | ~safe_url
         )
         .filter(length(trim(col("resolved_video_id"))) > 0)
+        .filter(col("resolved_video_id").rlike(r"^[A-Za-z0-9_-]{1,64}$"))
         .select(
             col("resolved_content_id").alias("content_id"),
             col("resolved_video_id").alias("video_id"),
@@ -182,6 +202,10 @@ def _merge_thumbnail_dataframe(spark: SparkSession, dataframe: DataFrame) -> Non
             col("video_id"),
             lit("/default.jpg"),
         ).alias("thumbnail_url"),
+        lit(None).cast("BIGINT").alias("thumbnail_width"),
+        lit(None).cast("BIGINT").alias("thumbnail_height"),
+        lit("img.youtube.com_fallback").alias("thumbnail_source"),
+        lit(True).alias("thumbnail_available"),
         current_timestamp().alias("updated_at"),
     )
     thumbnail_rows.createOrReplaceTempView("youtube_thumbnail_upsert")
@@ -193,11 +217,33 @@ def _merge_thumbnail_dataframe(spark: SparkSession, dataframe: DataFrame) -> Non
         WHEN MATCHED THEN UPDATE SET
           t.thumbnail_url = CASE
             WHEN t.thumbnail_url IS NULL OR LENGTH(TRIM(t.thumbnail_url)) = 0
+              OR NOT LOWER(TRIM(t.thumbnail_url)) RLIKE '{SAFE_THUMBNAIL_URL_REGEX}'
               THEN s.thumbnail_url
             ELSE t.thumbnail_url
           END,
+          t.thumbnail_width = CASE
+            WHEN t.thumbnail_url IS NULL OR LENGTH(TRIM(t.thumbnail_url)) = 0
+              OR NOT LOWER(TRIM(t.thumbnail_url)) RLIKE '{SAFE_THUMBNAIL_URL_REGEX}'
+              THEN s.thumbnail_width ELSE t.thumbnail_width END,
+          t.thumbnail_height = CASE
+            WHEN t.thumbnail_url IS NULL OR LENGTH(TRIM(t.thumbnail_url)) = 0
+              OR NOT LOWER(TRIM(t.thumbnail_url)) RLIKE '{SAFE_THUMBNAIL_URL_REGEX}'
+              THEN s.thumbnail_height ELSE t.thumbnail_height END,
+          t.thumbnail_source = CASE
+            WHEN t.thumbnail_url IS NULL OR LENGTH(TRIM(t.thumbnail_url)) = 0
+              OR NOT LOWER(TRIM(t.thumbnail_url)) RLIKE '{SAFE_THUMBNAIL_URL_REGEX}'
+              THEN s.thumbnail_source ELSE t.thumbnail_source END,
+          t.thumbnail_available = CASE
+            WHEN t.thumbnail_url IS NULL OR LENGTH(TRIM(t.thumbnail_url)) = 0
+              OR NOT LOWER(TRIM(t.thumbnail_url)) RLIKE '{SAFE_THUMBNAIL_URL_REGEX}'
+              THEN s.thumbnail_available ELSE t.thumbnail_available END,
+          t.thumbnail_updated_at = CASE
+            WHEN t.thumbnail_url IS NULL OR LENGTH(TRIM(t.thumbnail_url)) = 0
+              OR NOT LOWER(TRIM(t.thumbnail_url)) RLIKE '{SAFE_THUMBNAIL_URL_REGEX}'
+              THEN CAST(s.updated_at AS STRING) ELSE t.thumbnail_updated_at END,
           t.updated_at = CASE
             WHEN t.thumbnail_url IS NULL OR LENGTH(TRIM(t.thumbnail_url)) = 0
+              OR NOT LOWER(TRIM(t.thumbnail_url)) RLIKE '{SAFE_THUMBNAIL_URL_REGEX}'
               THEN CAST(s.updated_at AS STRING)
             ELSE t.updated_at
           END
@@ -210,7 +256,7 @@ def main() -> None:
     warehouse = f"s3a://{bucket}/warehouse"
     limit = max(1, int(_env("YOUTUBE_THUMBNAIL_BACKFILL_LIMIT", "5000")))
 
-    spark = _build_spark("youtube-thumbnail-backfill", warehouse)
+    spark = _build_spark("youtube-thumbnail-url-backfill", warehouse)
     spark.sparkContext.setLogLevel("WARN")
     try:
         _ensure_columns(spark)
@@ -219,7 +265,7 @@ def main() -> None:
         if selected_count:
             _merge_thumbnail_dataframe(spark, candidates)
         print(
-            "YouTube thumbnail backfill: "
+            "YouTube thumbnail URL backfill: "
             f"selected={selected_count}, updated={selected_count}"
         )
     finally:

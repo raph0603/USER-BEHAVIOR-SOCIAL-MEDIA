@@ -7,7 +7,7 @@ import math
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 from .collection import (
     OperationResult,
@@ -223,6 +223,12 @@ class TranscriptPayload:
     requested_language: str | None = None
     requested_language_code: str | None = None
     content_version: str = ""
+    model: str | None = None
+    fallback_reason: str | None = None
+    prompt_version: str | None = None
+    generated_by_model: bool = False
+    warnings: tuple[str, ...] = ()
+    generation_type_override: str | None = None
 
     def __post_init__(self) -> None:
         requested_code = _normalize_language_code(self.requested_language_code)
@@ -255,6 +261,8 @@ class TranscriptPayload:
 
     @property
     def generation_type(self) -> str | None:
+        if self.generation_type_override:
+            return self.generation_type_override
         if self.is_generated is None:
             return None
         return "automatic" if self.is_generated else "manual"
@@ -272,6 +280,199 @@ class _TrackChoice:
     track: Any
     strategy: str
     is_fallback: bool
+
+
+@dataclass(frozen=True)
+class TranscriptRequest:
+    """Provider-neutral request and bounded fallback context."""
+
+    video_id: str
+    requested_language_code: str = "en"
+    attempt_count: int = 1
+    max_primary_attempts: int = 1
+    duration_seconds: float | None = None
+    video_availability: str | None = None
+    source_content_version: str | None = None
+
+    @property
+    def youtube_url(self) -> str:
+        return f"https://www.youtube.com/watch?v={self.video_id}"
+
+
+class TranscriptProvider(Protocol):
+    """Minimal boundary implemented by transcript sources and test fakes."""
+
+    name: str
+
+    def fetch(self, request: TranscriptRequest) -> OperationResult[TranscriptPayload]: ...
+
+
+class YouTubeTranscriptProvider:
+    """Adapter retaining ``youtube-transcript-api`` as the primary source."""
+
+    name = TRANSCRIPT_SOURCE
+
+    def __init__(
+        self,
+        fetcher: Callable[..., OperationResult[TranscriptPayload]] | None = None,
+    ) -> None:
+        self._fetcher = fetcher or fetch_transcript
+
+    def fetch(self, request: TranscriptRequest) -> OperationResult[TranscriptPayload]:
+        return self._fetcher(
+            request.video_id,
+            preferred_languages=[request.requested_language_code],
+            require_preferred_language=True,
+            attempt_count=request.attempt_count,
+        )
+
+
+@dataclass(frozen=True)
+class TranscriptChainResult:
+    """Final result plus independent evidence from each attempted provider."""
+
+    final_result: OperationResult[TranscriptPayload]
+    primary_result: OperationResult[TranscriptPayload]
+    fallback_result: OperationResult[TranscriptPayload] | None = None
+    fallback_reason: str | None = None
+
+    @property
+    def used_fallback(self) -> bool:
+        return self.fallback_result is not None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "final_result": self.final_result.to_dict(),
+            "primary_result": self.primary_result.to_dict(),
+            "fallback_result": (
+                self.fallback_result.to_dict() if self.fallback_result else None
+            ),
+            "fallback_reason": self.fallback_reason,
+        }
+
+
+_PUBLIC_VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_FALLBACK_IMMEDIATE_CODES = frozenset(
+    {
+        "no_transcript_found",
+        "transcripts_disabled",
+        "preferred_language_not_available",
+        "ip_blocked",
+        "request_blocked",
+    }
+)
+_FALLBACK_NEVER_CODES = frozenset(
+    {
+        "dependency_missing",
+        "invalid_video_id",
+        "missing_video_id",
+        "video_deleted",
+        "video_private",
+        "video_unavailable",
+        "video_unplayable",
+        "age_restricted",
+    }
+)
+
+
+def fallback_reason_for_primary(
+    result: OperationResult[TranscriptPayload],
+    request: TranscriptRequest,
+    *,
+    primary_circuit_open: bool = False,
+) -> str | None:
+    """Return a stable fallback reason only after the primary retry policy allows it."""
+
+    if not _PUBLIC_VIDEO_ID.fullmatch(str(request.video_id or "").strip()):
+        return None
+    availability = str(request.video_availability or "").strip().lower()
+    if availability and availability not in {"public", "available"}:
+        return None
+    code = str(result.error_code or "").strip().lower()
+    if code in _FALLBACK_NEVER_CODES:
+        return None
+    if primary_circuit_open:
+        return "primary_circuit_open"
+    if code in _FALLBACK_IMMEDIATE_CODES:
+        return code
+    if result.status in {STATUS_FAILED, STATUS_RATE_LIMITED} and (
+        request.attempt_count >= max(1, request.max_primary_attempts)
+    ):
+        return code or "primary_retry_exhausted"
+    return None
+
+
+class TranscriptProviderChain:
+    """Deterministic primary/fallback orchestration with no hidden retries."""
+
+    def __init__(
+        self,
+        primary: TranscriptProvider,
+        fallback: TranscriptProvider | None,
+        *,
+        fallback_enabled: bool,
+    ) -> None:
+        self.primary = primary
+        self.fallback = fallback
+        self.fallback_enabled = fallback_enabled
+
+    def collect(
+        self,
+        request: TranscriptRequest,
+        *,
+        primary_circuit_open: bool = False,
+    ) -> TranscriptChainResult:
+        if primary_circuit_open:
+            now = utc_now()
+            primary = OperationResult.rate_limited(
+                error_code="ip_blocked",
+                error_message="The primary transcript circuit breaker is open",
+                attempt_count=0,
+                started_at=now,
+                completed_at=now,
+            )
+        else:
+            primary = self.primary.fetch(request)
+
+        if primary.payload and primary.payload.text.strip():
+            return TranscriptChainResult(primary, primary)
+
+        reason = fallback_reason_for_primary(
+            primary,
+            request,
+            primary_circuit_open=primary_circuit_open,
+        )
+        if not reason or not self.fallback_enabled or self.fallback is None:
+            return TranscriptChainResult(primary, primary, fallback_reason=reason)
+
+        readiness = getattr(self.fallback, "readiness", None)
+        if callable(readiness):
+            ready, skip_reason = readiness(request)
+            if not ready:
+                if skip_reason in {
+                    "gemini_fallback_disabled",
+                    "gemini_api_key_missing",
+                }:
+                    return TranscriptChainResult(primary, primary, fallback_reason=reason)
+                skipped = self.fallback.fetch(request)
+                return TranscriptChainResult(
+                    skipped,
+                    primary,
+                    fallback_result=skipped,
+                    fallback_reason=reason,
+                )
+
+        fallback = self.fallback.fetch(request)
+        if fallback.payload is not None:
+            payload = fallback.payload
+            if not payload.fallback_reason:
+                object.__setattr__(payload, "fallback_reason", reason)
+        return TranscriptChainResult(
+            fallback,
+            primary,
+            fallback_result=fallback,
+            fallback_reason=reason,
+        )
 
 
 def _snake_case(value: str) -> str:

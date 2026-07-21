@@ -127,6 +127,11 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.contents (
   clean_text STRING,
   text_for_model STRING,
   thumbnail_url STRING,
+  thumbnail_width BIGINT,
+  thumbnail_height BIGINT,
+  thumbnail_source STRING,
+  thumbnail_available BOOLEAN,
+  thumbnail_updated_at STRING,
   event_id STRING,
   observation_id STRING,
   observed_at TIMESTAMP,
@@ -294,6 +299,18 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.transcripts (
   transcript_source STRING,
   provider STRING,
   selection_strategy STRING,
+  model STRING,
+  fallback_reason STRING,
+  prompt_version STRING,
+  generated_by_model BOOLEAN,
+  source_content_version STRING,
+  primary_attempt_count BIGINT,
+  fallback_attempt_count BIGINT,
+  primary_last_attempt_at TIMESTAMP,
+  fallback_last_attempt_at TIMESTAMP,
+  primary_result_json STRING,
+  fallback_result_json STRING,
+  warnings_json STRING,
   error_code STRING,
   error_message STRING,
   attempt_count BIGINT,
@@ -447,6 +464,11 @@ CONTENT_COLUMNS = [
     "clean_text",
     "text_for_model",
     "thumbnail_url",
+    "thumbnail_width",
+    "thumbnail_height",
+    "thumbnail_source",
+    "thumbnail_available",
+    "thumbnail_updated_at",
     *PROVENANCE_COLUMNS,
 ]
 
@@ -537,6 +559,18 @@ TRANSCRIPT_COLUMNS = [
     "transcript_source",
     "provider",
     "selection_strategy",
+    "model",
+    "fallback_reason",
+    "prompt_version",
+    "generated_by_model",
+    "source_content_version",
+    "primary_attempt_count",
+    "fallback_attempt_count",
+    "primary_last_attempt_at",
+    "fallback_last_attempt_at",
+    "primary_result_json",
+    "fallback_result_json",
+    "warnings_json",
     "error_code",
     "error_message",
     "attempt_count",
@@ -549,6 +583,20 @@ TRANSCRIPT_COLUMNS = [
     "updated_at",
     "event_date",
 ]
+TRANSCRIPT_PROVENANCE_COLUMN_TYPES = {
+    "model": "STRING",
+    "fallback_reason": "STRING",
+    "prompt_version": "STRING",
+    "generated_by_model": "BOOLEAN",
+    "source_content_version": "STRING",
+    "primary_attempt_count": "BIGINT",
+    "fallback_attempt_count": "BIGINT",
+    "primary_last_attempt_at": "TIMESTAMP",
+    "fallback_last_attempt_at": "TIMESTAMP",
+    "primary_result_json": "STRING",
+    "fallback_result_json": "STRING",
+    "warnings_json": "STRING",
+}
 
 CONTENT_STATS_COLUMNS = [
     "content_id",
@@ -632,6 +680,11 @@ OPTIONAL_EVENT_COLUMNS = {
     "clean_text": "STRING",
     "text_for_model": "STRING",
     "thumbnail_url": "STRING",
+    "thumbnail_width": "BIGINT",
+    "thumbnail_height": "BIGINT",
+    "thumbnail_source": "STRING",
+    "thumbnail_available": "BOOLEAN",
+    "thumbnail_updated_at": "STRING",
     "score": "BIGINT",
     "like_count": "BIGINT",
     "view_count": "BIGINT",
@@ -693,6 +746,18 @@ OPTIONAL_EVENT_COLUMNS = {
     "transcript_provider": "STRING",
     "transcript_source": "STRING",
     "transcript_selection_strategy": "STRING",
+    "transcript_model": "STRING",
+    "transcript_fallback_reason": "STRING",
+    "transcript_prompt_version": "STRING",
+    "transcript_generated_by_model": "BOOLEAN",
+    "transcript_source_content_version": "STRING",
+    "transcript_primary_attempt_count": "INT",
+    "transcript_fallback_attempt_count": "INT",
+    "transcript_primary_last_attempt_at": "STRING",
+    "transcript_fallback_last_attempt_at": "STRING",
+    "transcript_primary_result_json": "STRING",
+    "transcript_fallback_result_json": "STRING",
+    "transcript_warnings_json": "STRING",
     "transcript_segment_count": "BIGINT",
     "transcript_available_languages": "ARRAY<STRING>",
     "transcript_available_languages_json": "STRING",
@@ -915,6 +980,11 @@ def normalize_events(events: DataFrame) -> DataFrame:
             ),
         )
         .withColumn("content_thumbnail_url", thumbnail_url)
+        .withColumn("content_thumbnail_width", col("thumbnail_width"))
+        .withColumn("content_thumbnail_height", col("thumbnail_height"))
+        .withColumn("content_thumbnail_source", col("thumbnail_source"))
+        .withColumn("content_thumbnail_available", col("thumbnail_available"))
+        .withColumn("content_thumbnail_updated_at", col("thumbnail_updated_at"))
         .withColumn("platform_content_id", root_platform_id)
         .withColumn("derived_subreddit", derived_subreddit)
         .withColumn("event_content_id", event_content_id)
@@ -1011,6 +1081,15 @@ def build_contents(events: DataFrame) -> DataFrame:
             first("content_clean_text", ignorenulls=True).alias("clean_text"),
             first("content_text_for_model", ignorenulls=True).alias("text_for_model"),
             first("content_thumbnail_url", ignorenulls=True).alias("thumbnail_url"),
+            first("content_thumbnail_width", ignorenulls=True).alias("thumbnail_width"),
+            first("content_thumbnail_height", ignorenulls=True).alias("thumbnail_height"),
+            first("content_thumbnail_source", ignorenulls=True).alias("thumbnail_source"),
+            first("content_thumbnail_available", ignorenulls=True).alias(
+                "thumbnail_available"
+            ),
+            first("content_thumbnail_updated_at", ignorenulls=True).alias(
+                "thumbnail_updated_at"
+            ),
             *(
                 first(column, ignorenulls=True).alias(column)
                 for column in PROVENANCE_COLUMNS
@@ -1187,6 +1266,26 @@ def build_transcripts(events: DataFrame) -> DataFrame:
                 lit("youtube_transcript_api"),
             ).alias("provider"),
             col("transcript_selection_strategy").alias("selection_strategy"),
+            col("transcript_model").alias("model"),
+            col("transcript_fallback_reason").alias("fallback_reason"),
+            col("transcript_prompt_version").alias("prompt_version"),
+            col("transcript_generated_by_model").alias("generated_by_model"),
+            col("transcript_source_content_version").alias("source_content_version"),
+            col("transcript_primary_attempt_count")
+            .cast("bigint")
+            .alias("primary_attempt_count"),
+            col("transcript_fallback_attempt_count")
+            .cast("bigint")
+            .alias("fallback_attempt_count"),
+            to_timestamp(col("transcript_primary_last_attempt_at")).alias(
+                "primary_last_attempt_at"
+            ),
+            to_timestamp(col("transcript_fallback_last_attempt_at")).alias(
+                "fallback_last_attempt_at"
+            ),
+            col("transcript_primary_result_json").alias("primary_result_json"),
+            col("transcript_fallback_result_json").alias("fallback_result_json"),
+            col("transcript_warnings_json").alias("warnings_json"),
             col("transcript_error_code").alias("error_code"),
             col("transcript_error_message").alias("error_message"),
             coalesce(col("transcript_attempt_count"), col("attempt_count"))
@@ -1370,6 +1469,11 @@ def _create_tables(spark: SparkSession) -> None:
             "clean_text": "STRING",
             "text_for_model": "STRING",
             "thumbnail_url": "STRING",
+            "thumbnail_width": "BIGINT",
+            "thumbnail_height": "BIGINT",
+            "thumbnail_source": "STRING",
+            "thumbnail_available": "BOOLEAN",
+            "thumbnail_updated_at": "STRING",
             **PROVENANCE_COLUMN_TYPES,
         },
     )
@@ -1450,6 +1554,7 @@ def _create_tables(spark: SparkSession) -> None:
             "transcript_source": "STRING",
             "provider": "STRING",
             "selection_strategy": "STRING",
+            **TRANSCRIPT_PROVENANCE_COLUMN_TYPES,
             "error_code": "STRING",
             "error_message": "STRING",
             "attempt_count": "BIGINT",

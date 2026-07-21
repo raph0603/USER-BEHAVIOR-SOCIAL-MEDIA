@@ -65,6 +65,38 @@ class ContentAnalyticsContractTests(unittest.TestCase):
                 self.assertIn(column, ca.SNAPSHOT_COLUMNS)
                 self.assertIn(column, ca.CREATE_SNAPSHOTS_SQL)
 
+    def test_silver_transcripts_preserve_fallback_provenance(self):
+        for column in (
+            "model",
+            "fallback_reason",
+            "prompt_version",
+            "generated_by_model",
+            "source_content_version",
+            "primary_attempt_count",
+            "fallback_attempt_count",
+            "primary_result_json",
+            "fallback_result_json",
+            "warnings_json",
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, ca.TRANSCRIPT_COLUMNS)
+                self.assertIn(column, ca.CREATE_TRANSCRIPTS_SQL)
+                self.assertIn(column, ca.TRANSCRIPT_PROVENANCE_COLUMN_TYPES)
+
+        self.assertIn("provider", ca.TRANSCRIPT_COLUMNS)
+        self.assertIn("provider", ca.CREATE_TRANSCRIPTS_SQL)
+
+        for source_column in (
+            "transcript_model",
+            "transcript_fallback_reason",
+            "transcript_prompt_version",
+            "transcript_generated_by_model",
+            "transcript_primary_attempt_count",
+            "transcript_fallback_attempt_count",
+        ):
+            with self.subTest(source_column=source_column):
+                self.assertIn(source_column, ca.OPTIONAL_EVENT_COLUMNS)
+
     def test_gold_contracts(self):
         for column in (
             "interaction_count",

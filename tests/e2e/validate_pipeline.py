@@ -12,8 +12,8 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col
 
 
-EXPECTED_EVENT_COUNT = 14
-EXPECTED_CURRENT_COUNT = 6
+EXPECTED_EVENT_COUNT = 15
+EXPECTED_CURRENT_COUNT = 7
 EXPECTED_SNAPSHOT_COUNT = 6
 
 
@@ -150,8 +150,49 @@ def _validate_analytics_and_ml(spark: SparkSession) -> dict[str, Any]:
         ).collect()
     }
     _require(
-        lifecycle == {("video-en", "en"): "available", ("video-vi", "vi"): "unavailable"},
+        lifecycle
+        == {
+            ("video-en", "en"): "available",
+            ("video-vi", "vi"): "available",
+            ("video-private", "en"): "unavailable",
+        },
         "transcript language or lifecycle state leaked between videos",
+    )
+    transcript_provenance = {
+        str(row["video_id"]): row.asDict(recursive=True)
+        for row in transcripts.select(
+            "video_id",
+            "provider",
+            "generation_type",
+            "model",
+            "fallback_reason",
+            "generated_by_model",
+            "primary_attempt_count",
+            "fallback_attempt_count",
+        ).collect()
+    }
+    _require(
+        transcript_provenance["video-en"]["provider"] == "youtube_transcript_api"
+        and transcript_provenance["video-en"]["generation_type"] == "manual"
+        and transcript_provenance["video-en"]["generated_by_model"] is not True,
+        "primary transcript provenance changed",
+    )
+    _require(
+        transcript_provenance["video-vi"]["provider"] == "gemini"
+        and transcript_provenance["video-vi"]["generation_type"] == "model_generated"
+        and transcript_provenance["video-vi"]["model"] == "gemini-3.5-flash"
+        and transcript_provenance["video-vi"]["fallback_reason"]
+        == "no_transcript_found"
+        and transcript_provenance["video-vi"]["generated_by_model"] is True
+        and transcript_provenance["video-vi"]["primary_attempt_count"] == 1
+        and transcript_provenance["video-vi"]["fallback_attempt_count"] == 1,
+        "Gemini fallback provenance is incomplete",
+    )
+    _require(
+        transcript_provenance["video-private"]["provider"]
+        == "youtube_transcript_api"
+        and transcript_provenance["video-private"]["fallback_attempt_count"] == 0,
+        "ineligible private video unexpectedly used fallback",
     )
 
     reddit_root = hashlib.sha256(b"pipeline-e2e:content:reddit-post-1").hexdigest()
@@ -174,8 +215,8 @@ def _validate_analytics_and_ml(spark: SparkSession) -> dict[str, Any]:
         "X conversation relation is broken",
     )
 
-    _require(_count(contents) == 4, "entity-level content materialization changed")
-    _require(_count(stats) == 4, "content analytics materialization changed")
+    _require(_count(contents) == 5, "entity-level content materialization changed")
+    _require(_count(stats) == 5, "content analytics materialization changed")
     youtube_contents = contents.filter(col("source") == "youtube")
     _require(
         _count(

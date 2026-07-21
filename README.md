@@ -12,6 +12,7 @@ Architecture and operations:
 - [Collector behavior](docs/COLLECTORS.md)
 - [Lakehouse data model](docs/data-model.md)
 - [Metadata and caption troubleshooting](docs/TROUBLESHOOTING.md)
+- [YouTube thumbnail URLs and transcript fallback](docs/YOUTUBE_MEDIA_REFERENCES.md)
 
 ## Privacy gateway
 
@@ -381,10 +382,11 @@ Reddit score remains `score` and is not mapped to likes. Independent
 `storage_status` values explain why an enrichment is missing. Source
 publication time remains separate from collection and retry timestamps.
 Existing Bronze and Silver tables add missing nullable columns before a MERGE.
-YouTube video rows include a low-resolution `thumbnail_url` when available.
-For older rows, the pipeline derives the public
+YouTube video rows include only a validated HTTPS `thumbnail_url` reference,
+plus optional dimensions and provenance. The pipeline never downloads or stores
+thumbnail image bytes. For older rows, the URL backfill derives the public
 `https://img.youtube.com/vi/<video_id>/default.jpg` URL from the existing video
-id, so thumbnail backfill does not consume YouTube Data API quota.
+id without an HTTP request or YouTube Data API quota.
 
 ### Balanced dataset
 
@@ -463,7 +465,7 @@ docker compose exec -T spark-master /opt/spark/bin/spark-submit \
   /opt/spark/jobs/batch/youtube_transcripts.py
 ```
 
-To backfill missing low-resolution thumbnails without YouTube API quota:
+To backfill missing or unsafe thumbnail URL strings without YouTube API quota:
 
 ```bash
 docker compose exec -T spark-master /opt/spark/bin/spark-submit \
@@ -475,8 +477,8 @@ docker compose exec -T spark-master /opt/spark/bin/spark-submit \
   /opt/spark/jobs/batch/youtube_thumbnail_backfill.py
 ```
 
-Both online Airflow DAGs materialize or backfill captions and low-resolution
-thumbnail URLs before refreshing content analytics after
+Both online Airflow DAGs materialize transcripts and backfill validated
+thumbnail URL references before refreshing content analytics after
 `lakehouse.silver.events` has been updated. The
 Streamlit dashboard exposes the derived tables in `Content Explorer`, with
 Reddit, X, YouTube, and Users views. If an analytical table has not been

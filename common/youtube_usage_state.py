@@ -242,6 +242,9 @@ class YouTubeUsageStateMixin:
         status: str | None = None,
         error_code: str | None = None,
         producer_run_id: str | None = None,
+        video_minutes: float = 0.0,
+        daily_video_minutes_budget: float | None = None,
+        remaining_video_minutes: float | None = None,
     ) -> None:
         policy = QuotaPolicy.from_env()
         request_total = max(0, int(request_count))
@@ -281,11 +284,12 @@ class YouTubeUsageStateMixin:
               reserve_remaining_units, priority, cache_hit_count,
               cache_miss_count, retry_count, latency_ms, queue_depth,
               oldest_queue_age_seconds, circuit_open, status, error_code,
-              producer_run_id
+              producer_run_id, video_minutes, daily_video_minutes_budget,
+              remaining_video_minutes
             ) VALUES (
               ?, ?, ?, ?, ?, ?, ?, ?, ?,
               ?, ?, ?, ?, ?, ?, ?, ?, ?,
-              ?, ?, ?, ?, ?, ?, ?, ?, ?
+              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -320,6 +324,9 @@ class YouTubeUsageStateMixin:
                 normalized_status,
                 error_code,
                 producer_run_id or os.getenv("PIPELINE_RUN_ID") or "standalone",
+                max(0.0, float(video_minutes)),
+                daily_video_minutes_budget,
+                remaining_video_minutes,
             ),
         )
         self._commit()

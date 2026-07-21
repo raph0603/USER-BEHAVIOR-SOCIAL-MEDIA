@@ -8,6 +8,8 @@ from typing import Any
 
 import pandas as pd  # type: ignore[import-untyped]
 
+from common.youtube_thumbnails import safe_youtube_thumbnail_url
+
 
 TRANSCRIPT_LIFECYCLE_PRESENTATION = {
     "pending": ("info", "Transcript collection is pending for this video."),
@@ -94,6 +96,11 @@ TRANSCRIPT_CARD_COLUMNS = (
     "generation_type",
     "is_translated",
     "provider",
+    "model",
+    "fallback_reason",
+    "prompt_version",
+    "generated_by_model",
+    "selection_strategy",
     "attempt_count",
     "last_attempt_at",
     "next_attempt_at",
@@ -223,6 +230,35 @@ def transcript_status_presentation(row: Any) -> tuple[str, str, str]:
     if has_value(error_code) and status != "available":
         message = f"{message} Error code: {str(error_code).strip()}."
     return status, level, message
+
+
+def transcript_provenance_label(row: Any) -> str:
+    """Return an explicit user-facing origin without implying official captions."""
+
+    status = transcript_lifecycle_status(row)
+    if status != "available":
+        return {
+            "pending": "En attente",
+            "retryable_error": "Erreur réessayable",
+            "rate_limited": "Erreur réessayable",
+            "blocked": "Erreur réessayable",
+        }.get(status, "Indisponible")
+    provider = str(
+        _row_value(row, "latest_transcript_provider", "provider") or ""
+    ).strip().lower()
+    if provider == "gemini":
+        return "Transcription générée depuis la vidéo avec Gemini"
+    translated = availability_flag(
+        _row_value(row, "latest_transcript_is_translated", "is_translated")
+    )
+    generation_type = str(
+        _row_value(row, "latest_transcript_generation_type", "generation_type") or ""
+    ).strip().lower()
+    if translated:
+        return "Sous-titres YouTube traduits"
+    if generation_type == "automatic":
+        return "Sous-titres YouTube automatiques"
+    return "Sous-titres YouTube manuels"
 
 
 def latest_rows_by_content(
@@ -413,7 +449,9 @@ def youtube_data_completeness(row: Any) -> tuple[int, int, dict[str, bool]]:
         fallback=(has_value(comments_status) and str(comments_status).strip().lower() == "success"),
     )
     checks = {
-        "thumbnail": has_value(_row_value(row, "thumbnail_url")),
+        "thumbnail": bool(
+            safe_youtube_thumbnail_url(_row_value(row, "thumbnail_url"))
+        ),
         "metadata": metadata_available,
         "transcript": transcript_available,
         "views": metric_is_available(

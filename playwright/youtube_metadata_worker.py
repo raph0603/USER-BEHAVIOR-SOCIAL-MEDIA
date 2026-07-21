@@ -14,6 +14,10 @@ from typing import Any
 import yt_dlp
 
 from common.transcripts import preferred_transcript_language_code
+from common.youtube_thumbnails import (
+    select_thumbnail_reference,
+    thumbnail_url_only_metadata,
+)
 from common.youtube_pipeline import (
     finalize_worker_summary,
     isoformat,
@@ -78,6 +82,7 @@ def normalize_yt_dlp_metadata(info: dict[str, Any]) -> dict[str, Any]:
     )
     normalized = {field: info.get(field) for field in fields}
     normalized["video_id"] = normalized.pop("id", None)
+    normalized["thumbnails"] = thumbnail_url_only_metadata(info).get("thumbnails")
     return normalized
 
 
@@ -261,7 +266,14 @@ def main() -> None:
                 request_started = time.monotonic()
                 try:
                     raw, metadata = futures[video_id].result()
+                    raw = thumbnail_url_only_metadata(raw)
                     request_latency_ms = (time.monotonic() - request_started) * 1000
+                    thumbnail = select_thumbnail_reference(
+                        metadata.get("thumbnails"),
+                        video_id=video_id,
+                        updated_at=observed_at,
+                        source="yt-dlp",
+                    )
                     output_dir.mkdir(parents=True, exist_ok=True)
                     (output_dir / f"{video_id}-{int(observed_at.timestamp())}.json").write_text(
                         json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str),
@@ -301,9 +313,7 @@ def main() -> None:
                             published_at=row.get("published_at"),
                             language=metadata.get("language"),
                             duration_seconds=metadata.get("duration"),
-                            thumbnail_url=(metadata.get("thumbnails") or [{}])[-1].get("url")
-                            if metadata.get("thumbnails")
-                            else None,
+                            **thumbnail.to_event_fields(),
                             view_count=metadata.get("view_count"),
                             like_count=metadata.get("like_count"),
                             comment_count=metadata.get("comment_count"),
@@ -363,6 +373,9 @@ def main() -> None:
                                 "channel_id": metadata.get("channel_id"),
                                 "published_at": row.get("published_at"),
                                 "language": metadata.get("language"),
+                                "duration_seconds": metadata.get("duration"),
+                                "video_availability": metadata.get("availability"),
+                                "transcript_source_content_version": current_hash,
                                 "collection_status": "pending",
                             }
                             requests = (

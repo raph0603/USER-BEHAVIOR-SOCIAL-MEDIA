@@ -17,6 +17,7 @@ from youtube_presentation import (  # noqa: E402
     freshness_warning,
     provenance_summary,
     transcript_lifecycle_status,
+    transcript_provenance_label,
     transcript_retry_warning,
     transcript_status_presentation,
     youtube_data_completeness,
@@ -24,6 +25,12 @@ from youtube_presentation import (  # noqa: E402
 
 
 class DashboardMetricAvailabilityTests(unittest.TestCase):
+    def test_unsafe_or_missing_thumbnail_is_not_exposed_as_complete(self):
+        for value in (None, "https://example.test/thumbnail.jpg"):
+            with self.subTest(value=value):
+                _, _, checks = youtube_data_completeness({"thumbnail_url": value})
+                self.assertFalse(checks["thumbnail"])
+
     def test_known_zero_is_not_rendered_as_unknown(self):
         self.assertEqual(format_available_metric(0, True), "0")
         self.assertEqual(format_available_metric(0, None), "0")
@@ -68,6 +75,28 @@ class DashboardMetricAvailabilityTests(unittest.TestCase):
 
 
 class DashboardTranscriptLifecycleTests(unittest.TestCase):
+    def test_transcript_provenance_labels_distinguish_gemini_from_youtube(self):
+        self.assertEqual(
+            transcript_provenance_label(
+                {
+                    "transcript_lifecycle_status": "available",
+                    "provider": "gemini",
+                    "generation_type": "model_generated",
+                }
+            ),
+            "Transcription générée depuis la vidéo avec Gemini",
+        )
+        self.assertEqual(
+            transcript_provenance_label(
+                {
+                    "transcript_lifecycle_status": "available",
+                    "provider": "youtube_transcript_api",
+                    "generation_type": "automatic",
+                }
+            ),
+            "Sous-titres YouTube automatiques",
+        )
+
     def test_all_canonical_lifecycle_states_are_preserved(self):
         statuses = (
             "pending",
