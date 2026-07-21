@@ -187,6 +187,24 @@ def build_youtube_transcripts_command() -> str:
     """
 
 
+def build_youtube_transcript_request_backfill_command() -> str:
+    return r"""
+    set -euo pipefail
+    docker exec \
+      -e YOUTUBE_PIPELINE_STATE_DB=/opt/spark/collector-state/youtube-pipeline.sqlite \
+      -e YOUTUBE_TRANSCRIPT_REQUEST_BACKFILL_LIMIT="${YOUTUBE_TRANSCRIPT_REQUEST_BACKFILL_LIMIT:-5000}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS="${YOUTUBE_TRANSCRIPT_BACKFILL_MAX_ATTEMPTS:-5}" \
+      -e YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS="${YOUTUBE_TRANSCRIPT_BACKFILL_RETRY_COOLDOWN_SECONDS:-3600}" \
+      spark-master /opt/spark/bin/spark-submit \
+      --master spark://spark-master:7077 \
+      --driver-memory 512m \
+      --executor-memory 512m \
+      --conf spark.cores.max=2 \
+      --conf spark.executor.cores=1 \
+      /opt/spark/jobs/batch/youtube_transcript_request_backfill.py
+    """
+
+
 def build_youtube_thumbnails_command() -> str:
     return r"""
     set -euo pipefail
@@ -628,6 +646,32 @@ def build_lakehouse_dag(
             ),
         )
 
+        seed_missing_youtube_transcripts = BashOperator(
+            task_id="seed_missing_youtube_transcripts",
+            execution_timeout=timedelta(minutes=30),
+            bash_command=build_youtube_transcript_request_backfill_command(),
+        )
+
+        backfill_missing_youtube_metadata = BashOperator(
+            task_id="backfill_missing_youtube_metadata",
+            execution_timeout=timedelta(minutes=30),
+            bash_command=docker_compose(
+                "run --rm youtube-collector python /app/youtube_transcript_metadata_backfill.py"
+            ),
+        )
+
+        process_missing_youtube_transcripts = BashOperator(
+            task_id="process_missing_youtube_transcripts",
+            trigger_rule=TriggerRule.ALL_DONE,
+            execution_timeout=timedelta(minutes=45),
+            bash_command=docker_compose(
+                "run --rm "
+                "-e YOUTUBE_TRANSCRIPT_BATCH_SIZE="
+                '"${YOUTUBE_TRANSCRIPT_BACKFILL_BATCH_SIZE:-25}" '
+                "youtube-collector python /app/youtube_transcript_worker.py"
+            ),
+        )
+
         run_youtube_comments = BashOperator(
             task_id="process_youtube_comment_requests",
             trigger_rule=TriggerRule.ALL_DONE,
@@ -881,10 +925,19 @@ def build_lakehouse_dag(
             update_balancing_report,
         ] >> stop_realtime_streams
         stop_realtime_streams >> release_pipeline_lock
+        (
+            release_pipeline_lock
+            >> seed_missing_youtube_transcripts
+            >> backfill_missing_youtube_metadata
+            >> process_missing_youtube_transcripts
+        )
         [
             run_youtube_discovery,
             run_youtube_metadata,
             run_youtube_transcripts,
+            seed_missing_youtube_transcripts,
+            backfill_missing_youtube_metadata,
+            process_missing_youtube_transcripts,
             run_youtube_comments,
             run_youtube_channels,
             run_x_collection,
