@@ -53,6 +53,36 @@ def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
         return default
 
 
+def _compact_caption_tracks(value: Any) -> dict[str, list[dict[str, Any]]]:
+    """Keep caption discovery metadata without persisting signed track URLs."""
+
+    if not isinstance(value, dict):
+        return {}
+    compact: dict[str, list[dict[str, Any]]] = {}
+    for language, tracks in value.items():
+        if not isinstance(tracks, list):
+            continue
+        compact[str(language)] = [
+            {
+                key: track.get(key)
+                for key in ("ext", "name")
+                if track.get(key) is not None
+            }
+            for track in tracks
+            if isinstance(track, dict)
+        ]
+    return compact
+
+
+def compact_yt_dlp_event_payload(info: dict[str, Any]) -> dict[str, Any]:
+    """Bound Kafka metadata while retaining the full local diagnostic payload."""
+
+    compact = thumbnail_url_only_metadata(info)
+    for field in ("subtitles", "automatic_captions"):
+        compact[field] = _compact_caption_tracks(info.get(field))
+    return compact
+
+
 def normalize_yt_dlp_metadata(info: dict[str, Any]) -> dict[str, Any]:
     fields = (
         "id",
@@ -83,6 +113,8 @@ def normalize_yt_dlp_metadata(info: dict[str, Any]) -> dict[str, Any]:
     normalized = {field: info.get(field) for field in fields}
     normalized["video_id"] = normalized.pop("id", None)
     normalized["thumbnails"] = thumbnail_url_only_metadata(info).get("thumbnails")
+    for field in ("subtitles", "automatic_captions"):
+        normalized[field] = _compact_caption_tracks(info.get(field))
     return normalized
 
 
@@ -267,6 +299,7 @@ def main() -> None:
                 try:
                     raw, metadata = futures[video_id].result()
                     raw = thumbnail_url_only_metadata(raw)
+                    event_raw = compact_yt_dlp_event_payload(raw)
                     request_latency_ms = (time.monotonic() - request_started) * 1000
                     thumbnail = select_thumbnail_reference(
                         metadata.get("thumbnails"),
@@ -338,7 +371,7 @@ def main() -> None:
                                 default=str,
                             ),
                             raw_source_payload=json.dumps(
-                                raw,
+                                event_raw,
                                 ensure_ascii=False,
                                 sort_keys=True,
                                 default=str,

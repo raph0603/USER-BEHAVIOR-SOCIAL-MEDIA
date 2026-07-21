@@ -95,7 +95,8 @@ def _ingest_requests(state, bootstrap, registry, topic, limit):
                 published_at=event.get("published_at"),
                 request=event,
             )
-        consumer.commit()
+        if events:
+            consumer.commit()
         return len(events)
 
 
