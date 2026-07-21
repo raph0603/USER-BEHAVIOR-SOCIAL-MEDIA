@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.17.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.16.0...v1.17.0) (2026-07-21)
+
+
+### Features
+
+* **youtube:** add transcript model failover ([acea82c](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/acea82cc29e74a5c765457364708286a22f06749))
+* **youtube:** add transcript provider fallback ([43edd6f](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/43edd6f5d11108de2745efb28c2a3f4eeab60bff))
+* **youtube:** add transcript provider fallback ([efe1847](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/efe1847d004fedcec34ad0ad9e9ba4e828dddf7c))
+* **youtube:** schedule transcript gap recovery ([d51af6d](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/d51af6db50b380b7397a0c861359f2da6050cea8))
+
+
+### Bug Fixes
+
+* **analytics:** link gemini transcripts to source videos ([f4a57a5](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/f4a57a528d3c3e398f1410bee1e96567feb0da36))
+* **dashboard:** render thumbnail URL fallback ([63ed5c5](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/63ed5c54b44fcf49dc4b165fb613823137d0964f))
+* **deployment:** pass Gemini config through Airflow ([49c5127](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/49c512734eb819d862e1d9b5c622ed72c0f62b16))
+* **pipeline:** surface recovered transcripts in dashboard ([8343652](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/83436528a04bb9c2eb267fd4342b0cfe07f4590f))
+* **youtube:** surface known comments and metadata ([e5bf9b8](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/e5bf9b85352e198d94aafa54f317eadf2dee5609))
+* **youtube:** unblock transcript backfill workers ([9153adf](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/9153adfb91086b05b852b541377bb0df01d7f026))
+
+
+### Performance Improvements
+
+* **youtube:** prioritize long Gemini transcripts ([26a4b34](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/26a4b345656b7c0d5cba81aaad81785ffdd2163d))
+
 ## [1.16.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.15.0...v1.16.0) (2026-07-20)
 
 
