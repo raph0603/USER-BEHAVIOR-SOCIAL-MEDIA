@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
+import math
 import os
 import time
 from datetime import timedelta
@@ -34,6 +35,9 @@ from youtube_pipeline_events import (
     drain_outbox,
     pipeline_event,
 )
+
+
+_GEMINI_PRIORITY_POOL_LIMIT = 5000
 
 
 def _env(name: str, default: str = "") -> str:
@@ -75,6 +79,72 @@ def _available_language_codes(payload: dict) -> list[str] | None:
         if value:
             codes.append(str(value))
     return sorted(set(codes)) or None
+
+
+def _gemini_candidate_minutes(
+    row: dict[str, Any],
+    *,
+    max_duration_minutes: float,
+) -> float | None:
+    try:
+        request = json.loads(row["request_json"])
+        duration_minutes = float(request.get("duration_seconds")) / 60.0
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    availability = str(request.get("video_availability") or "public").strip().lower()
+    if availability not in {"public", "available"}:
+        return None
+    if (
+        not math.isfinite(duration_minutes)
+        or duration_minutes <= 0
+        or duration_minutes > max(0.0, float(max_duration_minutes))
+    ):
+        return None
+    return duration_minutes
+
+
+def prioritize_due_transcript_requests(
+    rows: list[dict[str, Any]],
+    *,
+    limit: int,
+    max_duration_minutes: float,
+    remaining_video_minutes: float,
+    remaining_request_count: int,
+    primary_circuit_open: bool,
+) -> list[dict[str, Any]]:
+    """Select the longest Gemini-eligible videos that fit the remaining budget."""
+
+    batch_limit = max(1, int(limit))
+    fallback_limit = min(batch_limit, max(0, int(remaining_request_count)))
+    remaining = max(0.0, float(remaining_video_minutes))
+    eligible = []
+    for index, row in enumerate(rows):
+        minutes = _gemini_candidate_minutes(
+            row,
+            max_duration_minutes=max_duration_minutes,
+        )
+        if minutes is not None:
+            eligible.append((index, row, minutes))
+    eligible.sort(key=lambda item: (-item[2], item[0]))
+
+    selected: list[dict[str, Any]] = []
+    selected_indexes: set[int] = set()
+    for index, row, minutes in eligible:
+        if len(selected) >= fallback_limit:
+            break
+        if minutes > remaining + 1e-9:
+            continue
+        selected.append(row)
+        selected_indexes.add(index)
+        remaining -= minutes
+
+    if not primary_circuit_open:
+        for index, row in enumerate(rows):
+            if len(selected) >= batch_limit:
+                break
+            if index not in selected_indexes:
+                selected.append(row)
+    return selected
 
 
 def _ingest_requests(state, bootstrap, registry, topic, limit):
@@ -143,7 +213,40 @@ def main() -> None:
         summary["gemini_video_minutes"] = 0.0
         summary["fallback_reasons"] = {}
         summary["gemini_errors"] = {}
-        due = state.due_transcript_requests(now=now, limit=batch_size)
+        candidate_pool = state.due_transcript_requests(
+            now=now,
+            limit=max(batch_size, _GEMINI_PRIORITY_POOL_LIMIT),
+        )
+        summary["candidate_pool"] = len(candidate_pool)
+        if gemini_config.enabled and not gemini_circuit_open:
+            used_minutes = state.gemini_video_minutes_today(now)
+            remaining_minutes = max(
+                0.0,
+                gemini_config.daily_video_minutes_budget - used_minutes,
+            )
+            used_requests = state.gemini_requests_current_quota_day(now)
+            remaining_requests = max(
+                0,
+                gemini_config.daily_request_budget - used_requests,
+            )
+            due = prioritize_due_transcript_requests(
+                candidate_pool,
+                limit=batch_size,
+                max_duration_minutes=gemini_config.max_duration_minutes,
+                remaining_video_minutes=remaining_minutes,
+                remaining_request_count=remaining_requests,
+                primary_circuit_open=primary_circuit_open,
+            )
+            summary["selection_strategy"] = (
+                "gemini_longest_budget_fit"
+                if primary_circuit_open
+                else "gemini_longest_budget_fit_then_oldest"
+            )
+            summary["gemini_budget_remaining_before_selection"] = remaining_minutes
+            summary["gemini_requests_remaining_before_selection"] = remaining_requests
+        else:
+            due = candidate_pool[:batch_size]
+            summary["selection_strategy"] = "oldest_due"
         summary["due"] = len(due)
         for row in due:
             attempted_at = utc_now()
@@ -160,9 +263,7 @@ def main() -> None:
                 max_primary_attempts=max_attempts,
                 duration_seconds=request.get("duration_seconds"),
                 video_availability=request.get("video_availability"),
-                source_content_version=request.get(
-                    "transcript_source_content_version"
-                ),
+                source_content_version=request.get("transcript_source_content_version"),
             )
             gemini_provider = GeminiTranscriptProvider(
                 gemini_config,
@@ -176,6 +277,7 @@ def main() -> None:
                     )
                 ),
                 used_video_minutes=state.gemini_video_minutes_today,
+                used_requests=state.gemini_requests_current_quota_day,
             )
             chain = TranscriptProviderChain(
                 YouTubeTranscriptProvider(),
@@ -200,9 +302,7 @@ def main() -> None:
             if chain_result.used_fallback:
                 summary["gemini_fallbacks"] += 1
                 reason = chain_result.fallback_reason or "unknown"
-                summary["fallback_reasons"][reason] = (
-                    summary["fallback_reasons"].get(reason, 0) + 1
-                )
+                summary["fallback_reasons"][reason] = summary["fallback_reasons"].get(reason, 0) + 1
             if gemini_provider.last_cache_hit:
                 summary["gemini_cache_hits"] += 1
             payload = result.get("payload") or {}
@@ -348,17 +448,15 @@ def main() -> None:
                 )
                 if fallback_result is not None:
                     fallback_payload = fallback_result.get("payload") or {}
-                    fallback_success = bool(
-                        str(fallback_payload.get("text") or "").strip()
-                    )
+                    fallback_success = bool(str(fallback_payload.get("text") or "").strip())
                     fallback_request_count = (
                         0
                         if gemini_provider.last_cache_hit
                         or int(fallback_result.get("attempt_count") or 0) == 0
-                        else 1
+                        else int(fallback_result.get("attempt_count") or 0)
                     )
                     video_minutes = (
-                        gemini_provider.video_minutes(provider_request)
+                        gemini_provider.video_minutes(provider_request) * fallback_request_count
                         if fallback_request_count
                         else 0.0
                     )
@@ -373,9 +471,7 @@ def main() -> None:
                     used_minutes = state.gemini_video_minutes_today(attempted_at)
                     remaining_minutes = max(
                         0.0,
-                        gemini_config.daily_video_minutes_budget
-                        - used_minutes
-                        - video_minutes,
+                        gemini_config.daily_video_minutes_budget - used_minutes - video_minutes,
                     )
                     summary["gemini_budget_remaining_minutes"] = remaining_minutes
                     state.record_api_usage(
@@ -390,9 +486,7 @@ def main() -> None:
                         priority="low",
                         cache_hit_count=int(gemini_provider.last_cache_hit),
                         cache_miss_count=fallback_request_count,
-                        retry_count=max(
-                            0, int(fallback_result.get("attempt_count") or 0) - 1
-                        ),
+                        retry_count=max(0, int(fallback_result.get("attempt_count") or 0) - 1),
                         latency_ms=request_latency_ms,
                         queue_depth=max(
                             0,
@@ -402,9 +496,7 @@ def main() -> None:
                         status=fallback_result.get("status"),
                         error_code=fallback_result.get("error_code"),
                         video_minutes=video_minutes,
-                        daily_video_minutes_budget=(
-                            gemini_config.daily_video_minutes_budget
-                        ),
+                        daily_video_minutes_budget=(gemini_config.daily_video_minutes_budget),
                         remaining_video_minutes=remaining_minutes,
                     )
                 state.record_transcript_result(
@@ -435,9 +527,7 @@ def main() -> None:
                     generated_by_model=payload.get("generated_by_model"),
                     source_content_version=provider_request.source_content_version,
                     primary_attempt_count=int(primary_result.get("attempt_count") or 0),
-                    fallback_attempt_count=int(
-                        (fallback_result or {}).get("attempt_count") or 0
-                    ),
+                    fallback_attempt_count=int((fallback_result or {}).get("attempt_count") or 0),
                     primary_last_attempt_at=attempted_at,
                     fallback_last_attempt_at=(
                         attempted_at if fallback_result is not None else None
@@ -543,9 +633,7 @@ def main() -> None:
             error_count=summary["failed"],
             retry_count=summary["failed"],
             cache_hit_count=summary["gemini_cache_hits"],
-            cache_miss_count=max(
-                0, summary["gemini_fallbacks"] - summary["gemini_cache_hits"]
-            ),
+            cache_miss_count=max(0, summary["gemini_fallbacks"] - summary["gemini_cache_hits"]),
             latency_ms=(time.monotonic() - run_started) * 1000,
             circuit_open=bool(summary.get("circuit_open")),
             details=completed,

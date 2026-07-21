@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from common.transcripts import TranscriptPayload
@@ -38,6 +38,43 @@ def gemini_payload():
 
 
 class GeminiTranscriptStateTests(unittest.TestCase):
+    def test_usage_follows_the_gemini_pacific_quota_day(self):
+        before_reset = datetime(2026, 7, 21, 6, 59, tzinfo=timezone.utc)
+        after_reset = before_reset + timedelta(minutes=2)
+        with tempfile.TemporaryDirectory() as directory:
+            with YouTubeStateStore(Path(directory) / "state.sqlite") as state:
+                for index, (observed_at, minutes) in enumerate(
+                    ((before_reset, 10.0), (after_reset, 20.0))
+                ):
+                    state.record_api_usage(
+                        endpoint="transcripts.generate_from_youtube_url",
+                        request_count=1,
+                        resource_count=1,
+                        success_count=0,
+                        error_count=1,
+                        quota_bucket="transcript_fallback",
+                        observed_at=observed_at,
+                        provider="gemini",
+                        video_minutes=minutes,
+                    )
+                    state.record_transcript_provider_attempt(
+                        attempt_id=f"attempt-{index}",
+                        video_id=f"video-{index}",
+                        requested_language_code="en",
+                        provider="gemini",
+                        model="gemini-3.5-flash",
+                        attempt_count=1,
+                        attempted_at=observed_at,
+                        latency_ms=1,
+                        status="failed",
+                        error_code="gemini_invalid_response",
+                        fallback_reason="no_transcript_found",
+                        result={"status": "failed"},
+                    )
+
+                self.assertEqual(state.gemini_video_minutes_today(NOW), 20.0)
+                self.assertEqual(state.gemini_requests_current_quota_day(NOW), 1)
+
     def test_cache_usage_and_attempt_replay_are_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             with YouTubeStateStore(Path(directory) / "state.sqlite") as state:

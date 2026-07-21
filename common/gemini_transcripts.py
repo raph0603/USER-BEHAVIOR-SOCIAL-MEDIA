@@ -91,6 +91,7 @@ class GeminiTranscriptConfig:
     timeout_seconds: int = 120
     max_duration_minutes: float = 60.0
     daily_video_minutes_budget: float = 120.0
+    daily_request_budget: int = 20
     cooldown_seconds: int = 3600
 
     @classmethod
@@ -102,12 +103,11 @@ class GeminiTranscriptConfig:
             or "gemini-3.5-flash",
             max_attempts=_env_int("GEMINI_TRANSCRIPT_MAX_ATTEMPTS", 2),
             timeout_seconds=_env_int("GEMINI_TRANSCRIPT_TIMEOUT_SECONDS", 120),
-            max_duration_minutes=_env_float(
-                "GEMINI_TRANSCRIPT_MAX_DURATION_MINUTES", 60.0
-            ),
+            max_duration_minutes=_env_float("GEMINI_TRANSCRIPT_MAX_DURATION_MINUTES", 60.0),
             daily_video_minutes_budget=_env_float(
                 "GEMINI_TRANSCRIPT_DAILY_VIDEO_MINUTES_BUDGET", 120.0
             ),
+            daily_request_budget=_env_int("GEMINI_TRANSCRIPT_DAILY_REQUEST_BUDGET", 20),
             cooldown_seconds=_env_int("GEMINI_TRANSCRIPT_COOLDOWN_SECONDS", 3600),
         )
 
@@ -240,6 +240,7 @@ class GeminiTranscriptProvider:
         cache_get: Callable[[str], TranscriptPayload | None] | None = None,
         cache_put: Callable[[str, TranscriptPayload, float], None] | None = None,
         used_video_minutes: Callable[[datetime], float] | None = None,
+        used_requests: Callable[[datetime], int] | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self.config = config or GeminiTranscriptConfig.from_env()
@@ -247,6 +248,7 @@ class GeminiTranscriptProvider:
         self._cache_get = cache_get or (lambda _key: None)
         self._cache_put = cache_put or (lambda _key, _payload, _minutes: None)
         self._used_video_minutes = used_video_minutes or (lambda _now: 0.0)
+        self._used_requests = used_requests or (lambda _now: 0)
         self._clock = clock
         self.last_cache_hit = False
 
@@ -279,6 +281,8 @@ class GeminiTranscriptProvider:
             > self.config.daily_video_minutes_budget
         ):
             return False, "gemini_budget_exhausted"
+        if self._used_requests(self._clock()) >= self.config.daily_request_budget:
+            return False, "gemini_request_budget_exhausted"
         return True, None
 
     def _payload(self, request: TranscriptRequest, response: Any) -> TranscriptPayload:
@@ -323,6 +327,7 @@ class GeminiTranscriptProvider:
         if not ready:
             factory = {
                 "gemini_budget_exhausted": OperationResult.rate_limited,
+                "gemini_request_budget_exhausted": OperationResult.rate_limited,
                 "gemini_video_not_public": OperationResult.unavailable,
                 "gemini_duration_limit_exceeded": OperationResult.unavailable,
             }.get(reason or "", OperationResult.disabled)
@@ -359,7 +364,29 @@ class GeminiTranscriptProvider:
                     started_at=started_at,
                     completed_at=self._clock(),
                 )
-            for attempt in range(1, self.config.max_attempts + 1):
+            remaining_requests = max(
+                0,
+                self.config.daily_request_budget - self._used_requests(self._clock()),
+            )
+            video_minutes = self.video_minutes(request)
+            remaining_video_minutes = max(
+                0.0,
+                self.config.daily_video_minutes_budget - self._used_video_minutes(self._clock()),
+            )
+            video_attempt_limit = math.floor((remaining_video_minutes + 1e-9) / video_minutes)
+            attempt_limit = min(
+                self.config.max_attempts,
+                remaining_requests,
+                video_attempt_limit,
+            )
+            if attempt_limit <= 0:
+                return OperationResult.rate_limited(
+                    error_code="gemini_request_budget_exhausted",
+                    attempt_count=0,
+                    started_at=started_at,
+                    completed_at=self._clock(),
+                )
+            for attempt in range(1, attempt_limit + 1):
                 try:
                     interaction = client.interactions.create(
                         model=self.config.model,
@@ -399,7 +426,7 @@ class GeminiTranscriptProvider:
                 except Exception as error:
                     last_error = error
                     status, code = _error_code(error)
-                    if attempt < self.config.max_attempts and code in {
+                    if attempt < attempt_limit and code in {
                         "gemini_timeout",
                         "gemini_model_unavailable",
                         "gemini_retryable_error",

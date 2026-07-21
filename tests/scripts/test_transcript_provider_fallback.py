@@ -30,9 +30,7 @@ def payload(source="youtube_transcript_api"):
         source_language="en",
         source_language_code="en",
         source=source,
-        selection_strategy=(
-            "gemini_youtube_url_fallback" if generated else "manual_preferred"
-        ),
+        selection_strategy=("gemini_youtube_url_fallback" if generated else "manual_preferred"),
         text="hello world",
         segments=({"start": 0.0, "end": 1.0, "text": "hello world"},),
         segment_count=1,
@@ -74,9 +72,11 @@ class TranscriptProviderChainTests(unittest.TestCase):
         fallback = FakeProvider(
             "gemini", fallback_result or OperationResult.success(payload("gemini"))
         )
-        return TranscriptProviderChain(
-            primary, fallback, fallback_enabled=enabled
-        ), primary, fallback
+        return (
+            TranscriptProviderChain(primary, fallback, fallback_enabled=enabled),
+            primary,
+            fallback,
+        )
 
     def test_primary_success_never_calls_gemini(self):
         chain, primary, fallback = self.chain(OperationResult.success(payload()))
@@ -97,22 +97,20 @@ class TranscriptProviderChainTests(unittest.TestCase):
                 result = chain.collect(self.request())
                 self.assertTrue(result.used_fallback)
                 self.assertEqual(result.final_result.payload.source, "gemini")
-                self.assertEqual(result.final_result.payload.fallback_reason, primary_result.error_code)
+                self.assertEqual(
+                    result.final_result.payload.fallback_reason, primary_result.error_code
+                )
                 self.assertEqual(fallback.calls, 1)
 
     def test_open_primary_circuit_uses_gemini_without_calling_primary(self):
-        chain, primary, fallback = self.chain(
-            OperationResult.failed(error_code="unused")
-        )
+        chain, primary, fallback = self.chain(OperationResult.failed(error_code="unused"))
         result = chain.collect(self.request(), primary_circuit_open=True)
         self.assertEqual(primary.calls, 0)
         self.assertEqual(fallback.calls, 1)
         self.assertEqual(result.fallback_reason, "primary_circuit_open")
 
     def test_transient_primary_error_waits_for_retry_threshold(self):
-        chain, _, fallback = self.chain(
-            OperationResult.failed(error_code="timeout_error")
-        )
+        chain, _, fallback = self.chain(OperationResult.failed(error_code="timeout_error"))
         result = chain.collect(self.request(attempt_count=2, max_primary_attempts=3))
         self.assertFalse(result.used_fallback)
         self.assertEqual(fallback.calls, 0)
@@ -169,9 +167,7 @@ def response_json():
         {
             "detected_language": "en",
             "text": "hello world",
-            "segments": [
-                {"start_seconds": 0, "end_seconds": 1.25, "text": "hello world"}
-            ],
+            "segments": [{"start_seconds": 0, "end_seconds": 1.25, "text": "hello world"}],
             "covered_duration_seconds": 1.25,
             "warnings": [],
         }
@@ -197,6 +193,7 @@ class GeminiProviderTests(unittest.TestCase):
             "timeout_seconds": 5,
             "max_duration_minutes": 10,
             "daily_video_minutes_budget": 10,
+            "daily_request_budget": 20,
             "cooldown_seconds": 30,
         }
         values.update(changes)
@@ -229,6 +226,55 @@ class GeminiProviderTests(unittest.TestCase):
             self.assertFalse(ready)
             self.assertEqual(reason, expected)
             self.assertEqual(calls, [])
+
+    def test_exhausted_daily_request_budget_does_not_create_client(self):
+        calls = []
+        provider = GeminiTranscriptProvider(
+            self.config(daily_request_budget=20),
+            client_factory=lambda _config: calls.append(True),
+            used_requests=lambda _now: 20,
+            clock=lambda: NOW,
+        )
+
+        ready, reason = provider.readiness(self.request())
+
+        self.assertFalse(ready)
+        self.assertEqual(reason, "gemini_request_budget_exhausted")
+        self.assertEqual(calls, [])
+
+    def test_retries_cannot_cross_remaining_daily_request_budget(self):
+        client = FakeClient([TimeoutError("timed out"), response_json()])
+        provider = GeminiTranscriptProvider(
+            self.config(max_attempts=2, daily_request_budget=20),
+            client_factory=lambda _config: client,
+            used_requests=lambda _now: 19,
+            clock=lambda: NOW,
+        )
+
+        result = provider.fetch(self.request())
+
+        self.assertEqual(result.error_code, "gemini_timeout")
+        self.assertEqual(result.attempt_count, 1)
+        self.assertEqual(len(client.interactions.calls), 1)
+
+    def test_retries_cannot_cross_remaining_video_minutes_budget(self):
+        client = FakeClient([TimeoutError("timed out"), response_json()])
+        provider = GeminiTranscriptProvider(
+            self.config(
+                max_attempts=2,
+                max_duration_minutes=20,
+                daily_video_minutes_budget=30,
+            ),
+            client_factory=lambda _config: client,
+            used_video_minutes=lambda _now: 0,
+            clock=lambda: NOW,
+        )
+
+        result = provider.fetch(self.request(duration_seconds=20 * 60))
+
+        self.assertEqual(result.error_code, "gemini_timeout")
+        self.assertEqual(result.attempt_count, 1)
+        self.assertEqual(len(client.interactions.calls), 1)
 
     def test_timeout_and_invalid_json_are_bounded_retryable_errors(self):
         for response, expected in (

@@ -6,9 +6,10 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from collections.abc import Iterator
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
+from zoneinfo import ZoneInfo
 
 from common.transcripts import (
     TranscriptPayload,
@@ -28,6 +29,22 @@ from common.youtube_pipeline import (
 from common.youtube_request_state import YouTubeRequestStateMixin
 from common.youtube_outbox import YouTubeOutboxMixin, canonical_event_json
 from common.youtube_usage_state import YouTubeUsageStateMixin
+
+
+_GEMINI_QUOTA_TIME_ZONE = ZoneInfo("America/Los_Angeles")
+
+
+def _gemini_quota_window(now: datetime) -> tuple[str, str]:
+    current = parse_datetime(now)
+    if current is None:
+        current = now.replace(tzinfo=timezone.utc)
+    local_now = current.astimezone(_GEMINI_QUOTA_TIME_ZONE)
+    local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    local_end = local_start + timedelta(days=1)
+    return (
+        isoformat(local_start.astimezone(timezone.utc)),
+        isoformat(local_end.astimezone(timezone.utc)),
+    )
 
 
 class YouTubeStateStore(
@@ -304,15 +321,12 @@ class YouTubeStateStore(
         }
         current_lifecycle_columns = {
             row[1]
-            for row in self.connection.execute(
-                "PRAGMA table_info(youtube_transcript_lifecycle)"
-            )
+            for row in self.connection.execute("PRAGMA table_info(youtube_transcript_lifecycle)")
         }
         for column, data_type in lifecycle_columns.items():
             if column not in current_lifecycle_columns:
                 self.connection.execute(
-                    "ALTER TABLE youtube_transcript_lifecycle "
-                    f"ADD COLUMN {column} {data_type}"
+                    f"ALTER TABLE youtube_transcript_lifecycle ADD COLUMN {column} {data_type}"
                 )
         self.connection.execute(
             """
@@ -748,9 +762,7 @@ class YouTubeStateStore(
                 segment_count=int(payload.get("segment_count") or 0),
                 word_count=int(payload.get("word_count") or 0),
                 available_languages=tuple(payload.get("available_languages") or ()),
-                covered_duration_seconds=float(
-                    payload.get("covered_duration_seconds") or 0
-                ),
+                covered_duration_seconds=float(payload.get("covered_duration_seconds") or 0),
                 collected_at=collected_at,
                 requested_language=payload.get("requested_language"),
                 requested_language_code=payload.get("requested_language_code"),
@@ -809,15 +821,32 @@ class YouTubeStateStore(
         self._commit()
 
     def gemini_video_minutes_today(self, now: datetime) -> float:
+        window_start, window_end = _gemini_quota_window(now)
         row = self.connection.execute(
             """
             SELECT COALESCE(SUM(video_minutes), 0)
             FROM youtube_api_usage
-            WHERE usage_date = ? AND provider = 'gemini'
+            WHERE provider = 'gemini'
+              AND observed_at >= ?
+              AND observed_at < ?
             """,
-            (now.date().isoformat(),),
+            (window_start, window_end),
         ).fetchone()
         return float(row[0] or 0.0)
+
+    def gemini_requests_current_quota_day(self, now: datetime) -> int:
+        window_start, window_end = _gemini_quota_window(now)
+        row = self.connection.execute(
+            """
+            SELECT COALESCE(SUM(attempt_count), 0)
+            FROM youtube_transcript_provider_attempts
+            WHERE provider = 'gemini'
+              AND attempted_at >= ?
+              AND attempted_at < ?
+            """,
+            (window_start, window_end),
+        ).fetchone()
+        return int(row[0] or 0)
 
     def record_transcript_provider_attempt(
         self,
