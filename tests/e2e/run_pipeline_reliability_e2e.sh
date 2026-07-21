@@ -146,7 +146,7 @@ echo "Restarting Bronze at the same checkpoint"
 run_bronze false 2>&1 | tee "$artifacts/bronze-restart.log"
 spark_submit /opt/spark/e2e/validate_pipeline.py --phase after-bronze \
   | tee "$artifacts/validate-after-bronze.log"
-require_topic_offset "$handoff_topic" 14
+require_topic_offset "$handoff_topic" 15
 
 echo "Applying the durable handoff to Silver twice"
 run_silver 2>&1 | tee "$artifacts/silver-first-apply.log"
@@ -184,7 +184,7 @@ spark_submit /opt/spark/e2e/validate_pipeline.py --phase analytics \
 echo "Replaying the complete Kafka fixture"
 produce_fixture
 run_bronze false 2>&1 | tee "$artifacts/bronze-replay.log"
-require_topic_offset "$handoff_topic" 28
+require_topic_offset "$handoff_topic" 30
 run_silver 2>&1 | tee "$artifacts/silver-replay.log"
 spark_submit /opt/spark/jobs/maintenance/reconcile_bronze_silver.py --mode check \
   | tee "$artifacts/reconciliation-after-replay.log"

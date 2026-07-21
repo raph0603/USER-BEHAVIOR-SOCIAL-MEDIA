@@ -184,6 +184,17 @@ class YouTubeRequestStateMixin:
         error_message: str | None = None,
         recovered_at: datetime | None = None,
         content_version: str | None = None,
+        model: str | None = None,
+        fallback_reason: str | None = None,
+        prompt_version: str | None = None,
+        generated_by_model: bool | None = None,
+        source_content_version: str | None = None,
+        primary_attempt_count: int = 0,
+        fallback_attempt_count: int = 0,
+        primary_last_attempt_at: datetime | None = None,
+        fallback_last_attempt_at: datetime | None = None,
+        primary_result: dict[str, Any] | None = None,
+        fallback_result: dict[str, Any] | None = None,
     ) -> None:
         requested_code = normalize_transcript_language_code(requested_language_code)
         legacy_status = legacy_transcript_status(lifecycle_status)
@@ -207,6 +218,17 @@ class YouTubeRequestStateMixin:
               is_translated = ?,
               provider = ?,
               selection_strategy = ?,
+              model = ?,
+              fallback_reason = ?,
+              prompt_version = ?,
+              generated_by_model = ?,
+              source_content_version = ?,
+              primary_attempt_count = MAX(primary_attempt_count, ?),
+              fallback_attempt_count = MAX(fallback_attempt_count, ?),
+              primary_last_attempt_at = COALESCE(?, primary_last_attempt_at),
+              fallback_last_attempt_at = COALESCE(?, fallback_last_attempt_at),
+              primary_result_json = COALESCE(?, primary_result_json),
+              fallback_result_json = COALESCE(?, fallback_result_json),
               attempt_count = MAX(attempt_count, ?),
               last_attempt_at = ?,
               next_attempt_at = ?,
@@ -230,6 +252,25 @@ class YouTubeRequestStateMixin:
                 None if is_translated is None else int(is_translated),
                 provider,
                 selection_strategy,
+                model,
+                fallback_reason,
+                prompt_version,
+                None if generated_by_model is None else int(generated_by_model),
+                source_content_version,
+                max(0, int(primary_attempt_count)),
+                max(0, int(fallback_attempt_count)),
+                isoformat(primary_last_attempt_at),
+                isoformat(fallback_last_attempt_at),
+                (
+                    json.dumps(primary_result, ensure_ascii=False, sort_keys=True)
+                    if primary_result is not None
+                    else None
+                ),
+                (
+                    json.dumps(fallback_result, ensure_ascii=False, sort_keys=True)
+                    if fallback_result is not None
+                    else None
+                ),
                 max(0, int(attempt_count)),
                 isoformat(attempted_at),
                 isoformat(next_attempt_at),

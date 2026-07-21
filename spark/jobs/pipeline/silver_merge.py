@@ -10,6 +10,7 @@ from pyspark.sql.functions import (
     col,
     concat_ws,
     current_timestamp,
+    last,
     lit,
     row_number,
     sha2,
@@ -17,6 +18,7 @@ from pyspark.sql.functions import (
     to_timestamp,
 )
 from pyspark.storagelevel import StorageLevel
+from pyspark.sql.types import DateType, TimestampType
 
 from event_contract import ICEBERG_TYPES, SILVER_COLUMNS, create_table_columns, merge_assignment
 
@@ -116,6 +118,8 @@ def prepare_silver_events(events: DataFrame) -> DataFrame:
 
 
 def _latest_current_state(events: DataFrame) -> DataFrame:
+    """Combine complementary event updates per business identity."""
+
     business_id = coalesce(
         col("platform_event_id"),
         sha2(concat_ws("\u001f", col("user_id"), col("url"), col("event_ts")), 256),
@@ -126,19 +130,48 @@ def _latest_current_state(events: DataFrame) -> DataFrame:
         to_timestamp(col("timestamp")),
         col("event_ts"),
     )
-    window = Window.partitionBy("source", "_business_id").orderBy(
+    base = events.withColumn("_business_id", business_id).withColumn("_current_order", observed)
+    full_window = (
+        Window.partitionBy("source", "_business_id")
+        .orderBy(col("_current_order").asc_nulls_first(), col("event_id").asc())
+        .rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)
+    )
+    latest_window = Window.partitionBy("source", "_business_id").orderBy(
         observed.desc_nulls_last(), col("event_id").desc()
     )
     return (
-        events.withColumn("_business_id", business_id)
-        .withColumn("_current_rank", row_number().over(window))
+        base.select(
+            *[
+                last(col(column), ignorenulls=True).over(full_window).alias(column)
+                for column in events.columns
+            ],
+            row_number().over(latest_window).alias("_current_rank"),
+        )
         .filter(col("_current_rank") == 1)
-        .drop("_business_id", "_current_rank")
+        .drop("_current_rank")
     )
 
 
+def _align_current_temporal_types(events: DataFrame) -> DataFrame:
+    """Cast ISO event strings to temporal types retained by an existing table."""
+
+    aligned = events
+    source_fields = {field.name: field.dataType for field in events.schema.fields}
+    for field in events.sparkSession.table(SILVER_TABLE).schema.fields:
+        source_type = source_fields.get(field.name)
+        if source_type is None or source_type == field.dataType:
+            continue
+        if isinstance(field.dataType, TimestampType):
+            aligned = aligned.withColumn(field.name, to_timestamp(col(field.name)))
+        elif isinstance(field.dataType, DateType):
+            aligned = aligned.withColumn(field.name, to_date(col(field.name)))
+    return aligned
+
+
 def _merge_current_state(events: DataFrame, *, epoch_id: int) -> int:
-    current = _latest_current_state(events).persist(StorageLevel.MEMORY_AND_DISK)
+    current = _align_current_temporal_types(_latest_current_state(events)).persist(
+        StorageLevel.MEMORY_AND_DISK
+    )
     try:
         row_count = current.count()
         if row_count == 0:

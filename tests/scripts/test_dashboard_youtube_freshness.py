@@ -17,18 +17,60 @@ from youtube_presentation import (  # noqa: E402
     freshness_warning,
     provenance_summary,
     transcript_lifecycle_status,
+    transcript_provenance_label,
     transcript_retry_warning,
     transcript_status_presentation,
     youtube_data_completeness,
+    youtube_thumbnail_display_url,
 )
 
 
 class DashboardMetricAvailabilityTests(unittest.TestCase):
+    def test_unsafe_or_missing_thumbnail_is_not_exposed_as_complete(self):
+        for value in (None, "https://example.test/thumbnail.jpg"):
+            with self.subTest(value=value):
+                _, _, checks = youtube_data_completeness({"thumbnail_url": value})
+                self.assertFalse(checks["thumbnail"])
+
+    def test_missing_thumbnail_uses_safe_video_id_fallback(self):
+        row = {"thumbnail_url": None, "platform_content_id": "wDWFGSq3jz4"}
+
+        self.assertEqual(
+            youtube_thumbnail_display_url(row),
+            "https://img.youtube.com/vi/wDWFGSq3jz4/default.jpg",
+        )
+        _, _, checks = youtube_data_completeness(row)
+        self.assertTrue(checks["thumbnail"])
+
+    def test_unsafe_thumbnail_is_replaced_by_safe_fallback(self):
+        row = {
+            "thumbnail_url": "https://example.test/thumbnail.jpg",
+            "platform_content_id": "wDWFGSq3jz4",
+        }
+
+        self.assertEqual(
+            youtube_thumbnail_display_url(row),
+            "https://img.youtube.com/vi/wDWFGSq3jz4/default.jpg",
+        )
+
     def test_known_zero_is_not_rendered_as_unknown(self):
         self.assertEqual(format_available_metric(0, True), "0")
         self.assertEqual(format_available_metric(0, None), "0")
         self.assertEqual(format_available_metric(0, False), "N/A")
         self.assertEqual(format_available_metric(pd.NA, True), "N/A")
+
+    def test_completeness_uses_known_comment_count_and_legacy_metadata_status(self):
+        _, _, checks = youtube_data_completeness(
+            {
+                "metadata_status": "success",
+                "comments_available": False,
+                "latest_comment_count": 7,
+                "latest_comment_count_available": True,
+            }
+        )
+
+        self.assertTrue(checks["metadata"])
+        self.assertTrue(checks["comments"])
 
     def test_coverage_prefers_explicit_flags(self):
         row = {
@@ -68,6 +110,28 @@ class DashboardMetricAvailabilityTests(unittest.TestCase):
 
 
 class DashboardTranscriptLifecycleTests(unittest.TestCase):
+    def test_transcript_provenance_labels_distinguish_gemini_from_youtube(self):
+        self.assertEqual(
+            transcript_provenance_label(
+                {
+                    "transcript_lifecycle_status": "available",
+                    "provider": "gemini",
+                    "generation_type": "model_generated",
+                }
+            ),
+            "Transcription générée depuis la vidéo avec Gemini",
+        )
+        self.assertEqual(
+            transcript_provenance_label(
+                {
+                    "transcript_lifecycle_status": "available",
+                    "provider": "youtube_transcript_api",
+                    "generation_type": "automatic",
+                }
+            ),
+            "Sous-titres YouTube automatiques",
+        )
+
     def test_all_canonical_lifecycle_states_are_preserved(self):
         statuses = (
             "pending",
@@ -119,6 +183,41 @@ class DashboardTranscriptLifecycleTests(unittest.TestCase):
 
 
 class DashboardFreshnessTableTests(unittest.TestCase):
+    def test_newer_incomplete_snapshot_does_not_erase_known_comment_count(self):
+        contents = pd.DataFrame([{"content_id": "video-1", "title": "Video"}])
+        snapshots = pd.DataFrame(
+            [
+                {
+                    "content_id": "video-1",
+                    "snapshot_at": "2026-07-19T00:00:00Z",
+                    "observation_id": "known",
+                    "comment_count": 7,
+                    "comment_count_available": True,
+                },
+                {
+                    "content_id": "video-1",
+                    "snapshot_at": "2026-07-20T00:00:00Z",
+                    "observation_id": "incomplete",
+                    "comment_count": None,
+                    "comment_count_available": False,
+                },
+            ]
+        )
+
+        result = build_youtube_display_rows(
+            contents,
+            pd.DataFrame(),
+            pd.DataFrame(),
+            snapshots,
+        )
+
+        self.assertEqual(result.iloc[0]["latest_comment_count"], 7)
+        self.assertTrue(result.iloc[0]["latest_comment_count_available"])
+        self.assertEqual(
+            result.iloc[0]["latest_snapshot_at"],
+            "2026-07-20T00:00:00Z",
+        )
+
     def test_mixed_grain_joins_do_not_duplicate_video_cards(self):
         contents = pd.DataFrame(
             [

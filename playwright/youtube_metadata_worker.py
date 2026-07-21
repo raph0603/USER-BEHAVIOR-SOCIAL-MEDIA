@@ -14,6 +14,10 @@ from typing import Any
 import yt_dlp
 
 from common.transcripts import preferred_transcript_language_code
+from common.youtube_thumbnails import (
+    select_thumbnail_reference,
+    thumbnail_url_only_metadata,
+)
 from common.youtube_pipeline import (
     finalize_worker_summary,
     isoformat,
@@ -49,6 +53,36 @@ def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
         return default
 
 
+def _compact_caption_tracks(value: Any) -> dict[str, list[dict[str, Any]]]:
+    """Keep caption discovery metadata without persisting signed track URLs."""
+
+    if not isinstance(value, dict):
+        return {}
+    compact: dict[str, list[dict[str, Any]]] = {}
+    for language, tracks in value.items():
+        if not isinstance(tracks, list):
+            continue
+        compact[str(language)] = [
+            {
+                key: track.get(key)
+                for key in ("ext", "name")
+                if track.get(key) is not None
+            }
+            for track in tracks
+            if isinstance(track, dict)
+        ]
+    return compact
+
+
+def compact_yt_dlp_event_payload(info: dict[str, Any]) -> dict[str, Any]:
+    """Bound Kafka metadata while retaining the full local diagnostic payload."""
+
+    compact = thumbnail_url_only_metadata(info)
+    for field in ("subtitles", "automatic_captions"):
+        compact[field] = _compact_caption_tracks(info.get(field))
+    return compact
+
+
 def normalize_yt_dlp_metadata(info: dict[str, Any]) -> dict[str, Any]:
     fields = (
         "id",
@@ -78,6 +112,9 @@ def normalize_yt_dlp_metadata(info: dict[str, Any]) -> dict[str, Any]:
     )
     normalized = {field: info.get(field) for field in fields}
     normalized["video_id"] = normalized.pop("id", None)
+    normalized["thumbnails"] = thumbnail_url_only_metadata(info).get("thumbnails")
+    for field in ("subtitles", "automatic_captions"):
+        normalized[field] = _compact_caption_tracks(info.get(field))
     return normalized
 
 
@@ -261,7 +298,15 @@ def main() -> None:
                 request_started = time.monotonic()
                 try:
                     raw, metadata = futures[video_id].result()
+                    raw = thumbnail_url_only_metadata(raw)
+                    event_raw = compact_yt_dlp_event_payload(raw)
                     request_latency_ms = (time.monotonic() - request_started) * 1000
+                    thumbnail = select_thumbnail_reference(
+                        metadata.get("thumbnails"),
+                        video_id=video_id,
+                        updated_at=observed_at,
+                        source="yt-dlp",
+                    )
                     output_dir.mkdir(parents=True, exist_ok=True)
                     (output_dir / f"{video_id}-{int(observed_at.timestamp())}.json").write_text(
                         json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str),
@@ -301,9 +346,7 @@ def main() -> None:
                             published_at=row.get("published_at"),
                             language=metadata.get("language"),
                             duration_seconds=metadata.get("duration"),
-                            thumbnail_url=(metadata.get("thumbnails") or [{}])[-1].get("url")
-                            if metadata.get("thumbnails")
-                            else None,
+                            **thumbnail.to_event_fields(),
                             view_count=metadata.get("view_count"),
                             like_count=metadata.get("like_count"),
                             comment_count=metadata.get("comment_count"),
@@ -328,7 +371,7 @@ def main() -> None:
                                 default=str,
                             ),
                             raw_source_payload=json.dumps(
-                                raw,
+                                event_raw,
                                 ensure_ascii=False,
                                 sort_keys=True,
                                 default=str,
@@ -363,6 +406,9 @@ def main() -> None:
                                 "channel_id": metadata.get("channel_id"),
                                 "published_at": row.get("published_at"),
                                 "language": metadata.get("language"),
+                                "duration_seconds": metadata.get("duration"),
+                                "video_availability": metadata.get("availability"),
+                                "transcript_source_content_version": current_hash,
                                 "collection_status": "pending",
                             }
                             requests = (
