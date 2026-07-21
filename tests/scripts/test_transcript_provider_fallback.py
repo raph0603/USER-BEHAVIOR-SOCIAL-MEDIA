@@ -189,6 +189,7 @@ class GeminiProviderTests(unittest.TestCase):
             "api_key": "test-only",
             "enabled": True,
             "model": "gemini-3.5-flash",
+            "fallback_models": (),
             "max_attempts": 1,
             "timeout_seconds": 5,
             "max_duration_minutes": 10,
@@ -232,7 +233,7 @@ class GeminiProviderTests(unittest.TestCase):
         provider = GeminiTranscriptProvider(
             self.config(daily_request_budget=20),
             client_factory=lambda _config: calls.append(True),
-            used_requests=lambda _now: 20,
+            used_requests=lambda _now, _model: 20,
             clock=lambda: NOW,
         )
 
@@ -247,7 +248,7 @@ class GeminiProviderTests(unittest.TestCase):
         provider = GeminiTranscriptProvider(
             self.config(max_attempts=2, daily_request_budget=20),
             client_factory=lambda _config: client,
-            used_requests=lambda _now: 19,
+            used_requests=lambda _now, _model: 19,
             clock=lambda: NOW,
         )
 
@@ -292,6 +293,29 @@ class GeminiProviderTests(unittest.TestCase):
             self.assertEqual(result.error_code, expected)
             self.assertEqual(len(client.interactions.calls), 1)
             self.assertTrue(client.closed)
+
+    def test_rate_limited_primary_model_falls_back_to_next_model(self):
+        client = FakeClient([RuntimeError("resource exhausted"), response_json()])
+        provider = GeminiTranscriptProvider(
+            self.config(fallback_models=("gemini-3.1-flash-lite", "gemini-2.5-flash")),
+            client_factory=lambda _config: client,
+            used_requests=lambda _now, model: 20 if model == "gemini-2.5-flash" else 0,
+            clock=lambda: NOW,
+        )
+
+        result = provider.fetch(self.request())
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.payload.model, "gemini-3.1-flash-lite")
+        self.assertEqual(result.attempt_count, 2)
+        self.assertEqual(
+            [call["model"] for call in client.interactions.calls],
+            ["gemini-3.5-flash", "gemini-3.1-flash-lite"],
+        )
+        self.assertEqual(
+            [model for model, _result in provider.model_results],
+            ["gemini-3.5-flash", "gemini-3.1-flash-lite"],
+        )
 
     def test_missing_sdk_is_a_clean_provider_error(self):
         provider = GeminiTranscriptProvider(

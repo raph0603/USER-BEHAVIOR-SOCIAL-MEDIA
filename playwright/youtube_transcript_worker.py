@@ -203,9 +203,14 @@ def main() -> None:
         now = utc_now()
         primary_circuit_open = state.breaker_open("transcript", now)
         gemini_config = GeminiTranscriptConfig.from_env()
-        gemini_circuit_open = state.breaker_open("transcript_gemini", now)
+        gemini_circuits = {
+            model: state.breaker_open(f"transcript_gemini:{model}", now)
+            for model in gemini_config.models
+        }
+        gemini_circuit_open = all(gemini_circuits.values())
         summary["primary_circuit_open"] = primary_circuit_open
         summary["gemini_circuit_open"] = gemini_circuit_open
+        summary["gemini_circuits"] = gemini_circuits.copy()
         summary["gemini_fallbacks"] = 0
         summary["primary_attempts"] = 0
         summary["gemini_succeeded"] = 0
@@ -224,11 +229,16 @@ def main() -> None:
                 0.0,
                 gemini_config.daily_video_minutes_budget - used_minutes,
             )
-            used_requests = state.gemini_requests_current_quota_day(now)
-            remaining_requests = max(
-                0,
-                gemini_config.daily_request_budget - used_requests,
-            )
+            remaining_requests_by_model = {
+                model: max(
+                    0,
+                    gemini_config.daily_request_budget
+                    - state.gemini_requests_current_quota_day(now, model),
+                )
+                for model in gemini_config.models
+                if not gemini_circuits[model]
+            }
+            remaining_requests = sum(remaining_requests_by_model.values())
             due = prioritize_due_transcript_requests(
                 candidate_pool,
                 limit=batch_size,
@@ -244,6 +254,7 @@ def main() -> None:
             )
             summary["gemini_budget_remaining_before_selection"] = remaining_minutes
             summary["gemini_requests_remaining_before_selection"] = remaining_requests
+            summary["gemini_requests_remaining_by_model"] = remaining_requests_by_model
         else:
             due = candidate_pool[:batch_size]
             summary["selection_strategy"] = "oldest_due"
@@ -278,6 +289,7 @@ def main() -> None:
                 ),
                 used_video_minutes=state.gemini_video_minutes_today,
                 used_requests=state.gemini_requests_current_quota_day,
+                model_available=lambda model: not gemini_circuits.get(model, True),
             )
             chain = TranscriptProviderChain(
                 YouTubeTranscriptProvider(),
@@ -296,6 +308,20 @@ def main() -> None:
                 if chain_result.fallback_result is not None
                 else None
             )
+            gemini_model_results = [
+                (model, model_result.to_dict())
+                for model, model_result in gemini_provider.model_results
+            ]
+            if fallback_result is not None and not gemini_model_results:
+                fallback_payload = fallback_result.get("payload") or {}
+                gemini_model_results = [
+                    (
+                        gemini_provider.last_model
+                        or fallback_payload.get("model")
+                        or gemini_config.model,
+                        fallback_result,
+                    )
+                ]
             request_latency_ms = (time.monotonic() - request_started) * 1000
             if not primary_circuit_open:
                 summary["primary_attempts"] += 1
@@ -554,25 +580,25 @@ def main() -> None:
                     fallback_reason=chain_result.fallback_reason,
                     result=primary_result,
                 )
-                if fallback_result is not None:
+                for fallback_model, model_result in gemini_model_results:
                     state.record_transcript_provider_attempt(
                         attempt_id=hashlib.sha256(
                             (
                                 f"{row['video_id']}:{requested_language_code}:"
-                                f"gemini:{attempt_count}"
+                                f"gemini:{fallback_model}:{attempt_count}"
                             ).encode("utf-8")
                         ).hexdigest(),
                         video_id=row["video_id"],
                         requested_language_code=requested_language_code,
                         provider=GEMINI_PROVIDER,
-                        model=gemini_config.model,
-                        attempt_count=int(fallback_result.get("attempt_count") or 0),
+                        model=fallback_model,
+                        attempt_count=int(model_result.get("attempt_count") or 0),
                         attempted_at=attempted_at,
                         latency_ms=request_latency_ms,
-                        status=str(fallback_result.get("status") or "failed"),
-                        error_code=fallback_result.get("error_code"),
+                        status=str(model_result.get("status") or "failed"),
+                        error_code=model_result.get("error_code"),
                         fallback_reason=chain_result.fallback_reason,
-                        result=fallback_result,
+                        result=model_result,
                     )
                 state.enqueue_outbox(
                     worker_name="youtube_transcript",
@@ -588,20 +614,24 @@ def main() -> None:
                         cooldown=cooldown,
                         reason=primary_result.get("error_message") or "primary_blocked",
                     )
-                gemini_error = str((fallback_result or {}).get("error_code") or "")
-                if gemini_error in {
-                    "gemini_rate_limited",
-                    "gemini_model_unavailable",
-                    "gemini_timeout",
-                }:
+                for fallback_model, model_result in gemini_model_results:
+                    gemini_error = str(model_result.get("error_code") or "")
+                    if gemini_error not in {
+                        "gemini_rate_limited",
+                        "gemini_model_unavailable",
+                        "gemini_timeout",
+                    }:
+                        continue
                     state.open_breaker(
-                        "transcript_gemini",
+                        f"transcript_gemini:{fallback_model}",
                         now=attempted_at,
                         cooldown=timedelta(seconds=gemini_config.cooldown_seconds),
                         reason=gemini_error,
                     )
-                    gemini_circuit_open = True
-                    summary["gemini_circuit_open"] = True
+                    gemini_circuits[fallback_model] = True
+                gemini_circuit_open = all(gemini_circuits.values())
+                summary["gemini_circuit_open"] = gemini_circuit_open
+                summary["gemini_circuits"] = gemini_circuits.copy()
             if lifecycle_status == TRANSCRIPT_AVAILABLE:
                 summary["succeeded"] += 1
             else:

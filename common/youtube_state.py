@@ -834,7 +834,11 @@ class YouTubeStateStore(
         ).fetchone()
         return float(row[0] or 0.0)
 
-    def gemini_requests_current_quota_day(self, now: datetime) -> int:
+    def gemini_requests_current_quota_day(
+        self,
+        now: datetime,
+        model: str | None = None,
+    ) -> int:
         window_start, window_end = _gemini_quota_window(now)
         row = self.connection.execute(
             """
@@ -843,8 +847,9 @@ class YouTubeStateStore(
             WHERE provider = 'gemini'
               AND attempted_at >= ?
               AND attempted_at < ?
+              AND (? IS NULL OR model = ?)
             """,
-            (window_start, window_end),
+            (window_start, window_end, model, model),
         ).fetchone()
         return int(row[0] or 0)
 

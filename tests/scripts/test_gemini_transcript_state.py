@@ -72,8 +72,34 @@ class GeminiTranscriptStateTests(unittest.TestCase):
                         result={"status": "failed"},
                     )
 
+                state.record_transcript_provider_attempt(
+                    attempt_id="fallback-model-attempt",
+                    video_id="video-fallback",
+                    requested_language_code="en",
+                    provider="gemini",
+                    model="gemini-3.1-flash-lite",
+                    attempt_count=2,
+                    attempted_at=after_reset,
+                    latency_ms=1,
+                    status="failed",
+                    error_code="gemini_timeout",
+                    fallback_reason="no_transcript_found",
+                    result={"status": "failed"},
+                )
+
                 self.assertEqual(state.gemini_video_minutes_today(NOW), 20.0)
-                self.assertEqual(state.gemini_requests_current_quota_day(NOW), 1)
+                self.assertEqual(state.gemini_requests_current_quota_day(NOW), 3)
+                self.assertEqual(
+                    state.gemini_requests_current_quota_day(NOW, "gemini-3.5-flash"),
+                    1,
+                )
+                self.assertEqual(
+                    state.gemini_requests_current_quota_day(
+                        NOW,
+                        "gemini-3.1-flash-lite",
+                    ),
+                    2,
+                )
 
     def test_cache_usage_and_attempt_replay_are_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:

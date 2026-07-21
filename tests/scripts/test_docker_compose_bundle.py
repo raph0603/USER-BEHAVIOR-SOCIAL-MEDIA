@@ -49,8 +49,13 @@ class DockerComposeBundleTests(unittest.TestCase):
 
         self.assertIn("GEMINI_API_KEY: ${GEMINI_API_KEY:-}", compose)
         self.assertIn(
-            "GEMINI_TRANSCRIPT_FALLBACK_ENABLED: "
-            "${GEMINI_TRANSCRIPT_FALLBACK_ENABLED:-false}",
+            "GEMINI_TRANSCRIPT_FALLBACK_ENABLED: ${GEMINI_TRANSCRIPT_FALLBACK_ENABLED:-false}",
+            compose,
+        )
+        self.assertIn(
+            "GEMINI_TRANSCRIPT_FALLBACK_MODELS: "
+            "${GEMINI_TRANSCRIPT_FALLBACK_MODELS:-"
+            "gemini-3.1-flash-lite,gemini-2.5-flash}",
             compose,
         )
         self.assertIn("- GEMINI_API_KEY=${GEMINI_API_KEY:-}", compose)

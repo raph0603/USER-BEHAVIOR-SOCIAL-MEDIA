@@ -87,6 +87,7 @@ class GeminiTranscriptConfig:
     api_key: str = ""
     enabled: bool = False
     model: str = "gemini-3.5-flash"
+    fallback_models: tuple[str, ...] = ()
     max_attempts: int = 2
     timeout_seconds: int = 120
     max_duration_minutes: float = 60.0
@@ -94,13 +95,28 @@ class GeminiTranscriptConfig:
     daily_request_budget: int = 20
     cooldown_seconds: int = 3600
 
+    @property
+    def models(self) -> tuple[str, ...]:
+        """Return the ordered, de-duplicated model failover chain."""
+
+        return tuple(dict.fromkeys((self.model, *self.fallback_models)))
+
     @classmethod
     def from_env(cls) -> "GeminiTranscriptConfig":
+        fallback_models = tuple(
+            model.strip()
+            for model in os.getenv(
+                "GEMINI_TRANSCRIPT_FALLBACK_MODELS",
+                "gemini-3.1-flash-lite,gemini-2.5-flash",
+            ).split(",")
+            if model.strip()
+        )
         return cls(
             api_key=os.getenv("GEMINI_API_KEY", "").strip(),
             enabled=_env_bool("GEMINI_TRANSCRIPT_FALLBACK_ENABLED"),
             model=os.getenv("GEMINI_TRANSCRIPT_MODEL", "gemini-3.5-flash").strip()
             or "gemini-3.5-flash",
+            fallback_models=fallback_models,
             max_attempts=_env_int("GEMINI_TRANSCRIPT_MAX_ATTEMPTS", 2),
             timeout_seconds=_env_int("GEMINI_TRANSCRIPT_TIMEOUT_SECONDS", 120),
             max_duration_minutes=_env_float("GEMINI_TRANSCRIPT_MAX_DURATION_MINUTES", 60.0),
@@ -240,7 +256,8 @@ class GeminiTranscriptProvider:
         cache_get: Callable[[str], TranscriptPayload | None] | None = None,
         cache_put: Callable[[str, TranscriptPayload, float], None] | None = None,
         used_video_minutes: Callable[[datetime], float] | None = None,
-        used_requests: Callable[[datetime], int] | None = None,
+        used_requests: Callable[[datetime, str], int] | None = None,
+        model_available: Callable[[str], bool] | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self.config = config or GeminiTranscriptConfig.from_env()
@@ -248,9 +265,12 @@ class GeminiTranscriptProvider:
         self._cache_get = cache_get or (lambda _key: None)
         self._cache_put = cache_put or (lambda _key, _payload, _minutes: None)
         self._used_video_minutes = used_video_minutes or (lambda _now: 0.0)
-        self._used_requests = used_requests or (lambda _now: 0)
+        self._used_requests = used_requests or (lambda _now, _model: 0)
+        self._model_available = model_available or (lambda _model: True)
         self._clock = clock
         self.last_cache_hit = False
+        self.last_model: str | None = None
+        self.model_results: list[tuple[str, OperationResult[TranscriptPayload]]] = []
 
     def video_minutes(self, request: TranscriptRequest) -> float:
         return max(0.0, float(request.duration_seconds or 0.0)) / 60.0
@@ -281,11 +301,21 @@ class GeminiTranscriptProvider:
             > self.config.daily_video_minutes_budget
         ):
             return False, "gemini_budget_exhausted"
-        if self._used_requests(self._clock()) >= self.config.daily_request_budget:
+        if not any(
+            self._model_available(model)
+            and self._used_requests(self._clock(), model) < self.config.daily_request_budget
+            for model in self.config.models
+        ):
             return False, "gemini_request_budget_exhausted"
         return True, None
 
-    def _payload(self, request: TranscriptRequest, response: Any) -> TranscriptPayload:
+    def _payload(
+        self,
+        request: TranscriptRequest,
+        response: Any,
+        *,
+        model: str,
+    ) -> TranscriptPayload:
         value = _validated_response(response)
         language = value["detected_language"]
         content_version = transcript_content_version(
@@ -314,7 +344,7 @@ class GeminiTranscriptProvider:
             requested_language=request.requested_language_code,
             requested_language_code=request.requested_language_code,
             content_version=content_version,
-            model=self.config.model,
+            model=model,
             prompt_version=GEMINI_PROMPT_VERSION,
             generated_by_model=True,
             warnings=value["warnings"],
@@ -323,6 +353,9 @@ class GeminiTranscriptProvider:
 
     def fetch(self, request: TranscriptRequest) -> OperationResult[TranscriptPayload]:
         started_at = self._clock()
+        self.last_cache_hit = False
+        self.last_model = None
+        self.model_results = []
         ready, reason = self.readiness(request)
         if not ready:
             factory = {
@@ -338,20 +371,29 @@ class GeminiTranscriptProvider:
                 completed_at=self._clock(),
             )
 
-        key = gemini_cache_key(request, model=self.config.model)
-        cached = self._cache_get(key)
-        if cached is not None:
-            self.last_cache_hit = True
-            return OperationResult.success(
-                cached,
-                attempt_count=0,
-                started_at=started_at,
-                completed_at=self._clock(),
-            )
-        self.last_cache_hit = False
+        candidate_models = tuple(
+            model
+            for model in self.config.models
+            if self._model_available(model)
+            and self._used_requests(self._clock(), model) < self.config.daily_request_budget
+        )
+        for model in candidate_models:
+            key = gemini_cache_key(request, model=model)
+            cached = self._cache_get(key)
+            if cached is not None:
+                self.last_cache_hit = True
+                self.last_model = model
+                return OperationResult.success(
+                    cached,
+                    attempt_count=0,
+                    started_at=started_at,
+                    completed_at=self._clock(),
+                )
 
         client = None
         last_error: BaseException | None = None
+        last_result: OperationResult[TranscriptPayload] | None = None
+        total_attempts = 0
         try:
             try:
                 client = self._client_factory(self.config)
@@ -364,94 +406,135 @@ class GeminiTranscriptProvider:
                     started_at=started_at,
                     completed_at=self._clock(),
                 )
-            remaining_requests = max(
-                0,
-                self.config.daily_request_budget - self._used_requests(self._clock()),
-            )
             video_minutes = self.video_minutes(request)
-            remaining_video_minutes = max(
-                0.0,
-                self.config.daily_video_minutes_budget - self._used_video_minutes(self._clock()),
-            )
-            video_attempt_limit = math.floor((remaining_video_minutes + 1e-9) / video_minutes)
-            attempt_limit = min(
-                self.config.max_attempts,
-                remaining_requests,
-                video_attempt_limit,
-            )
-            if attempt_limit <= 0:
-                return OperationResult.rate_limited(
-                    error_code="gemini_request_budget_exhausted",
-                    attempt_count=0,
-                    started_at=started_at,
-                    completed_at=self._clock(),
+            for model in candidate_models:
+                remaining_requests = max(
+                    0,
+                    self.config.daily_request_budget - self._used_requests(self._clock(), model),
                 )
-            for attempt in range(1, attempt_limit + 1):
-                try:
-                    interaction = client.interactions.create(
-                        model=self.config.model,
-                        input=[
-                            {"type": "video", "uri": request.youtube_url},
-                            {
+                remaining_video_minutes = max(
+                    0.0,
+                    self.config.daily_video_minutes_budget
+                    - self._used_video_minutes(self._clock())
+                    - (total_attempts * video_minutes),
+                )
+                video_attempt_limit = math.floor((remaining_video_minutes + 1e-9) / video_minutes)
+                attempt_limit = min(
+                    self.config.max_attempts,
+                    remaining_requests,
+                    video_attempt_limit,
+                )
+                if attempt_limit <= 0:
+                    break
+
+                key = gemini_cache_key(request, model=model)
+                self.last_model = model
+                model_started_at = self._clock()
+                model_result: OperationResult[TranscriptPayload] | None = None
+                for attempt in range(1, attempt_limit + 1):
+                    total_attempts += 1
+                    try:
+                        interaction = client.interactions.create(
+                            model=model,
+                            input=[
+                                {"type": "video", "uri": request.youtube_url},
+                                {
+                                    "type": "text",
+                                    "text": GEMINI_TRANSCRIPT_PROMPT.format(
+                                        requested_language=request.requested_language_code
+                                    ),
+                                },
+                            ],
+                            response_format={
                                 "type": "text",
-                                "text": GEMINI_TRANSCRIPT_PROMPT.format(
-                                    requested_language=request.requested_language_code
-                                ),
+                                "mime_type": "application/json",
+                                "schema": GEMINI_TRANSCRIPT_SCHEMA,
                             },
-                        ],
-                        response_format={
-                            "type": "text",
-                            "mime_type": "application/json",
-                            "schema": GEMINI_TRANSCRIPT_SCHEMA,
-                        },
-                    )
-                    payload = self._payload(request, interaction.output_text)
-                    self._cache_put(key, payload, self.video_minutes(request))
-                    return OperationResult.success(
-                        payload,
-                        attempt_count=attempt,
-                        started_at=started_at,
-                        completed_at=self._clock(),
-                    )
-                except (ValueError, TypeError, json.JSONDecodeError) as error:
-                    last_error = error
-                    if attempt == self.config.max_attempts:
-                        return OperationResult.failed(
-                            error_code="gemini_invalid_response",
-                            error_message=str(error),
+                        )
+                        payload = self._payload(
+                            request,
+                            interaction.output_text,
+                            model=model,
+                        )
+                        self._cache_put(key, payload, self.video_minutes(request))
+                        model_result = OperationResult.success(
+                            payload,
                             attempt_count=attempt,
-                            started_at=started_at,
+                            started_at=model_started_at,
                             completed_at=self._clock(),
                         )
-                except Exception as error:
-                    last_error = error
-                    status, code = _error_code(error)
-                    if attempt < attempt_limit and code in {
-                        "gemini_timeout",
-                        "gemini_model_unavailable",
-                        "gemini_retryable_error",
-                    }:
-                        continue
-                    factory = {
-                        "rate_limited": OperationResult.rate_limited,
-                        "not_available": OperationResult.unavailable,
-                    }.get(status, OperationResult.failed)
-                    return factory(
-                        error_code=code,
-                        error_message=str(error),
-                        attempt_count=attempt,
+                    except (ValueError, TypeError, json.JSONDecodeError) as error:
+                        last_error = error
+                        if attempt == attempt_limit:
+                            model_result = OperationResult.failed(
+                                error_code="gemini_invalid_response",
+                                error_message=str(error),
+                                attempt_count=attempt,
+                                started_at=model_started_at,
+                                completed_at=self._clock(),
+                            )
+                    except Exception as error:
+                        last_error = error
+                        status, code = _error_code(error)
+                        if attempt < attempt_limit and code in {
+                            "gemini_timeout",
+                            "gemini_model_unavailable",
+                            "gemini_retryable_error",
+                        }:
+                            continue
+                        factory = {
+                            "rate_limited": OperationResult.rate_limited,
+                            "not_available": OperationResult.unavailable,
+                        }.get(status, OperationResult.failed)
+                        model_result = factory(
+                            error_code=code,
+                            error_message=str(error),
+                            attempt_count=attempt,
+                            started_at=model_started_at,
+                            completed_at=self._clock(),
+                        )
+
+                    if model_result is not None:
+                        break
+
+                if model_result is None:
+                    continue
+                self.model_results.append((model, model_result))
+                last_result = model_result
+                if model_result.payload is not None:
+                    return OperationResult.success(
+                        model_result.payload,
+                        attempt_count=total_attempts,
                         started_at=started_at,
                         completed_at=self._clock(),
                     )
+                if model_result.error_code in {
+                    "gemini_dependency_missing",
+                    "gemini_permanent_error",
+                    "gemini_video_not_supported",
+                }:
+                    break
         finally:
             close = getattr(client, "close", None)
             if callable(close):
                 close()
 
-        return OperationResult.failed(
-            error_code="gemini_retryable_error",
+        if last_result is not None:
+            factory = {
+                "rate_limited": OperationResult.rate_limited,
+                "not_available": OperationResult.unavailable,
+            }.get(last_result.status, OperationResult.failed)
+            return factory(
+                error_code=last_result.error_code or "gemini_retryable_error",
+                error_message=last_result.error_message,
+                attempt_count=total_attempts,
+                started_at=started_at,
+                completed_at=self._clock(),
+            )
+        return OperationResult.rate_limited(
+            error_code="gemini_budget_exhausted",
             error_message=str(last_error) if last_error else None,
-            attempt_count=self.config.max_attempts,
+            attempt_count=total_attempts,
             started_at=started_at,
             completed_at=self._clock(),
         )
