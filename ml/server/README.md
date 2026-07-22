@@ -11,6 +11,7 @@ schema in `ml/HANDOFF.md` section 2** — consuming services rely on it.
 | GET | `/health` | — | `{"status": "ok", "model_loaded": bool}` |
 | POST | `/predict` | `{"text": "...", "source": "youtube"}` | one explain_post JSON |
 | POST | `/predict/batch` | `{"items": [{text, source}, ...]}` | list of explain_post JSON |
+| POST | `/report` | `{"text": "...", "source": "youtube", "lang": "en"}` | prediction plus marketing report |
 
 `source` ∈ `{"youtube", "x", "reddit", ""}`. Optional `audience` (float) is accepted.
 
@@ -41,8 +42,18 @@ curl -X POST http://localhost:8000/predict \
 
 ```bash
 docker build -f server/Dockerfile -t ai-server ml
-docker run -p 8000:8000 -v "$PWD/ml/models:/app/models" ai-server
+docker run -p 8000:8000 \
+  -e REPORT_BACKEND=template \
+  -v "$PWD/ml/models:/app/models:ro" \
+  ai-server
 ```
+
+The release Compose bundle publishes this image as
+`user-behavior-social-media-ai-server` and mounts `AI_MODEL_DIR` at
+`/app/models`. Reports use the deterministic `template` backend by default.
+For Qwen reports, set `REPORT_BACKEND=ollama`, `REPORT_MODEL=qwen2.5:3b`, and
+`OLLAMA_BASE_URL` to the reachable Ollama API, for example
+`http://host.docker.internal:11434` when Ollama runs on the Docker host.
 
 ## Tests (no model needed — `predict_fn` is stubbed)
 

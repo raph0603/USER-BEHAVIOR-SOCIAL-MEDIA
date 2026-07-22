@@ -64,6 +64,18 @@ def test_batch():
     assert len(r.json()) == 2
 
 
+def test_report_with_template_backend():
+    app_module.REPORT_BACKEND = "template"
+    r = client.post(
+        "/report",
+        json={"text": "great EV deal", "source": "youtube", "lang": "en"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["prediction"]["label"] == "viral-likely"
+    assert "Viral likelihood" in body["report"]
+
+
 def test_model_missing_returns_503():
     def _raise(*a, **k):
         raise FileNotFoundError("stage1_multisource.joblib")

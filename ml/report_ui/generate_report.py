@@ -8,7 +8,7 @@ It is **backend-agnostic** so we can validate the report format today and plug i
 the chosen HuggingFace model (see MODEL_SELECTION.md -> Qwen2.5-7B-Instruct) later:
 
   - template : deterministic, no model, no GPU. Always works. (default)
-  - ollama   : local model via Ollama HTTP API (http://localhost:11434).
+  - ollama   : local model via the configurable Ollama HTTP API.
   - hf       : HuggingFace Inference API (needs env var HF_TOKEN).
 
 Usage
@@ -35,6 +35,7 @@ from pathlib import Path
 
 DEFAULT_MODEL_OLLAMA = "qwen2.5:7b"
 DEFAULT_MODEL_HF = "Qwen/Qwen2.5-7B-Instruct"
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 
 # --------------------------------------------------------------------------- #
 # Prompt (shared by the LLM backends) - adapted from ml/HANDOFF.md section 4
@@ -147,8 +148,9 @@ def render_ollama(result: dict, lang: str, model: str) -> str:
 
     prompt = PROMPT_TEMPLATES[lang].format(payload=json.dumps(result, ensure_ascii=False, indent=2))
     body = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
+    base_url = os.environ.get("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).rstrip("/")
     req = urllib.request.Request(
-        "http://localhost:11434/api/generate", data=body,
+        f"{base_url}/api/generate", data=body,
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=120) as resp:
