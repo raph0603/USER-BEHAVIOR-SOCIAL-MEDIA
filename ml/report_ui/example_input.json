@@ -1,0 +1,12 @@
+{
+  "viral_score": 0.671,
+  "label": "viral-likely",
+  "confidence": 0.342,
+  "top_factors": [
+    {"feature": "content_score",  "label": "Post content/topic",    "value": 0.74, "contribution": 0.81, "direction": "up"},
+    {"feature": "topic_6",         "label": "Topic #6",              "value": 0.55, "contribution": 0.30, "direction": "up"},
+    {"feature": "role_ratio_hook", "label": "Ratio of opening hook", "value": 0.50, "contribution": 0.14, "direction": "up"}
+  ],
+  "explanation_text": "Prediction: likely viral (probability 67%). Factors increasing it: Post content/topic, Topic #6, Ratio of opening hook.",
+  "suggestions": ["Add a clear call to action (CTA).", "Add concrete numbers or proof."]
+}
