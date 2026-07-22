@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.18.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.17.0...v1.18.0) (2026-07-22)
+
+
+### Features
+
+* **data:** add portable transfer tooling ([1c2181a](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/1c2181a58953c75d170282a2a1130bd9532da65e))
+* **data:** add portable transfer tooling ([db49739](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/db4973945c4a0091e9bd0827797f2e9877cf3b58))
+
 ## [1.17.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.16.0...v1.17.0) (2026-07-21)
 
 
