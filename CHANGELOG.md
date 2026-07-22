@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.19.0...v1.20.0) (2026-07-22)
+
+
+### Features
+
+* **ml:** deploy ai-server through docker hub ([793521f](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/793521f3cd63ce410bb9630a0e8651376c4bcc4d))
+
 ## [1.19.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.18.0...v1.19.0) (2026-07-22)
 
 
