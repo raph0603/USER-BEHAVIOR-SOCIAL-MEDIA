@@ -249,8 +249,11 @@ schemas and lakehouse checks, and the Airflow image includes the DAGs plus the
 Compose project files needed for orchestration. Runtime state and generated
 files are stored in Docker volumes.
 
-See [CLI Data Import / Export - Docker Usage](docs/cli-docker.md) for the
-commands that run data import and export inside the Compose stack.
+The Airflow image exposes `stack-transfer` for an offline snapshot and restore
+of every project Docker volume, including the complete MinIO lakehouse, Kafka,
+collector state, and Airflow data. The dashboard image exposes `data-transfer`
+for selective Silver event exports and Kafka replay. See
+[Portable data transfer CLI](docs/cli-docker.md).
 
 | Image | Docker Hub |
 |---|---|

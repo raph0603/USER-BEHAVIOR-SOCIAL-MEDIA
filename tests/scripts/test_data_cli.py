@@ -1,6 +1,8 @@
 import argparse
+import io
 import json
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 import pandas as pd
@@ -16,6 +18,81 @@ import scripts.data_cli as data_cli
 
 
 class DataCliTests(unittest.TestCase):
+    @patch("scripts.data_cli._dashboard_module")
+    def test_export_reader_selects_the_complete_iceberg_table(self, mock_module):
+        loaders = MagicMock()
+        expected = pd.DataFrame({"transcript_text": ["full transcript"]})
+        loaders.load_iceberg_table.return_value = expected
+        mock_module.return_value = loaders
+        config = {"table_path": "s3://lakehouse/warehouse/silver/events"}
+
+        actual = data_cli.load_export_data(config)
+
+        self.assertIs(actual, expected)
+        loaders.load_iceberg_table.assert_called_once_with(
+            config["table_path"],
+            config=config,
+        )
+
+    @patch("scripts.data_cli.load_iceberg_data")
+    @patch("scripts.data_cli.get_iceberg_config")
+    def test_stdout_export_contains_only_data(self, mock_get_config, mock_load_data):
+        mock_get_config.return_value = {}
+        mock_load_data.return_value = pd.DataFrame(
+            {
+                "source": ["youtube"],
+                "timestamp": ["2026-06-01T10:00:00Z"],
+                "title": ["véhicule électrique"],
+            }
+        )
+        args = data_cli.build_parser().parse_args(
+            ["export", "--format", "jsonl", "--output", "-"]
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            data_cli.run_export(args)
+
+        self.assertEqual(json.loads(stdout.getvalue())["title"], "véhicule électrique")
+        self.assertNotIn("Loading", stdout.getvalue())
+        self.assertIn("Exported 1 event", stderr.getvalue())
+
+    @patch("scripts.data_cli.get_manual_import_config")
+    @patch("scripts.data_cli.publish_events")
+    @patch("scripts.data_cli.load_import_events")
+    def test_stdin_import_uses_explicit_format(
+        self,
+        mock_load_events,
+        mock_publish,
+        mock_get_config,
+    ):
+        mock_get_config.return_value = {}
+        mock_load_events.return_value = [
+            {
+                "source": "youtube",
+                "url": "https://youtu.be/abc",
+                "title": "title",
+                "user_id": "user",
+                "timestamp": "2026-06-01T10:00:00Z",
+            }
+        ]
+        mock_publish.return_value = {"youtube": 1}
+        args = data_cli.build_parser().parse_args(
+            ["import", "--file", "-", "--format", "jsonl"]
+        )
+        stdin = MagicMock()
+        stdin.buffer = io.BytesIO(b'{"source":"youtube"}\n')
+
+        with patch("scripts.data_cli.sys.stdin", stdin), redirect_stdout(io.StringIO()):
+            data_cli.run_import(args)
+
+        mock_load_events.assert_called_once_with(
+            "stdin.jsonl",
+            b'{"source":"youtube"}\n',
+            source="auto",
+        )
+
     def test_normalize_list_value(self):
         # Test None
         self.assertIsNone(data_cli.normalize_list_value(None))

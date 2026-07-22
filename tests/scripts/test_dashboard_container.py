@@ -15,7 +15,9 @@ class DashboardContainerTests(unittest.TestCase):
         self.assertIn("pip install --no-cache-dir -r requirements.txt", dockerfile)
         self.assertIn("streamlit", dockerfile)
         self.assertIn("/usr/local/bin/airflow-jobs", dockerfile)
+        self.assertIn("/usr/local/bin/data-transfer", dockerfile)
         self.assertIn("airflow_jobs_cli.py", dockerfile)
+        self.assertIn("data_cli.py", dockerfile)
         self.assertIn("--server.address=0.0.0.0", dockerfile)
         self.assertIn("--server.headless=true", dockerfile)
 
@@ -83,6 +85,9 @@ class DashboardContainerTests(unittest.TestCase):
         self.assertIn("COPY tests/spark/ /opt/spark/tests/", spark_master)
         self.assertIn("COPY orchestrator/dags/ /opt/airflow/dags/", airflow)
         self.assertIn("COPY docker-compose.yml /workspace/docker-compose.yml", airflow)
+        self.assertIn("/usr/local/bin/stack-transfer", airflow)
+        self.assertIn("stack_transfer_cli.py", airflow)
+        self.assertIn("COPY --from=docker-cli", airflow)
         self.assertIn("context: .", publish_workflow)
 
 
