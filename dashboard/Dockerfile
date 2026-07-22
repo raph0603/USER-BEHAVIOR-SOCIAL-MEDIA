@@ -15,11 +15,14 @@ COPY dashboard/ .
 COPY common/ /app/common/
 COPY scripts/ /app/scripts/
 COPY schemas/ /app/schemas/
-RUN chmod +x /app/scripts/airflow_jobs_cli.py \
+RUN chmod +x /app/scripts/airflow_jobs_cli.py /app/scripts/data_cli.py \
     && printf '%s\n' '#!/bin/sh' \
         'exec python /app/scripts/airflow_jobs_cli.py "$@"' \
         > /usr/local/bin/airflow-jobs \
-    && chmod +x /usr/local/bin/airflow-jobs
+    && printf '%s\n' '#!/bin/sh' \
+        'exec python /app/scripts/data_cli.py "$@"' \
+        > /usr/local/bin/data-transfer \
+    && chmod +x /usr/local/bin/airflow-jobs /usr/local/bin/data-transfer
 
 EXPOSE 8501
 

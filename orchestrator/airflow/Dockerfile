@@ -22,6 +22,9 @@ COPY tests/spark/ /workspace/tests/spark/
 COPY tests/airflow/ /workspace/tests/airflow/
 COPY orchestrator/airflow/ /workspace/orchestrator/airflow/
 
-RUN mkdir -p /opt/airflow/logs /workspace/data/collector-state /workspace/data/insight-refresh /workspace/data/balancing /workspace/data/x-runtime
+RUN mkdir -p /opt/airflow/logs /workspace/data/collector-state /workspace/data/insight-refresh /workspace/data/balancing /workspace/data/x-runtime \
+    && printf '%s\n' '#!/bin/sh' 'exec python /workspace/scripts/stack_transfer_cli.py "$@"' \
+        > /usr/local/bin/stack-transfer \
+    && chmod +x /usr/local/bin/stack-transfer
 
 USER airflow

@@ -12,6 +12,66 @@ SPEC.loader.exec_module(MANUAL_IMPORT)
 
 
 class ManualImportTests(unittest.TestCase):
+    def test_canonical_round_trip_preserves_transcript_fields_and_types(self):
+        payload = json.dumps(
+            {
+                "user_id": "youtube-user",
+                "url": "https://www.youtube.com/watch?v=abc123",
+                "title": "Video title",
+                "timestamp": "2026-06-01T10:00:00Z",
+                "source": "youtube",
+                "transcript_text": "Complete transcript",
+                "transcript_source": "gemini",
+                "transcript_is_generated": True,
+                "transcript_segment_count": 12,
+                "transcript_available_languages": ["en", "fr"],
+                "changed_fields": ["transcript_text"],
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+        event = MANUAL_IMPORT.load_import_events("transfer.json", payload)[0]
+
+        self.assertEqual(event["transcript_text"], "Complete transcript")
+        self.assertEqual(event["transcript_source"], "gemini")
+        self.assertIs(event["transcript_is_generated"], True)
+        self.assertEqual(event["transcript_segment_count"], 12)
+        self.assertEqual(event["transcript_available_languages"], ["en", "fr"])
+        self.assertEqual(event["changed_fields"], ["transcript_text"])
+
+    def test_previous_export_created_at_is_used_as_event_timestamp(self):
+        payload = json.dumps(
+            {
+                "author_hash": "youtube-user",
+                "url": "https://www.youtube.com/watch?v=abc123",
+                "text": "Video title",
+                "created_at": "2026-06-01T10:00:00Z",
+                "source": "youtube",
+                "video_id": "abc123",
+            }
+        ).encode("utf-8")
+
+        event = MANUAL_IMPORT.load_import_events("old-export.json", payload)[0]
+
+        self.assertEqual(event["timestamp"], "2026-06-01T10:00:00Z")
+
+    def test_canonical_event_allows_nullable_title_from_avro_contract(self):
+        payload = json.dumps(
+            {
+                "user_id": "youtube-user",
+                "url": "https://www.youtube.com/watch?v=abc123",
+                "title": None,
+                "timestamp": "2026-06-01T10:00:00Z",
+                "source": "youtube",
+                "event_type": "metadata.updated",
+            }
+        ).encode("utf-8")
+
+        event = MANUAL_IMPORT.load_import_events("transfer.json", payload)[0]
+
+        self.assertIsNone(event["title"])
+        self.assertEqual(event["event_type"], "metadata.updated")
+
     def test_loads_youtube_csv_as_raw_events(self):
         payload = (
             "video_id,comment_id,author_hash,text,comment_published_at,"
