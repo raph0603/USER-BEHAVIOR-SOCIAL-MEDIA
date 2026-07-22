@@ -1,0 +1,5 @@
+# AI-server dependencies. The model stack (joblib/xgboost/scikit-learn/pandas) is
+# reused from ml/requirements-train.txt; these are only the web-serving extras.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+# for tests: httpx, pytest
