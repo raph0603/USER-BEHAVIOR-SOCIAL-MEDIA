@@ -41,6 +41,9 @@ jobs:
           - image: user-behavior-social-media-ai-trainer
             context: .
             dockerfile: ./ml/Dockerfile
+          - image: user-behavior-social-media-ai-server
+            context: ./ml
+            dockerfile: ./ml/server/Dockerfile
 
     env:
       DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}
@@ -128,7 +131,7 @@ jobs:
           set -euo pipefail
           BUNDLE_NAME="user-behavior-social-media-compose-${IMAGE_TAG}"
           BUNDLE_DIR="dist/${BUNDLE_NAME}"
-          mkdir -p "$BUNDLE_DIR"
+          mkdir -p "$BUNDLE_DIR/ml/models"
           cp docker-compose.yml "$BUNDLE_DIR/compose.yaml"
           cp deployment/compose.bundle.yaml "$BUNDLE_DIR/compose.bundle.yaml"
           cp deployment/README.md "$BUNDLE_DIR/README.md"

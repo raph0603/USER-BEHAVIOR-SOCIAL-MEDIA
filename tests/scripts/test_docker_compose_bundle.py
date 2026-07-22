@@ -18,6 +18,7 @@ class DockerComposeBundleTests(unittest.TestCase):
             "airflow-init",
             "airflow-webserver",
             "airflow-scheduler",
+            "ai-server",
             "ai-trainer",
         }
 
@@ -30,6 +31,7 @@ class DockerComposeBundleTests(unittest.TestCase):
         )
 
         self.assertIn("user-behavior-social-media-ai-trainer", workflow)
+        self.assertIn("user-behavior-social-media-ai-server", workflow)
         self.assertIn("publish-compose-bundle:", workflow)
         self.assertIn("gh release upload", workflow)
 

@@ -7,10 +7,19 @@ v2.24.4 or later and access to Docker Hub.
 ## Start the stack
 
 1. Copy `.env.example` to `.env`.
-2. Replace the example Airflow and MinIO credentials before exposing any port
+2. Create the model directory and copy the trained Stage-1 artifact into it:
+
+   ```bash
+   mkdir -p ml/models
+   cp /secure/path/stage1_multisource.joblib ml/models/
+   ```
+
+   The model is intentionally not stored in Git or baked into the public image.
+   Without it, the API remains healthy but prediction endpoints return HTTP 503.
+3. Replace the example Airflow and MinIO credentials before exposing any port
    beyond localhost. Set `YOUTUBE_API_KEY` only when YouTube collection is
    needed.
-3. Start the release images:
+4. Start the release images:
 
    ```bash
    docker compose --env-file .env -f compose.yaml -f compose.bundle.yaml up -d --pull always
@@ -19,9 +28,47 @@ v2.24.4 or later and access to Docker Hub.
 The bundle pins `PROJECT_IMAGE_TAG` to its release tag. Do not change it to
 `latest` if you need a reproducible deployment.
 
-The dashboard is available at `http://localhost:8501` and Airflow at
-`http://localhost:8088` by default. Use `docker compose -f compose.yaml -f
+The dashboard is available at `http://localhost:8501`, Airflow at
+`http://localhost:8088`, and the AI-server documentation at
+`http://localhost:8000/docs` by default. Use `docker compose -f compose.yaml -f
 compose.bundle.yaml down` to stop the stack while preserving named volumes.
+
+Verify the API after startup:
+
+```bash
+curl http://localhost:8000/health
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"text":"This EV has exceptional range. Order today!","source":"x"}'
+```
+
+## Optional Qwen reports through Ollama
+
+Reports use the deterministic `template` backend by default, so the stack does
+not require an LLM. To generate reports with Qwen, install Ollama on the Docker
+host, pull the configured model, and let containers reach its API without
+exposing port 11434 outside the server firewall:
+
+```bash
+ollama pull qwen2.5:3b
+OLLAMA_HOST=0.0.0.0:11434 ollama serve
+```
+
+Then set these values in `.env` and recreate the AI-server:
+
+```dotenv
+REPORT_BACKEND=ollama
+REPORT_MODEL=qwen2.5:3b
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+```
+
+```bash
+docker compose --env-file .env -f compose.yaml -f compose.bundle.yaml up -d ai-server
+```
+
+The Compose configuration maps `host.docker.internal` to the Docker host on
+Linux. If Ollama runs on another machine, set `OLLAMA_BASE_URL` to that private
+URL instead.
 
 ## Verify and transfer data
 
