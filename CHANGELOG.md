@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.19.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.18.0...v1.19.0) (2026-07-22)
+
+
+### Features
+
+* **ml:** add ai-server api (predict + report) for the stage-1 viral model ([d99f59d](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/d99f59db285449d1877e988cbc01dd26164430f4))
+* **ml:** add ai-server api (predict + report) for the stage-1 viral model ([0f84f3e](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/0f84f3e829c24df206c8c244fc08a33bf6288a6e))
+
 ## [1.18.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.17.0...v1.18.0) (2026-07-22)
 
 
