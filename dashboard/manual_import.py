@@ -5,6 +5,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -16,6 +17,9 @@ DEFAULT_TOPIC_BY_SOURCE = {
     "reddit": "manual.reddit.raw.events",
 }
 MANUAL_IMPORT_DAG_ID = "manual_file_import_lakehouse"
+EVENT_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[1] / "schemas" / "playwright_event.avsc"
+)
 
 
 def get_manual_import_config():
@@ -162,6 +166,13 @@ def _json_or_text(value):
 
 
 def _parse_collaborators(value):
+    if isinstance(value, (list, tuple)):
+        collaborators = [
+            str(item).strip()
+            for item in value
+            if item is not None and str(item).strip()
+        ]
+        return collaborators or None
     value = _clean_value(value)
     if value is None:
         return None
@@ -175,6 +186,74 @@ def _parse_collaborators(value):
         return None
     collaborators = [str(item).strip() for item in parsed if str(item).strip()]
     return collaborators or None
+
+
+def _parse_boolean(value):
+    value = _clean_value(value)
+    if value is None:
+        return None
+    normalized = value.lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+@lru_cache(maxsize=1)
+def _event_schema_fields():
+    try:
+        schema = json.loads(EVENT_SCHEMA_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"unable to load the canonical event schema: {EVENT_SCHEMA_PATH}"
+        ) from exc
+    return tuple(schema["fields"])
+
+
+def _nullable_avro_type(field):
+    data_type = field["type"]
+    if isinstance(data_type, list):
+        data_type = next(item for item in data_type if item != "null")
+    if isinstance(data_type, dict):
+        return data_type["type"]
+    return data_type
+
+
+def _coerce_canonical_value(value, field):
+    data_type = _nullable_avro_type(field)
+    if data_type in {"int", "long"}:
+        return _parse_count(value)
+    if data_type == "double":
+        value = _clean_value(value)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    if data_type == "boolean":
+        return _parse_boolean(value)
+    if data_type == "array":
+        return _parse_collaborators(value)
+    return _clean_value(value)
+
+
+def _is_canonical_event(row):
+    return all(field in row for field in ("user_id", "timestamp", "source"))
+
+
+def _normalize_canonical_event(row, source=None):
+    """Preserve every canonical field during an export/import transfer."""
+    fields = _event_schema_fields()
+    event = {
+        field["name"]: _coerce_canonical_value(row.get(field["name"]), field)
+        for field in fields
+    }
+    selected_source = source or event.get("source")
+    if selected_source:
+        event["source"] = selected_source.lower()
+    return event
 
 
 def detect_source(row):
@@ -194,6 +273,8 @@ def detect_source(row):
 
 
 def normalize_event(row, source=None):
+    if _is_canonical_event(row):
+        return _normalize_canonical_event(row, source=source)
     source = (source or detect_source(row)).lower()
     if source == "youtube":
         return _normalize_youtube(row)
@@ -242,6 +323,8 @@ def _normalize_youtube(row):
             _first_value(
                 row,
                 "timestamp",
+                "created_at",
+                "event_ts",
                 "comment_published_at",
                 "video_published_at",
             )
@@ -300,7 +383,14 @@ def _normalize_x(row):
         "clean_text": None,
         "text_for_model": None,
         "timestamp": _parse_timestamp(
-            _first_value(row, "timestamp", "tweet_time_iso", "tweet_time")
+            _first_value(
+                row,
+                "timestamp",
+                "created_at",
+                "event_ts",
+                "tweet_time_iso",
+                "tweet_time",
+            )
         ),
         "source": "x",
         "error": _first_value(row, "error"),
@@ -355,7 +445,14 @@ def _normalize_reddit(row):
         "clean_text": None,
         "text_for_model": None,
         "timestamp": _parse_timestamp(
-            _first_value(row, "timestamp", "created_iso", "created_utc")
+            _first_value(
+                row,
+                "timestamp",
+                "created_at",
+                "event_ts",
+                "created_iso",
+                "created_utc",
+            )
         ),
         "source": "reddit",
         "error": _first_value(row, "error"),
@@ -450,10 +547,14 @@ def load_import_events(file_name, payload, source="auto"):
     for index, record in enumerate(records, start=1):
         if not isinstance(record, dict):
             raise ValueError(f"record {index} is not an object")
+        canonical_record = _is_canonical_event(record)
         event = normalize_event(record, selected_source)
+        required_fields = ("user_id", "url", "timestamp", "source")
+        if not canonical_record:
+            required_fields += ("title",)
         missing = [
             field
-            for field in ("user_id", "url", "title", "timestamp", "source")
+            for field in required_fields
             if not event.get(field)
         ]
         if missing:

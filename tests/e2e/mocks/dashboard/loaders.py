@@ -122,3 +122,8 @@ def load_iceberg_data(config=None):
         }
     ]
     return pd.DataFrame(data)
+
+
+def load_iceberg_table(table_path, config=None, limit=None):
+    dataframe = load_iceberg_data(config)
+    return dataframe.head(limit) if limit is not None else dataframe
