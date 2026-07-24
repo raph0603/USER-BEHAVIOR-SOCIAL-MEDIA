@@ -10,6 +10,7 @@ import plotly.express as px
 import requests
 import streamlit as st
 
+from ai_server import AIServerError, get_ai_server_health, predict_post
 from airflow_monitoring import AirflowClient
 from loaders import get_iceberg_config, load_iceberg_data, load_optional_iceberg_table
 from manual_import import (
@@ -1527,7 +1528,78 @@ def render_optional_table_status(label, dataframe, error):
     return True
 
 
+def render_live_ai_prediction():
+    st.subheader("Live virality prediction")
+    try:
+        health = get_ai_server_health()
+        model_state = "loaded" if health.get("model_loaded") else "available (cold)"
+        st.success(f"AI server connected — model {model_state}")
+    except AIServerError as exc:
+        st.warning(f"AI server unavailable: {exc}")
+
+    with st.form("live_ai_prediction"):
+        source = st.selectbox(
+            "Source",
+            options=["youtube", "x", "reddit", ""],
+            format_func=lambda value: value or "unspecified",
+        )
+        text = st.text_area(
+            "Post text",
+            placeholder="Paste the social-media post to score...",
+            height=140,
+        )
+        audience = st.number_input(
+            "Known audience (optional)",
+            min_value=0,
+            value=0,
+            step=1,
+        )
+        submitted = st.form_submit_button("Predict virality")
+
+    if not submitted:
+        return
+    if not text.strip():
+        st.error("Enter post text before requesting a prediction.")
+        return
+
+    try:
+        result = predict_post(
+            text.strip(),
+            source,
+            float(audience) if audience else None,
+        )
+    except AIServerError as exc:
+        st.error(f"Prediction failed: {exc}")
+        return
+
+    metrics = st.columns(3)
+    metrics[0].metric("Viral score", f"{float(result['viral_score']):.1%}")
+    metrics[1].metric("Label", str(result["label"]))
+    confidence = result.get("confidence")
+    metrics[2].metric(
+        "Confidence",
+        f"{float(confidence):.1%}" if confidence is not None else "N/A",
+    )
+    st.write(str(result.get("explanation_text", "")))
+
+    suggestions = result.get("suggestions") or []
+    if suggestions:
+        st.markdown("**Suggestions**")
+        for suggestion in suggestions:
+            st.write(f"- {suggestion}")
+
+    factors = result.get("top_factors") or []
+    if factors:
+        st.dataframe(
+            pd.DataFrame(factors),
+            width="stretch",
+            hide_index=True,
+        )
+
+
 def render_model_pipeline():
+    render_live_ai_prediction()
+    st.divider()
     st.subheader("Model pipeline")
     tables, errors = get_model_pipeline_tables()
     prepared_tables = {
