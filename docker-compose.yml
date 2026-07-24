@@ -287,6 +287,9 @@ services:
       - DASHBOARD_AIRFLOW_USERNAME=${DASHBOARD_AIRFLOW_USERNAME:-admin}
       - DASHBOARD_AIRFLOW_PASSWORD=${DASHBOARD_AIRFLOW_PASSWORD:-admin}
       - DASHBOARD_AIRFLOW_TIMEOUT_SECONDS=${DASHBOARD_AIRFLOW_TIMEOUT_SECONDS:-10}
+      - DASHBOARD_ML_API_URL=${DASHBOARD_ML_API_URL:-http://ml-api:8000}
+      - DASHBOARD_ML_API_TOKEN=${DASHBOARD_ML_API_TOKEN:-}
+      - DASHBOARD_ML_API_TIMEOUT_SECONDS=${DASHBOARD_ML_API_TIMEOUT_SECONDS:-30}
       - DASHBOARD_BALANCING_REPORT_PATH=/app/balancing/report.json
       - DASHBOARD_KAFKA_BOOTSTRAP=kafka:9092
       - DASHBOARD_MANUAL_YOUTUBE_TOPIC=${MANUAL_YOUTUBE_KAFKA_TOPIC:-manual.youtube.raw.events}
@@ -591,6 +594,38 @@ services:
         condition: service_completed_successfully
 
     command: scheduler
+
+  ml-api:
+    image: ${DOCKERHUB_NAMESPACE:-raph0603}/user-behavior-social-media-ml-api:${PROJECT_IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: ml/api.Dockerfile
+    logging: *default-logging
+    profiles: ["ml"]
+    restart: unless-stopped
+    environment:
+      ML_API_TOKEN: ${ML_API_TOKEN:-}
+    volumes:
+      - ${ML_MODEL_DIR:-./ml/models}:/app/ml/models:ro
+    ports:
+      - "${ML_API_BIND_ADDRESS:-127.0.0.1}:${ML_API_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import os, urllib.request;
+          token = os.getenv("ML_API_TOKEN", "");
+          headers = {"Authorization": f"Bearer {token}"} if token else {};
+          urllib.request.urlopen(
+              urllib.request.Request("http://localhost:8000/health", headers=headers),
+              timeout=5,
+          )
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   ai-trainer:
     image: ${DOCKERHUB_NAMESPACE:-raph0603}/user-behavior-social-media-ai-trainer:${PROJECT_IMAGE_TAG:-latest}

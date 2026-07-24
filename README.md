@@ -254,6 +254,8 @@ commands that run data import and export inside the Compose stack.
 | `user-behavior-social-media-playwright` | published as `<namespace>/user-behavior-social-media-playwright` |
 | `user-behavior-social-media-spark-master` | published as `<namespace>/user-behavior-social-media-spark-master` |
 | `user-behavior-social-media-spark-worker` | published as `<namespace>/user-behavior-social-media-spark-worker` |
+| `user-behavior-social-media-ai-trainer` | published as `<namespace>/user-behavior-social-media-ai-trainer` |
+| `user-behavior-social-media-ml-api` | published as `<namespace>/user-behavior-social-media-ml-api` |
 
 The currently published dashboard image under `raph0603` exposes these tags:
 

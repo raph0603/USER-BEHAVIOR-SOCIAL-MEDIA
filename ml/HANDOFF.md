@@ -119,22 +119,29 @@ JSON: {...}
 
 ---
 
-## 5. TASK B — Build the AI-server (API)
+## 5. TASK B — AI-server (API)
 
-**Goal:** wrap the main model behind a REST API so other services in the learning platform can call it.
+The AI server is implemented in `ml/service.py`. It wraps the main model behind
+a REST API so the Dashboard and other services can call it without importing ML
+code.
 
-**The handler already exists:** `explain_post(text, source)` (it loads the model once via a singleton). You only need to expose it over HTTP.
+The service loads `ViralExplainer` once during the FastAPI lifespan and exposes:
 
-**Suggested endpoints:**
+**Endpoints:**
 | Method | Path | Body | Response |
 |---|---|---|---|
 | POST | `/predict` | `{"text": "...", "source": "youtube"}` | the JSON schema from Section 2 |
 | POST | `/predict/batch` | `{"items": [{text, source}, ...]}` | list of JSON objects (reuse `score_batch.py` logic) |
 | GET | `/health` | — | `{"status": "ok"}` |
 
-**Suggested stack:** FastAPI + uvicorn; containerize it (use `ml/Dockerfile` as a template and add `fastapi`/`uvicorn`).
-- Load the model **at startup** (it is heavy).
-- The **API contract = the schema in Section 2** — share that with the consuming services.
+The container is defined by `ml/api.Dockerfile`; its Compose service is
+`ml-api`. The API contract remains the schema in Section 2.
+
+- The model is loaded **at startup**.
+- Missing model artifacts keep the service observable but make `/health` and
+  prediction endpoints return HTTP 503.
+- `ML_API_TOKEN` optionally enables Bearer authentication.
+- The Dashboard calls it through `DASHBOARD_ML_API_URL`.
 - Note: if a BERT content backend is used later, the server also needs `transformers` + `torch` (the current TF-IDF backend does **not**).
 
 ---

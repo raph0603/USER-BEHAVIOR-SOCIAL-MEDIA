@@ -1,0 +1,3 @@
+-r requirements-train.txt
+fastapi==0.139.2
+uvicorn==0.51.0

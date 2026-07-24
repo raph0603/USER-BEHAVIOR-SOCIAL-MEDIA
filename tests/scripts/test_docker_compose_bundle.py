@@ -18,6 +18,7 @@ class DockerComposeBundleTests(unittest.TestCase):
             "airflow-init",
             "airflow-webserver",
             "airflow-scheduler",
+            "ml-api",
             "ai-trainer",
         }
 
@@ -30,13 +31,15 @@ class DockerComposeBundleTests(unittest.TestCase):
         )
 
         self.assertIn("user-behavior-social-media-ai-trainer", workflow)
+        self.assertIn("user-behavior-social-media-ml-api", workflow)
         self.assertIn("publish-compose-bundle:", workflow)
         self.assertIn("gh release upload", workflow)
 
-    def test_ml_service_is_not_started_by_default(self):
+    def test_ml_services_are_not_started_by_default(self):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
         self.assertIn('profiles: ["ml"]', compose)
+        self.assertIn("DASHBOARD_ML_API_URL=${DASHBOARD_ML_API_URL:-http://ml-api:8000}", compose)
 
     def test_airflow_keeps_the_bundle_release_and_minio_credentials(self):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")

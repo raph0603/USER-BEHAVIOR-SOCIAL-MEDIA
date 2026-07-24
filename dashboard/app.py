@@ -19,6 +19,7 @@ from manual_import import (
     publish_events,
     summarize_events,
 )
+from ml_api import MLAPIError, get_ml_health, predict_post
 from navigation import render_navigation
 
 
@@ -1700,7 +1701,73 @@ def render_optional_table_status(label, dataframe, error):
     return True
 
 
+def render_live_ml_prediction():
+    st.subheader("Live virality prediction")
+    try:
+        health = get_ml_health()
+        st.success(f"ML API connected — model {health.get('model', 'ready')}")
+    except MLAPIError as exc:
+        st.warning(f"ML API unavailable: {exc}")
+
+    with st.form("live_ml_prediction"):
+        source = st.selectbox(
+            "Source",
+            options=["youtube", "x", "reddit", ""],
+            format_func=lambda value: value or "unspecified",
+        )
+        text = st.text_area(
+            "Post text",
+            placeholder="Paste the social-media post to score...",
+            height=140,
+        )
+        audience = st.number_input(
+            "Known audience (optional)",
+            min_value=0,
+            value=0,
+            step=1,
+        )
+        submitted = st.form_submit_button("Predict virality")
+
+    if not submitted:
+        return
+    if not text.strip():
+        st.error("Enter post text before requesting a prediction.")
+        return
+
+    try:
+        result = predict_post(
+            text.strip(),
+            source,
+            float(audience) if audience else None,
+        )
+    except MLAPIError as exc:
+        st.error(f"Prediction failed: {exc}")
+        return
+
+    metrics = st.columns(3)
+    metrics[0].metric("Viral score", f"{float(result['viral_score']):.1%}")
+    metrics[1].metric("Label", str(result["label"]))
+    metrics[2].metric("Confidence", f"{float(result['confidence']):.1%}")
+    st.write(str(result.get("explanation_text", "")))
+
+    suggestions = result.get("suggestions") or []
+    if suggestions:
+        st.markdown("**Suggestions**")
+        for suggestion in suggestions:
+            st.write(f"- {suggestion}")
+
+    factors = result.get("top_factors") or []
+    if factors:
+        st.dataframe(
+            pd.DataFrame(factors),
+            width="stretch",
+            hide_index=True,
+        )
+
+
 def render_model_pipeline():
+    render_live_ml_prediction()
+    st.divider()
     st.subheader("Model pipeline")
     tables, errors = get_model_pipeline_tables()
     prepared_tables = {

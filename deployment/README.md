@@ -25,7 +25,19 @@ compose.bundle.yaml down` to stop the stack while preserving named volumes.
 
 ## Optional ML profile
 
-The `ml` profile is intentionally not started with the core stack. It needs a
-host workspace for training input and generated model artifacts. Use the source
-repository for that workflow, or provide an explicit host workspace before
-running the profile.
+The `ml` profile is intentionally not started with the core stack. It contains
+the batch trainer and the HTTP inference service. Copy the trained model
+artifacts into `./ml/models` (or set `ML_MODEL_DIR`), configure matching
+`ML_API_TOKEN` and `DASHBOARD_ML_API_TOKEN` values when authentication is
+required, then start the API:
+
+```bash
+mkdir -p ml/models
+docker compose --env-file .env -f compose.yaml -f compose.bundle.yaml --profile ml up -d ml-api
+docker compose --env-file .env -f compose.yaml -f compose.bundle.yaml --profile ml ps
+```
+
+The Dashboard calls `http://ml-api:8000` on the private Compose network. The
+host mapping defaults to `127.0.0.1:8000`; do not expose it publicly without TLS
+and authentication. Training still needs a host workspace and input export, so
+use the source repository for the `ai-trainer` workflow.

@@ -44,6 +44,25 @@ $env:PYTHONIOENCODING='utf-8'            # Windows: avoid console encoding issue
 
 Reuse in code: `from serve.explain_viral import explain_post; explain_post(text, source)`.
 
+## HTTP inference API
+
+The optional `ml-api` Compose service exposes the Stage-1 model without coupling
+callers to its Python implementation:
+
+```bash
+docker compose --profile ml up -d ml-api
+curl http://localhost:8000/health
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"text":"A new EV launch with 500 km range","source":"youtube"}'
+```
+
+Copy the trained artifacts to `ML_MODEL_DIR` (default `./ml/models`) before
+starting the service. Set the same non-empty value in `ML_API_TOKEN` and
+`DASHBOARD_ML_API_TOKEN` to require Bearer authentication. The Dashboard uses
+`DASHBOARD_ML_API_URL` and defaults to the internal Compose URL
+`http://ml-api:8000`.
+
 ## File structure
 
 | File | Role |
@@ -60,6 +79,7 @@ Reuse in code: `from serve.explain_viral import explain_post; explain_post(text,
 | `train/evaluate.py` | overall + per-source metrics |
 | `serve/explain_viral.py` | predict + SHAP → explanation JSON |
 | `serve/score_batch.py` | batch scoring CSV → JSONL |
+| `service.py` | FastAPI inference service (`/health`, `/predict`, `/predict/batch`) |
 | `run_pipeline.py` | run the whole chain end-to-end |
 | `models/*.parquet`, `data/*` | artifacts (gitignored) |
 

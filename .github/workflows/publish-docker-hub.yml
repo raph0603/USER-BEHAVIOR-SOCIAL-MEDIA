@@ -41,6 +41,9 @@ jobs:
           - image: user-behavior-social-media-ai-trainer
             context: .
             dockerfile: ./ml/Dockerfile
+          - image: user-behavior-social-media-ml-api
+            context: .
+            dockerfile: ./ml/api.Dockerfile
 
     env:
       DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}

@@ -22,5 +22,7 @@ services:
     build: !reset null
   airflow-scheduler:
     build: !reset null
+  ml-api:
+    build: !reset null
   ai-trainer:
     build: !reset null
