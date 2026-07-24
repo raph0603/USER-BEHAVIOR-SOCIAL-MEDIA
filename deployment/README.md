@@ -42,6 +42,46 @@ curl -X POST http://localhost:8000/predict \
   -d '{"text":"This EV has exceptional range. Order today!","source":"x"}'
 ```
 
+## Run the ML API on a separate server
+
+The bundle includes `compose.split.yaml` so the core stack can run without the
+model or the AI-server image. Use a private network between both servers and
+generate one long random token shared only by the AI-server and dashboard.
+
+On the ML server, set:
+
+```dotenv
+AI_SERVER_BIND_ADDRESS=10.0.0.20
+AI_SERVER_TOKEN=replace-with-a-long-random-token
+AI_MODEL_DIR=./ml/models
+```
+
+Then start only the inference service:
+
+```bash
+docker compose --env-file .env -f compose.yaml -f compose.bundle.yaml \
+  -f compose.split.yaml --profile ml-server up -d --pull always ai-server
+```
+
+On the core server, set the ML server's private URL and the same token:
+
+```dotenv
+DASHBOARD_AI_SERVER_URL=http://10.0.0.20:8000
+DASHBOARD_AI_SERVER_TOKEN=replace-with-the-same-long-random-token
+```
+
+Start the core stack without the ML service:
+
+```bash
+docker compose --env-file .env -f compose.yaml -f compose.bundle.yaml \
+  -f compose.split.yaml up -d --pull always
+```
+
+The dashboard now calls `POST /predict` over HTTP. Keep port 8000 restricted to
+the core server's private IP in the ML server firewall. `/health` stays public
+for container and infrastructure probes; prediction and report endpoints require
+the Bearer token when `AI_SERVER_TOKEN` is set.
+
 ## Optional Qwen reports through Ollama
 
 Reports use the deterministic `template` backend by default, so the stack does

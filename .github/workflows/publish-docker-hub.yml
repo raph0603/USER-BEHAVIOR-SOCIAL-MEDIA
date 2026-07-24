@@ -134,6 +134,7 @@ jobs:
           mkdir -p "$BUNDLE_DIR/ml/models"
           cp docker-compose.yml "$BUNDLE_DIR/compose.yaml"
           cp deployment/compose.bundle.yaml "$BUNDLE_DIR/compose.bundle.yaml"
+          cp deployment/compose.split.yaml "$BUNDLE_DIR/compose.split.yaml"
           cp deployment/README.md "$BUNDLE_DIR/README.md"
           sed "s/^PROJECT_IMAGE_TAG=.*/PROJECT_IMAGE_TAG=${IMAGE_TAG}/" \
             .env.example > "$BUNDLE_DIR/.env.example"
