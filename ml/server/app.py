@@ -20,10 +20,13 @@ explain_viral). Call GET /health after startup to warm it up.
 """
 from __future__ import annotations
 
+import os
+import secrets
 import sys
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -59,6 +62,22 @@ def _default_predict(text: str, source: str, audience: float | None) -> dict:
 
 
 predict_fn = _default_predict
+
+
+def require_api_token(
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
+    """Require a matching Bearer token when AI_SERVER_TOKEN is configured."""
+    expected = os.getenv("AI_SERVER_TOKEN", "").strip()
+    if not expected:
+        return
+    scheme, _, supplied = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 def _run(req: PredictRequest) -> dict:
@@ -102,12 +121,12 @@ def health() -> dict:
     return {"status": "ok", "model_loaded": loaded}
 
 
-@app.post("/predict")
+@app.post("/predict", dependencies=[Depends(require_api_token)])
 def predict(req: PredictRequest) -> dict:
     return _run(req)
 
 
-@app.post("/predict/batch")
+@app.post("/predict/batch", dependencies=[Depends(require_api_token)])
 def predict_batch(req: BatchRequest) -> list[dict]:
     return [_run(item) for item in req.items]
 
@@ -134,7 +153,7 @@ class ReportRequest(BaseModel):
     lang: str = Field("en", description='Report language: "en" or "vi".')
 
 
-@app.post("/report")
+@app.post("/report", dependencies=[Depends(require_api_token)])
 def report(req: ReportRequest) -> dict:
     if req.source not in VALID_SOURCES:
         raise HTTPException(status_code=422, detail=f"source must be one of {sorted(VALID_SOURCES)}")

@@ -1,0 +1,7 @@
+# Optional override for a split deployment.
+#
+# On the core server this keeps the AI server out of the default stack. On the
+# ML server, enable the profile and start only `ai-server`.
+services:
+  ai-server:
+    profiles: ["ml-server"]

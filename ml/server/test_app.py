@@ -45,6 +45,29 @@ def test_predict_ok():
     assert "source='youtube'" in body["explanation_text"]
 
 
+def test_prediction_requires_configured_bearer_token(monkeypatch):
+    monkeypatch.setenv("AI_SERVER_TOKEN", "server-secret")
+
+    unauthenticated = client.post("/predict", json={"text": "hello", "source": "x"})
+    authenticated = client.post(
+        "/predict",
+        json={"text": "hello", "source": "x"},
+        headers={"Authorization": "Bearer server-secret"},
+    )
+
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.headers["www-authenticate"] == "Bearer"
+    assert authenticated.status_code == 200
+
+
+def test_health_remains_available_without_authentication(monkeypatch):
+    monkeypatch.setenv("AI_SERVER_TOKEN", "server-secret")
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+
+
 def test_predict_bad_source():
     r = client.post("/predict", json={"text": "hi", "source": "tiktok"})
     assert r.status_code == 422
