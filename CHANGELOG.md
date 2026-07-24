@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.21.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.20.0...v1.21.0) (2026-07-24)
+
+
+### Features
+
+* **ml:** support remote inference server ([26f1ce2](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/26f1ce28d84d345fb89c9e277ddf64bf41f3575d))
+* **ml:** support remote inference server ([27140d3](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/27140d30b6381bcb77cbbb5cb4b364dfd27ad8fb))
+
 ## [1.20.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.19.0...v1.20.0) (2026-07-22)
 
 
