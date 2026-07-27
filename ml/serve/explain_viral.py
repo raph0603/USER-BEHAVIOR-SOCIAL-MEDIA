@@ -45,6 +45,8 @@ FEATURE_LABELS = {
     "role_n_segments": "Number of segments",
     "chan_log_audience": "Channel audience size (followers/subscribers)",
     "chan_has_audience": "Channel audience known",
+    "chan_audience_available": "Channel audience known",
+    "chan_audience_is_zero": "Channel has no audience",
 }
 _ROLE_LABELS = {
     "cta": "call to action (CTA)",
@@ -97,10 +99,17 @@ class ViralExplainer:
         for col in self.features:
             if col.startswith("src_"):
                 df[col] = 1.0 if col == f"src_{src}" else 0.0
-        if "chan_log_audience" in self.features:  # channel audience size (0 when unknown)
-            aud = max(float(audience or 0.0), 0.0)
-            df["chan_log_audience"] = np.log1p(aud)
-            df["chan_has_audience"] = 1.0 if aud > 0 else 0.0
+        # Mirror preprocess.build_dataset.add_channel_features: an unknown audience is
+        # NaN in training and 0 means an author with no followers, so serving must not
+        # collapse the two -- the model never saw a 0 and reads it as a real, tiny
+        # audience, which alone drags the score to ~0.
+        if "chan_log_audience" in self.features:
+            known = audience is not None
+            aud = max(float(audience), 0.0) if known else np.nan
+            df["chan_log_audience"] = np.log1p(aud) if known else np.nan
+            df["chan_has_audience"] = 1.0 if known else 0.0
+            df["chan_audience_available"] = 1.0 if known else 0.0
+            df["chan_audience_is_zero"] = 1.0 if known and aud == 0 else 0.0
         return df.reindex(columns=self.features, fill_value=0.0).astype(float)
 
     def _contributions(self, X: pd.DataFrame) -> pd.Series:
