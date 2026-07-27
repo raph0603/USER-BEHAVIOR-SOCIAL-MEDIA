@@ -100,10 +100,12 @@ def content_scores(text: pd.Series, y: pd.Series, train_idx, test_idx, seed: int
 def train_model(X_train: pd.DataFrame, y_train: pd.Series, seed: int) -> xgb.XGBClassifier:
     pos = int(y_train.sum())
     neg = int(len(y_train) - pos)
+    # depth/learning-rate picked by grid search on author-grouped out-of-fold PR-AUC over
+    # the train split (0.618 -> 0.631); at ~2.9k rows deeper trees only overfit.
     model = xgb.XGBClassifier(
         n_estimators=300,
-        max_depth=4,
-        learning_rate=0.05,
+        max_depth=3,
+        learning_rate=0.03,
         subsample=0.9,
         colsample_bytree=0.9,
         min_child_weight=2,
