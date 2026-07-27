@@ -123,6 +123,10 @@ on this machine yet.
 
 ## Current results
 
+> Summary only. `ml/RESULTS.md` carries the full picture: artifacts, per-family and
+> per-feature weights, the decision table, how each figure was reached, and what the numbers
+> do not say.
+
 3798 labelled rows (2928 train / 870 test), 52 features, 2367 rows with a known channel
 audience across all three sources. Every number below comes from
 `train/verify_answers.py`, which scores exactly what serving returns (calibrated
@@ -164,4 +168,5 @@ stand-in for "is this YouTube?" rather than a virality signal. Unknown audiences
 - Collect more data (especially X/Reddit) to balance sources and raise `--quantile` toward the paper standard (0.75 → 0.90). X has only 150 test rows, which is why its CI spans 0.16.
 - **Stage 2** is written but has never seen real data. `silver.engagement_snapshots` lives on the unmerged `feat/youtube-metadata-evolution` branch and, once merged, still needs days of polling before a post carries several observations. Until then the only evidence the layer is correct is its tests.
 
-> Architecture diagram: `ml/ARCHITECTURE.md`. Handoff for the API/UI tasks: `ml/HANDOFF.md`.
+> Full results, feature weights and caveats: `ml/RESULTS.md`. Architecture diagram:
+> `ml/ARCHITECTURE.md`. Handoff for the API/UI tasks: `ml/HANDOFF.md`.
