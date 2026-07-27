@@ -124,6 +124,33 @@ class DroppedPostTests(unittest.TestCase):
         self.assertEqual(set(built["view_count"]), {9000, 200})
 
 
+class FusionInputTests(unittest.TestCase):
+    """The trainer joins back to the Stage-1 dataset by URL; the sequences must carry it."""
+
+    def setUp(self):
+        self.rows = [
+            observation("k", 0.5, 100), observation("k", 3.0, 400), observation("k", 30.0, 9000),
+        ]
+
+    def test_the_join_key_survives_aggregation(self):
+        built = STAGE2.build_sequences(frame(self.rows), horizon_hours=6, label_hours=24)
+
+        self.assertEqual(built.iloc[0]["url"], "https://youtu.be/k")
+
+    def test_stage1_score_joins_the_feature_set_only_once_present(self):
+        built = STAGE2.build_sequences(frame(self.rows), horizon_hours=6, label_hours=24)
+        TRAIN2 = _load("ml_train_stage2", ML_ROOT / "train" / "train_stage2.py")
+
+        self.assertNotIn("stage1_score", TRAIN2.feature_columns(built))
+        built["stage1_score"] = 0.4
+        self.assertIn("stage1_score", TRAIN2.feature_columns(built))
+
+    def test_the_join_key_is_never_a_feature(self):
+        built = STAGE2.build_sequences(frame(self.rows), horizon_hours=6, label_hours=24)
+
+        self.assertNotIn("url", STAGE2.feature_columns(built))
+
+
 class ContractTests(unittest.TestCase):
     def test_a_horizon_at_or_past_the_label_is_rejected(self):
         rows = [observation("g", 1.0, 10), observation("g", 30.0, 90)]

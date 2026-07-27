@@ -129,7 +129,13 @@ def build_sequences(
         if outcome.empty:
             dropped["no_outcome"] += 1
             continue
-        row = {"post_id": post["post_id"].iloc[0], "source": post["source"].iloc[0]}
+        # `url` travels with the row so the trainer can join back to the Stage-1 dataset,
+        # which is the only place carrying the author identity and the post text.
+        row = {
+            "post_id": post["post_id"].iloc[0],
+            "source": post["source"].iloc[0],
+            "url": post["url"].iloc[0],
+        }
         row.update(_agg(window))
         # Counters at the label horizon feed add_viral_label; they never become features.
         final = outcome.iloc[0]
