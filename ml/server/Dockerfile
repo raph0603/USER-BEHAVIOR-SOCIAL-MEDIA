@@ -4,10 +4,14 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Model stack + web-serving extras.
+# Model stack + web-serving extras. On linux/amd64 xgboost declares the CUDA runtime
+# wheels, which land 400 MB of nvidia/* in an image that only ever scores on CPU; xgboost
+# loads them lazily for GPU training, so dropping them leaves inference untouched.
 COPY requirements-train.txt /tmp/requirements-train.txt
 COPY server/requirements.txt /tmp/requirements-server.txt
-RUN pip install --no-cache-dir -r /tmp/requirements-train.txt -r /tmp/requirements-server.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-train.txt -r /tmp/requirements-server.txt \
+    && pip uninstall -y nvidia-nccl-cu12 2>/dev/null || true \
+    && rm -rf /usr/local/lib/python3.12/site-packages/nvidia
 
 # Application code (whole ml/ tree so serve/, features/, preprocess/ are importable).
 COPY . /app

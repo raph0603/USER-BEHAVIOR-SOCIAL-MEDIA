@@ -148,6 +148,37 @@ class AudienceFeatureTests(unittest.TestCase):
         self.assertEqual(result.loc[0, "chan_audience_is_zero"], 1)
         self.assertEqual(result.loc[1, "chan_has_audience"], 0)
 
+    def test_a_real_count_survives_a_coverage_flag_that_denies_it(self):
+        # The export merges a value from one collector with the flags of another: YouTube
+        # videos.list cannot see subscriber counts and says so, while the row carries a
+        # count fetched by channels.list. Discarding it cost 977 of 1042 known audiences.
+        frame = pd.DataFrame(
+            {
+                "subscriber_count": [984000.0, np.nan],
+                "subscriber_count_available": [False, False],
+            }
+        )
+
+        result = BUILD_DATASET.add_channel_features(frame)
+
+        self.assertEqual(result.loc[0, "chan_has_audience"], 1)
+        self.assertAlmostEqual(result.loc[0, "chan_log_audience"], np.log1p(984000.0))
+        self.assertEqual(result.loc[1, "chan_has_audience"], 0)
+
+    def test_a_denied_zero_stays_unknown(self):
+        # The flag still earns its keep: an un-observed placeholder zero must not be read
+        # as an author who genuinely has no audience.
+        frame = pd.DataFrame(
+            {"follower_count": [0.0, 0.0], "follower_count_available": [False, True]}
+        )
+
+        result = BUILD_DATASET.add_channel_features(frame)
+
+        self.assertEqual(result.loc[0, "chan_has_audience"], 0)
+        self.assertTrue(np.isnan(result.loc[0, "chan_log_audience"]))
+        self.assertEqual(result.loc[1, "chan_has_audience"], 1)
+        self.assertEqual(result.loc[1, "chan_audience_is_zero"], 1)
+
 
 class OfficialTrainingInputTests(unittest.TestCase):
     def test_manifest_resolves_one_exact_relative_parquet_dataset(self):

@@ -23,6 +23,7 @@ if str(ML_ROOT) not in sys.path:
 from features.rhetorical_roles import RoleFeaturizer
 from features.topics import TopicFeaturizer
 from preprocess.build_dataset import add_text_features, clean_text
+from train.train_viral import apply_calibrator
 
 MODEL_PATH = ML_ROOT / "models" / "stage1_multisource.joblib"
 DECISION_THRESHOLD = 0.50
@@ -45,6 +46,8 @@ FEATURE_LABELS = {
     "role_n_segments": "Number of segments",
     "chan_log_audience": "Channel audience size (followers/subscribers)",
     "chan_has_audience": "Channel audience known",
+    "chan_audience_available": "Channel audience known",
+    "chan_audience_is_zero": "Channel has no audience",
 }
 _ROLE_LABELS = {
     "cta": "call to action (CTA)",
@@ -77,6 +80,9 @@ class ViralExplainer:
         bundle = joblib.load(model_path)
         self.model = bundle["model"]
         self.features = bundle["features"]
+        # Both absent in models trained before calibration; 0.5 was the old default.
+        self.calibrator = bundle.get("calibrator")
+        self.threshold = float(bundle.get("threshold") or DECISION_THRESHOLD)
         if "content_model" in bundle:
             self.content_model = bundle["content_model"]
         else:  # BERT backend: rebuild from the saved model folder
@@ -97,10 +103,17 @@ class ViralExplainer:
         for col in self.features:
             if col.startswith("src_"):
                 df[col] = 1.0 if col == f"src_{src}" else 0.0
-        if "chan_log_audience" in self.features:  # channel audience size (0 when unknown)
-            aud = max(float(audience or 0.0), 0.0)
-            df["chan_log_audience"] = np.log1p(aud)
-            df["chan_has_audience"] = 1.0 if aud > 0 else 0.0
+        # Mirror preprocess.build_dataset.add_channel_features: an unknown audience is
+        # NaN in training and 0 means an author with no followers, so serving must not
+        # collapse the two -- the model never saw a 0 and reads it as a real, tiny
+        # audience, which alone drags the score to ~0.
+        if "chan_log_audience" in self.features:
+            known = audience is not None
+            aud = max(float(audience), 0.0) if known else np.nan
+            df["chan_log_audience"] = np.log1p(aud) if known else np.nan
+            df["chan_has_audience"] = 1.0 if known else 0.0
+            df["chan_audience_available"] = 1.0 if known else 0.0
+            df["chan_audience_is_zero"] = 1.0 if known and aud == 0 else 0.0
         return df.reindex(columns=self.features, fill_value=0.0).astype(float)
 
     def _contributions(self, X: pd.DataFrame) -> pd.Series:
@@ -125,10 +138,14 @@ class ViralExplainer:
         text: str,
         source: str = "",
         audience: float | None = None,
-        threshold: float = DECISION_THRESHOLD,
+        threshold: float | None = None,
     ) -> dict:
+        threshold = self.threshold if threshold is None else threshold
         X = self._feature_row(text, source, audience)
         score = float(self.model.predict_proba(X)[0, 1])
+        if self.calibrator is not None:
+            # Monotonic, so the SHAP factors below still explain the reported score.
+            score = float(apply_calibrator(self.calibrator, [score])[0])
         contribs = self._contributions(X)
 
         top = contribs.reindex(contribs.abs().sort_values(ascending=False).index).head(TOP_K)
@@ -146,7 +163,12 @@ class ViralExplainer:
         down = [f["label"] for f in top_factors if f["direction"] == "down"][:3]
         is_viral = int(score >= threshold)
 
-        parts = [f"Prediction: {'likely viral' if is_viral else 'unlikely viral'} (probability {score:.0%})."]
+        # State the threshold: only a quarter of posts go viral, so the boundary sits
+        # well below 50% and "likely viral at 34%" reads like a bug without it.
+        parts = [
+            f"Prediction: {'likely viral' if is_viral else 'unlikely viral'} "
+            f"(probability {score:.0%}, decision threshold {threshold:.0%})."
+        ]
         if up:
             parts.append("Factors increasing it: " + ", ".join(up) + ".")
         if down:
@@ -155,7 +177,9 @@ class ViralExplainer:
         return {
             "viral_score": round(score, 3),
             "label": "viral-likely" if is_viral else "not-viral",
-            "confidence": round(2 * abs(score - 0.5), 3),
+            # Distance from the decision boundary, not from 0.5: the calibrated
+            # threshold sits near the base rate, so 0.5 is no longer the tipping point.
+            "confidence": round(abs(score - threshold) / max(threshold, 1 - threshold), 3),
             "top_factors": top_factors,
             "explanation_text": " ".join(parts),
             "suggestions": self._suggestions(X, is_viral),

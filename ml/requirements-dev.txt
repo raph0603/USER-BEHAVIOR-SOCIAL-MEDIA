@@ -1,0 +1,30 @@
+# Local development dependencies for ml/.venv: running the tests and the analysis tools.
+# Neither image installs this file -- ml/Dockerfile and ml/server/Dockerfile stay lean.
+#
+#   pip install -r ml/requirements-train.txt -r ml/server/requirements.txt -r ml/requirements-dev.txt
+#
+# Do NOT install the repo-root requirements-test.txt into this venv: it pins
+# pandas==2.2.3 / numpy==2.2.6 and would downgrade the model stack pinned in
+# requirements-train.txt (pandas 3.0.3 / numpy 2.4.6).
+
+pytest==9.1.1
+httpx==0.28.1          # transport behind fastapi.testclient.TestClient
+
+matplotlib==3.11.0     # ml/train/verify_answers.py draws the reliability diagram
+
+# tests/scripts/ imports the Kafka/Avro pipeline modules at collection time, so the whole
+# suite fails to collect without these -- even for tests that never touch a broker.
+fastavro==1.12.2
+confluent-kafka[schemaregistry]==2.15.0
+authlib==1.7.2         # pulled in by confluent_kafka.schema_registry
+cachetools==7.1.6      # pulled in by confluent_kafka.schema_registry
+cffi==2.1.0            # authlib needs a working _cffi_backend
+
+# Still missing on purpose: pyspark. tests/scripts/test_engagement_snapshots.py,
+# test_silver_post_features.py and test_pipeline_monitoring.py exercise Spark jobs that
+# really run inside the spark-master container, and a local SparkSession on Windows also
+# needs winutils.exe + HADOOP_HOME. Skip them here:
+#   pytest tests/scripts -q \
+#     --ignore=tests/scripts/test_engagement_snapshots.py \
+#     --ignore=tests/scripts/test_silver_post_features.py \
+#     --ignore=tests/scripts/test_pipeline_monitoring.py

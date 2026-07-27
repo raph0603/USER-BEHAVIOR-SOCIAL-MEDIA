@@ -1,0 +1,21 @@
+# What ml/notebooks/*.ipynb need on top of requirements-train.txt.
+#
+#   pip install -r ml/requirements-train.txt -r ml/requirements-notebooks.txt
+#
+# Only the exploration notebooks use these. Neither image installs this file, and the
+# trained pipeline does not import any of them -- ml/serve/explain_viral.py computes SHAP
+# values through xgboost's built-in `pred_contribs`, not through the `shap` package.
+#
+# This replaces a `pip freeze` dump that had drifted: it listed jupyter and vaderSentiment
+# but had lost xgboost, shap, sentence-transformers and bertopic, so installing from it
+# could not run a single notebook. Listing intent instead of a snapshot keeps that from
+# happening again.
+
+jupyter==1.1.1
+matplotlib==3.11.0
+
+vaderSentiment==3.3.2          # 01_eda, 02_features
+shap==0.52.0                   # 03_model explores global SHAP plots
+sentence-transformers==5.6.0   # 11_stage1_content_embed
+bertopic==0.17.4               # 12_stage1_topic
+duckdb==1.5.4                  # querying lakehouse exports from a notebook
