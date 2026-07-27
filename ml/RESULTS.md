@@ -261,9 +261,14 @@ be credited to a leakage-free feature improvement.
   remaining 782 Reddit rows with it would raise coverage without adding information — it
   would act as a disguised subreddit indicator. Author karma, collected at crawl time, is the
   signal worth having.
-- **No Stage-2 number exists.** `build_stage2_dataset.py` and `train_stage2.py` are written
-  and tested against synthetic trajectories, but `silver.engagement_snapshots` has no history
-  yet. Any Stage-2 metric you see today was produced from generated data.
+- **No Stage-2 number exists**, and the first one will need a caveat. `build_stage2_dataset.py`
+  and `train_stage2.py` are written and tested against synthetic trajectories, but
+  `silver.engagement_snapshots` has no history yet. Worse, the task hides a trap: engagement
+  counters are cumulative, so the level a post has reached by the horizon is a lower bound on
+  its level at the label horizon — "big now" predicts "big later" for free. On the synthetic
+  trajectories, ranking by the 6-hour view count alone beat the trained model (ROC-AUC 0.829
+  vs 0.806). `train_stage2.py` prints that baseline beside every result for exactly this
+  reason; a Stage-2 figure that does not clear it has learnt nothing about the curve.
 - **Two earlier figures are wrong and still circulate:** overall PR-AUC **0.773** and YouTube
   ROC-AUC **0.931**. Both came from filling an unknown audience with `0`, which turned the
   feature into a near-perfect stand-in for "is this YouTube?".

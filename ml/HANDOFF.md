@@ -213,6 +213,14 @@ Because the table is still empty, the layer is verified only against synthetic t
 (`tests/scripts/test_stage2_sequences.py`) — **no Stage-2 performance number should be
 quoted yet**.
 
+There is also a framing trap worth knowing before the first real run. Engagement counters are
+cumulative, so whatever a post has accumulated by the horizon is a lower bound on what it
+shows at the label horizon: "big now" predicts "big later" almost for free. On the synthetic
+trajectories, ranking posts by the 6-hour view count alone scored ROC-AUC **0.829** while the
+trained model scored **0.806** — the baseline won. `train_stage2.py` therefore prints that
+baseline next to every result. A Stage-2 number that does not clear it says nothing about the
+shape of the curve, which is the only thing Stage 2 is for.
+
 What remains is therefore operational, not modelling: merge that branch and let it
 accumulate readings, then run the two scripts above and finally report a real number.
 

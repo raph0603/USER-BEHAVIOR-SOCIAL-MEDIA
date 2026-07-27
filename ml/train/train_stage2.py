@@ -16,6 +16,13 @@ Joining the Stage-1 dataset does double duty: it supplies the fusion feature *an
 `author_hash` that the snapshot table lacks, without which train and test could share an
 author. Training without the join is supported for a quick look, and says so loudly.
 
+Read the baselines before believing the headline number. Engagement counters are cumulative,
+so whatever a post has already accumulated by the horizon is a lower bound on what it will
+show at the label horizon -- "big now" predicts "big later" nearly for free, and on synthetic
+trajectories the 6h view count alone scored ROC-AUC 0.89. The interesting question is whether
+the *shape* of the curve adds anything on top of that level, which is exactly the gap this
+script prints.
+
     python ml/train/train_stage2.py --data ml/data/stage2_dataset.parquet \
         --stage1-data ml/data/train_dataset.parquet \
         --stage1-model ml/models/stage1_multisource.joblib
@@ -44,6 +51,7 @@ DEFAULT_DATA = ML_ROOT / "data" / "stage2_dataset.parquet"
 DEFAULT_MODEL = ML_ROOT / "models" / "stage2_engagement.joblib"
 TARGET = "viral"
 STAGE1_FEATURE = "stage1_score"
+LEVEL_BASELINE = "seq_log_view_count"  # "it is already big", the line Stage 2 must clear
 
 
 def feature_columns(df: pd.DataFrame) -> list[str]:
@@ -119,17 +127,28 @@ def train_model(X_train: pd.DataFrame, y_train: pd.Series, seed: int) -> xgb.XGB
     return model
 
 
-def report(y_true, proba, threshold: float, label: str) -> None:
+def report(y_true, score, threshold: float, label: str) -> None:
+    """Rank quality always; Brier and the catch rate only when `score` is a probability.
+
+    The level baseline is a raw log-count, so it ranks posts but cannot be read as a
+    probability or cut at the serving threshold.
+    """
     if len(np.unique(y_true)) < 2:
         print(f"{label:9} n={len(y_true):4}  single class in this slice")
         return
-    hits = (proba >= threshold).astype(int)
-    tp = int(((hits == 1) & (y_true == 1)).sum())
-    print(
-        f"{label:9} n={len(y_true):4}  PR-AUC={average_precision_score(y_true, proba):.3f}  "
-        f"ROC-AUC={roc_auc_score(y_true, proba):.3f}  Brier={brier_score_loss(y_true, proba):.3f}  "
-        f"caught={tp}/{int(y_true.sum())}"
+    line = (
+        f"{label:9} n={len(y_true):4}  PR-AUC={average_precision_score(y_true, score):.3f}  "
+        f"ROC-AUC={roc_auc_score(y_true, score):.3f}"
     )
+    if float(np.nanmin(score)) >= 0.0 and float(np.nanmax(score)) <= 1.0:
+        hits = (score >= threshold).astype(int)
+        tp = int(((hits == 1) & (y_true == 1)).sum())
+        line += (
+            f"  Brier={brier_score_loss(y_true, score):.3f}  caught={tp}/{int(y_true.sum())}"
+        )
+    else:
+        line += "  (ranking score, not a probability)"
+    print(line)
 
 
 def main() -> None:
@@ -175,11 +194,18 @@ def main() -> None:
         mask = sources == source
         report(y_test.to_numpy()[mask], proba[mask], threshold, source)
 
+    # Baselines. Engagement counters are cumulative, so the level already reached at the
+    # horizon is a lower bound on the level at the label horizon: "big now" predicts "big
+    # later" almost for free. A Stage-2 model that does not clear this line has learnt
+    # nothing about the shape of the curve, whatever its absolute ROC-AUC looks like.
+    print("\nBaselines on the same rows -- Stage 2 has to beat these to mean anything:")
+    if LEVEL_BASELINE in df.columns:
+        level = df[LEVEL_BASELINE].iloc[test_idx].to_numpy()
+        report(y_test.to_numpy(), level, threshold, "level")
     if STAGE1_FEATURE in features:
         stage1 = df[STAGE1_FEATURE].iloc[test_idx].to_numpy()
         keep = ~np.isnan(stage1)
         if keep.any() and len(np.unique(y_test.to_numpy()[keep])) > 1:
-            print("\nStage-1 alone on the same rows, for comparison:")
             report(y_test.to_numpy()[keep], stage1[keep], threshold, "stage1")
 
     importance = pd.Series(model.feature_importances_, index=features).sort_values(ascending=False)
