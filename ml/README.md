@@ -53,6 +53,31 @@ $env:PYTHONIOENCODING='utf-8'            # Windows: avoid console encoding issue
 
 Reuse in code: `from serve.explain_viral import explain_post; explain_post(text, source)`.
 
+## Tests
+
+`requirements-train.txt` carries only what training and serving need, so install the dev
+extras once before running the suite:
+
+```powershell
+& ".\ml\.venv\Scripts\pip.exe" install -r ml/requirements-dev.txt
+```
+
+```powershell
+# the AI surface -- audience contract, train/serve parity, stage-2 time split, the API:
+& ".\ml\.venv\Scripts\python.exe" -m pytest tests/scripts/test_lakehouse_training_dataset.py `
+    tests/scripts/test_serve_train_parity.py tests/scripts/test_stage2_sequences.py `
+    ml/server/test_app.py -q
+# the whole repo, minus the Spark jobs that need pyspark + a container (466 passed):
+& ".\ml\.venv\Scripts\python.exe" -m pytest tests/scripts -q `
+    --ignore=tests/scripts/test_engagement_snapshots.py `
+    --ignore=tests/scripts/test_silver_post_features.py `
+    --ignore=tests/scripts/test_pipeline_monitoring.py
+```
+
+`test_serve_train_parity.py` skips itself when `models/stage1_multisource.joblib` is
+absent (it is gitignored), so a run reporting skips means the model has not been trained
+on this machine yet.
+
 ## File structure
 
 | File | Role |
