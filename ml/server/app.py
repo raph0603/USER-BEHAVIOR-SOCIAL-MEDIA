@@ -160,9 +160,21 @@ def report(req: ReportRequest) -> dict:
     if req.lang not in {"en", "vi"}:
         raise HTTPException(status_code=422, detail='lang must be "en" or "vi"')
     prediction = _run(PredictRequest(text=req.text, source=req.source, audience=req.audience))
+    from report_ui.generate_report import generate, render_template  # noqa: PLC0415
+
+    # The prediction owes nothing to the LLM, so an unreachable Ollama or a model that was
+    # never pulled must not cost the caller their analysis. Degrade to the deterministic
+    # template the way generate_report.py's CLI already does, and say so in the response.
+    backend, warning = REPORT_BACKEND, None
     try:
-        from report_ui.generate_report import generate  # noqa: PLC0415
-        report_text = generate(prediction, REPORT_BACKEND, req.lang, REPORT_MODEL)
+        report_text = generate(prediction, backend, req.lang, REPORT_MODEL)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Report generation failed: {exc}") from exc
-    return {"report": report_text, "prediction": prediction}
+        if backend == "template":
+            raise HTTPException(status_code=500, detail=f"Report generation failed: {exc}") from exc
+        warning = f"backend '{backend}' failed ({exc}); fell back to the template report"
+        backend = "template"
+        report_text = render_template(prediction, req.lang)
+    response = {"report": report_text, "prediction": prediction, "backend": backend}
+    if warning:
+        response["warning"] = warning
+    return response
