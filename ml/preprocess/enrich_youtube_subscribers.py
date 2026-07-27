@@ -67,7 +67,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Add real YouTube subscriber_count to the events CSV.")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--limit", type=int, default=None, help="Fetch at most N NEW channels this run.")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Fetch at most N NEW channels this run; 0 applies the cache without any request.",
+    )
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 
@@ -81,7 +86,7 @@ def main() -> None:
     rep = yt.drop_duplicates(subset=["owner_channel_id"])[["owner_channel_id", "vid"]]
     cache = load_cache()
     todo = rep[~rep["owner_channel_id"].isin(cache.keys())]
-    if args.limit:
+    if args.limit is not None:
         todo = todo.head(args.limit)
 
     print(f"YouTube rows: {len(yt)} | unique channels: {rep['owner_channel_id'].nunique()} "
@@ -97,8 +102,16 @@ def main() -> None:
     got = sum(1 for c in rep["owner_channel_id"] if cache.get(c))
     print(f"Channels with a subscriber value: {got}/{rep['owner_channel_id'].nunique()}")
 
-    # map channel -> subscriber back onto every YouTube row
-    df["subscriber_count"] = df["owner_channel_id"].map(lambda c: cache.get(c) if pd.notna(c) else None)
+    # map channel -> subscriber back onto every YouTube row; a count the export already
+    # carries came straight from the API, so it wins over the older scraped cache and
+    # only the gaps are filled.
+    cached = pd.to_numeric(
+        df["owner_channel_id"].map(lambda c: cache.get(c) if pd.notna(c) else None),
+        errors="coerce",
+    )
+    if "subscriber_count" in df.columns:
+        cached = pd.to_numeric(df["subscriber_count"], errors="coerce").combine_first(cached)
+    df["subscriber_count"] = cached
     df.loc[~is_yt, "subscriber_count"] = pd.NA
 
     filled = int(df["subscriber_count"].notna().sum())
