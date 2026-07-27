@@ -163,7 +163,7 @@ Section 2 automatically.
 
 ## 6. Limitations & data dependencies
 
-- **Stage 2** (post-launch engagement over time → LSTM/GNN) **is not built** — see Section 6.1.
+- **Stage 2** is written but untrained on real data — see Section 6.1. Nothing in Task A/B depends on it; `explain_post` stays the Stage-1 entry point.
 - **Channel/author features** are live on all three sources, but only 2367 of 4357 rows
   carry a value, and the counts are read *today* rather than at post time — a post that
   went viral has since gained subscribers, so the YouTube figures are optimistic.
@@ -172,7 +172,7 @@ Section 2 automatically.
 - Host vs container results differ slightly due to un-pinned transitive deps
   (scipy/BLAS); functionality is unaffected.
 
-### 6.1 Why Stage 2 cannot run yet
+### 6.1 Stage 2: written, waiting on data
 
 Stage 1 predicts **before** a post is launched, from the **text only**.
 Stage 2 is meant to predict **after** launch, from **how engagement grows over time** — e.g. likes/views/comments measured at hour 1, 2, 3, … — and feed that **time series** into an LSTM/GNN.
@@ -190,8 +190,26 @@ refresh writes a new row instead of overwriting one, keyed by
 `observed_at` + `platform_event_id`, expressly so that T+1h / T+6h / T+24h labels can be
 built later. It also ships `youtube_engagement_velocity.py` (velocity and acceleration).
 
-So the sequence Stage 2 needs is being produced; what remains is to merge that branch, let
-it accumulate readings, then build the per-post sequences and the model on top.
+**The modelling side is written and tested.** `preprocess/build_stage2_dataset.py` turns
+those observations into one row per post, split in time — features only from readings at or
+before `--horizon-hours`, the label only from a reading at or after `--label-hours`, and a
+post missing either side is dropped rather than guessed. `train/train_stage2.py` then trains
+over the resulting velocity / acceleration / ratio features **with the Stage-1 probability
+as one more input**, so Stage 2 corrects the prior instead of replacing it. Joining the
+Stage-1 dataset by URL does double duty: it supplies that feature and the `author_hash` the
+snapshot table lacks, without which train and test could share an author.
+
+We use gradient boosting rather than the LSTM/GNN this document originally named. A
+trajectory here is 3-4 observations already reduced to summary statistics; a recurrent model
+needs long sequences and far more posts than we will have for months. Worth revisiting once
+posts routinely carry dozens of readings.
+
+Because the table is still empty, the layer is verified only against synthetic trajectories
+(`tests/scripts/test_stage2_sequences.py`) — **no Stage-2 performance number should be
+quoted yet**.
+
+What remains is therefore operational, not modelling: merge that branch and let it
+accumulate readings, then run the two scripts above and finally report a real number.
 
 ---
 
@@ -206,6 +224,7 @@ it accumulate readings, then build the per-post sequences and the model on top.
 | `run_pipeline.py` | run the whole training chain with one command |
 | `train/train_viral.py`, `train/train_roles.py`, `train/evaluate.py` | training + evaluation |
 | `train/verify_answers.py` | calibration, decision quality and bootstrap CIs |
+| `preprocess/build_stage2_dataset.py`, `train/train_stage2.py` | Stage 2 — written, untrained (§6.1) |
 | `preprocess/build_dataset.py` | preprocessing + label + features |
 | `features/` | `cognitive_friction`, `text_content`, `rhetorical_roles`, `topics`, `bert_content` |
 | `models/*.joblib` | trained models (gitignored) |

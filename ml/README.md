@@ -20,6 +20,23 @@ filtered_events.csv (exported from the Silver lakehouse)
   per-prediction SHAP → JSON {viral_score, label, confidence, top_factors, explanation_text, suggestions}
 ```
 
+Stage 2 answers the other question — *is it actually taking off?* — after the post is live:
+
+```
+silver.engagement_snapshots (one row per observation of a post)
+        │
+        ▼  preprocess/build_stage2_dataset.py
+  per-post sequence, split in time: features from observations <= --horizon-hours,
+  label from an observation >= --label-hours, posts missing either side dropped
+        │
+        ▼  train/train_stage2.py
+  seq_* velocity / acceleration / ratios  +  stage1_score  ──►  XGBoost  →  P(viral)
+```
+
+The Stage-1 probability enters as one more feature, so Stage 2 **corrects** the prior rather
+than replacing it. Joining the Stage-1 dataset by URL also supplies the `author_hash` the
+snapshot table has no column for, without which train and test could share an author.
+
 ## Key design decisions
 
 - **Unified content features** across all 3 sources (pure functions of the text): `cognitive_friction` + `char/word/has_question/is_vietnamese`.
@@ -45,6 +62,10 @@ $env:PYTHONIOENCODING='utf-8'            # Windows: avoid console encoding issue
 & ".\ml\.venv\Scripts\python.exe" ml/preprocess/enrich_youtube_subscribers.py --limit 0
 # calibration, decisions and bootstrap CIs for the trained model:
 & ".\ml\.venv\Scripts\python.exe" ml/train/verify_answers.py --n-boot 2000
+# stage 2, once silver.engagement_snapshots carries several observations per post:
+& ".\ml\.venv\Scripts\python.exe" ml/preprocess/build_stage2_dataset.py --input <snapshots.parquet>
+& ".\ml\.venv\Scripts\python.exe" ml/train/train_stage2.py `
+    --stage1-data ml/data/train_dataset.parquet --stage1-model ml/models/stage1_multisource.joblib
 # explain a single post:
 & ".\ml\.venv\Scripts\python.exe" ml/serve/explain_viral.py
 # batch-score a CSV -> JSONL:
@@ -90,8 +111,10 @@ on this machine yet.
 | `features/rhetorical_roles.py` | segment → per-post role features |
 | `features/topics.py` | NMF topic-distribution features |
 | `features/bert_content.py` | optional BERT content backend (Kaggle-trained) |
+| `preprocess/build_stage2_dataset.py` | engagement snapshots → per-post sequences, split in time |
 | `train/train_roles.py` | role classifier from the silver annotation set |
 | `train/train_viral.py` | XGBoost fusion + evaluation + save model |
+| `train/train_stage2.py` | Stage-2 model over the sequences, fused with the Stage-1 score |
 | `train/evaluate.py` | overall + per-source metrics |
 | `serve/explain_viral.py` | predict + SHAP → explanation JSON |
 | `serve/score_batch.py` | batch scoring CSV → JSONL |
@@ -139,6 +162,6 @@ stand-in for "is this YouTube?" rather than a virality signal. Unknown audiences
 - **Channel/author features** are now live on all three sources (`subscriber_count`, `follower_count`, `subreddit_member_count`) and are the biggest single lift — but see the temporal-leakage caveat above; the honest next step is a *historical* subscriber snapshot at post time.
 - Audience coverage is still thin: 2367 of 4357 rows. 442 YouTube channels are absent from the local cache and Reddit/X carry a value on well under half their rows.
 - Collect more data (especially X/Reddit) to balance sources and raise `--quantile` toward the paper standard (0.75 → 0.90). X has only 150 test rows, which is why its CI spans 0.16.
-- **Stage 2** (post-launch engagement time series → LSTM/GNN) not built — needs time-series engagement data. The `silver.engagement_snapshots` append-only table on `feat/youtube-metadata-evolution` is the input it has been waiting for.
+- **Stage 2** is written but has never seen real data. `silver.engagement_snapshots` lives on the unmerged `feat/youtube-metadata-evolution` branch and, once merged, still needs days of polling before a post carries several observations. Until then the only evidence the layer is correct is its tests.
 
 > Architecture diagram: `ml/ARCHITECTURE.md`. Handoff for the API/UI tasks: `ml/HANDOFF.md`.
