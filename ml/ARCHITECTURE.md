@@ -90,15 +90,19 @@ flowchart LR
 
 ## 4. Current status (real numbers)
 
+870-row test set. Ranking metrics with 95% bootstrap CIs, on the calibrated scores that
+serving actually returns (`train/verify_answers.py`).
+
 | Component | Result |
 |---|---|
-| Fusion viral (overall) | PR-AUC ~0.55 · ROC ~0.76 |
-| └ YouTube | ROC **0.79** (good — most data) |
-| └ Reddit | ROC 0.76 |
-| └ X | ROC **~0.43** (≈ random — too little data) |
+| Fusion viral (overall) | PR-AUC **0.603** [0.534, 0.666] · ROC **0.793** [0.759, 0.824] |
+| └ YouTube | ROC **0.881** [0.840, 0.918] (most data) |
+| └ X | ROC 0.750 [0.663, 0.827] (only 150 test rows — wide) |
+| └ Reddit | ROC 0.669 [0.601, 0.731] (weakest, but clears random) |
+| Probability calibration | ECE **0.016**, Brier 0.146; decision threshold **0.29**, picked out-of-fold |
 | Role classifier | macro-F1 ~0.50 (12 roles) |
 | Content: TF-IDF vs BERT | TF-IDF 0.499 **>** BERT 0.428 (data still small) → keep TF-IDF |
 
-**Legend:** solid arrows = data/feature flow; dashed arrows = auxiliary relations (label, role/topic assignment). The model is strong on YouTube/Reddit and weak on X → the main lever is **collecting more X/Reddit data**.
+**Legend:** solid arrows = data/feature flow; dashed arrows = auxiliary relations (label, role/topic assignment). The model is strongest on YouTube and weakest on Reddit → the main levers are **collecting more X/Reddit data** and **audience coverage** (2367 of 4357 rows carry one).
 
 > Technical details & decision history are kept in a local engineering log. Code overview: `ml/README.md`. Handoff for the API/UI tasks: `ml/HANDOFF.md`.

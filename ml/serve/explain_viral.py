@@ -163,7 +163,12 @@ class ViralExplainer:
         down = [f["label"] for f in top_factors if f["direction"] == "down"][:3]
         is_viral = int(score >= threshold)
 
-        parts = [f"Prediction: {'likely viral' if is_viral else 'unlikely viral'} (probability {score:.0%})."]
+        # State the threshold: only a quarter of posts go viral, so the boundary sits
+        # well below 50% and "likely viral at 34%" reads like a bug without it.
+        parts = [
+            f"Prediction: {'likely viral' if is_viral else 'unlikely viral'} "
+            f"(probability {score:.0%}, decision threshold {threshold:.0%})."
+        ]
         if up:
             parts.append("Factors increasing it: " + ", ".join(up) + ".")
         if down:
