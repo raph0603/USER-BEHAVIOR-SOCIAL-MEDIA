@@ -20,8 +20,20 @@ import joblib
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from sklearn.metrics import average_precision_score, classification_report, roc_auc_score
-from sklearn.model_selection import GroupShuffleSplit, StratifiedKFold, cross_val_predict
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    average_precision_score,
+    brier_score_loss,
+    classification_report,
+    f1_score,
+    roc_auc_score,
+)
+from sklearn.model_selection import (
+    GroupKFold,
+    GroupShuffleSplit,
+    StratifiedKFold,
+    cross_val_predict,
+)
 
 ML_ROOT = Path(__file__).resolve().parents[1]
 if str(ML_ROOT) not in sys.path:
@@ -47,6 +59,7 @@ CONTENT_FEATURES = [
 ]
 TARGET = "viral"
 GROUP = "author_hash"
+CALIBRATION_FOLDS = 5
 
 
 def validate_dataset_version(df: pd.DataFrame, expected: str | None) -> None:
@@ -104,12 +117,64 @@ def train_model(X_train: pd.DataFrame, y_train: pd.Series, seed: int) -> xgb.XGB
     return model
 
 
-def evaluate(model: xgb.XGBClassifier, X_test: pd.DataFrame, y_test: pd.Series) -> None:
-    proba = model.predict_proba(X_test)[:, 1]
+def logit(proba) -> np.ndarray:
+    p = np.clip(np.asarray(proba, dtype=float), 1e-6, 1 - 1e-6)
+    return np.log(p / (1 - p))
+
+
+def fit_calibrator(X_train: pd.DataFrame, y_train: pd.Series, groups, seed: int):
+    """Platt scaling so the returned probability means what it says.
+
+    `scale_pos_weight` optimises ranking but systematically inflates the scores, and
+    `viral_score` is shown to users as a probability. The scaler is fitted on
+    out-of-fold scores — folds grouped by author, like the train/test split — so no row
+    calibrates against a model that already saw its author, and no row is spent.
+
+    Calibrating also invalidates the 0.5 cut-off: once the scores are honest, few of
+    them pass 0.5 when only a quarter of posts go viral, so the decision threshold is
+    re-picked here on the same out-of-fold scores and travels with the model.
+    """
+    oof = np.zeros(len(X_train))
+    splitter = GroupKFold(n_splits=CALIBRATION_FOLDS)
+    for fit_idx, held_idx in splitter.split(X_train, y_train, groups):
+        fold_model = train_model(X_train.iloc[fit_idx], y_train.iloc[fit_idx], seed)
+        oof[held_idx] = fold_model.predict_proba(X_train.iloc[held_idx])[:, 1]
+    calibrator = LogisticRegression()
+    calibrator.fit(logit(oof).reshape(-1, 1), y_train)
+    threshold = best_f1_threshold(y_train, apply_calibrator(calibrator, oof))
+    return calibrator, threshold
+
+
+def best_f1_threshold(y_true, proba) -> float:
+    grid = np.round(np.arange(0.05, 0.95, 0.01), 2)
+    scores = [f1_score(y_true, (proba >= t).astype(int), zero_division=0) for t in grid]
+    return float(grid[int(np.argmax(scores))])
+
+
+def apply_calibrator(calibrator, proba) -> np.ndarray:
+    """Map raw model scores onto calibrated probabilities (monotonic: ranking is kept)."""
+    return calibrator.predict_proba(logit(proba).reshape(-1, 1))[:, 1]
+
+
+def evaluate(
+    model: xgb.XGBClassifier,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    calibrator=None,
+    threshold: float = 0.5,
+) -> None:
+    raw = model.predict_proba(X_test)[:, 1]
+    proba = apply_calibrator(calibrator, raw) if calibrator is not None else raw
     print(f"PR-AUC : {average_precision_score(y_test, proba):.3f}")
     print(f"ROC-AUC: {roc_auc_score(y_test, proba):.3f}")
     print(f"Baseline viral rate (test): {y_test.mean():.3f}")
-    print(classification_report(y_test, (proba >= 0.5).astype(int), digits=3))
+    if calibrator is not None:
+        print(
+            f"Brier  : {brier_score_loss(y_test, proba):.3f} calibrated "
+            f"(raw {brier_score_loss(y_test, raw):.3f})"
+        )
+    print(f"Decision threshold (picked out-of-fold): {threshold:.2f}")
+    print(classification_report(y_test, (proba >= threshold).astype(int), digits=3))
 
 
 def shap_importance(model: xgb.XGBClassifier, X: pd.DataFrame) -> pd.Series:
@@ -166,7 +231,9 @@ def main() -> None:
 
     print(f"Train: {len(X_train)} | Test: {len(X_test)} | Features: {len(features)}")
     model = train_model(X_train, y_train, args.seed)
-    evaluate(model, X_test, y_test)
+    train_groups = df[GROUP].fillna(df.index.to_series().astype(str)).iloc[train_idx]
+    calibrator, threshold = fit_calibrator(X_train, y_train, train_groups, args.seed)
+    evaluate(model, X_test, y_test, calibrator, threshold)
 
     print("\nTop SHAP feature importance (mean |contribution|):")
     print(shap_importance(model, X_test).head(10).round(4))
@@ -175,6 +242,8 @@ def main() -> None:
     joblib.dump(
         {
             "model": model,
+            "calibrator": calibrator,
+            "threshold": threshold,
             "features": features,
             "dataset_version": args.dataset_version,
             **content_bundle,

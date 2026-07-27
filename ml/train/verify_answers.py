@@ -7,8 +7,9 @@ the model *ranks* posts. They do NOT tell us whether the probability it returns
 are on our small per-source test sets. This script adds the missing checks:
 
   1. Calibration      - Brier score + reliability curve (is a "0.7" really ~70%?)
-  2. Decision quality  - confusion matrix, precision/recall at the 0.5 threshold
-                         used in serving, plus the best-F1 threshold (diagnostic).
+  2. Decision quality  - confusion matrix, precision/recall at the serving threshold
+                         stored in the model bundle, plus the best-F1 threshold
+                         (diagnostic - it is tuned on the test set).
   3. Stability         - 95% bootstrap confidence intervals on ROC-AUC / PR-AUC,
                          so a single number is never reported without an interval.
 
@@ -49,7 +50,7 @@ ML_ROOT = Path(__file__).resolve().parents[1]
 if str(ML_ROOT) not in sys.path:
     sys.path.insert(0, str(ML_ROOT))
 
-from train.train_viral import TARGET, TEXT, split_indices  # noqa: E402
+from train.train_viral import TARGET, TEXT, apply_calibrator, split_indices  # noqa: E402
 
 DEFAULT_DATA = ML_ROOT / "data" / "train_dataset.parquet"
 DEFAULT_MODEL = ML_ROOT / "models" / "stage1_multisource.joblib"
@@ -125,7 +126,7 @@ def _reliability_bins(y_true, proba, n_bins: int = 10):
     return np.array(conf), np.array(acc), np.array(count), round(float(ece), 3)
 
 
-def evaluate_group(y_true, proba, n_boot: int) -> dict:
+def evaluate_group(y_true, proba, n_boot: int, threshold: float = 0.5) -> dict:
     y_true = np.asarray(y_true, dtype=int)
     proba = np.asarray(proba, dtype=float)
     out = {"n": int(len(y_true)), "viral_rate": round(float(y_true.mean()), 3)}
@@ -133,14 +134,14 @@ def evaluate_group(y_true, proba, n_boot: int) -> dict:
         out["note"] = "single class in test - ranking metrics undefined"
         out["brier"] = round(float(brier_score_loss(y_true, proba, pos_label=1)), 3) \
             if len(y_true) else None
-        out["confusion_0.5"] = _confusion_at(y_true, proba, 0.5)
+        out["confusion_serving"] = _confusion_at(y_true, proba, threshold)
         return out
     out["pr_auc"] = round(float(average_precision_score(y_true, proba)), 3)
     out["roc_auc"] = round(float(roc_auc_score(y_true, proba)), 3)
     out["brier"] = round(float(brier_score_loss(y_true, proba)), 3)
     out["pr_auc_ci95"] = _bootstrap_ci(y_true, proba, average_precision_score, n_boot)
     out["roc_auc_ci95"] = _bootstrap_ci(y_true, proba, roc_auc_score, n_boot)
-    out["confusion_0.5"] = _confusion_at(y_true, proba, 0.5)
+    out["confusion_serving"] = _confusion_at(y_true, proba, threshold)
     best_t = _best_f1_threshold(y_true, proba)
     out["confusion_bestF1"] = _confusion_at(y_true, proba, best_t)
     _, _, _, ece = _reliability_bins(y_true, proba)
@@ -168,9 +169,12 @@ def score_test_set(data_path: Path, model_path: Path, test_size: float, seed: in
     X = X.reindex(columns=features, fill_value=0.0)
 
     proba = model.predict_proba(X)[:, 1]
+    if bundle.get("calibrator") is not None:  # measure what serving actually returns
+        proba = apply_calibrator(bundle["calibrator"], proba)
     y = test[TARGET].astype(int).to_numpy()
     src = test["source"].fillna("unknown").to_numpy()
-    return y, np.asarray(proba, dtype=float), src
+    threshold = float(bundle.get("threshold") or 0.5)
+    return y, np.asarray(proba, dtype=float), src, threshold
 
 
 # --------------------------------------------------------------------------- #
@@ -180,7 +184,7 @@ def _fmt_ci(ci):
     return f"[{ci[0]}, {ci[1]}]" if ci else "n/a"
 
 
-def build_markdown(results: dict) -> str:
+def build_markdown(results: dict, threshold: float = 0.5) -> str:
     lines = [
         "# Model-answer verification report",
         "",
@@ -209,13 +213,13 @@ def build_markdown(results: dict) -> str:
         "*Brier and ECE closer to 0 = better-calibrated probabilities. "
         "A wide CI (esp. for X) means the metric is not reliable on that sample size.*",
         "",
-        "## 2. Decisions at the 0.5 serving threshold",
+        f"## 2. Decisions at the {threshold:.2f} serving threshold",
         "",
         "| group | precision | recall | F1 | TP | FP | FN | TN |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for g, m in results.items():
-        c = m["confusion_0.5"]
+        c = m["confusion_serving"]
         lines.append(
             f"| {g} | {c['precision']} | {c['recall']} | {c['f1']} | "
             f"{c['tp']} | {c['fp']} | {c['fn']} | {c['tn']} |"
@@ -234,9 +238,9 @@ def build_markdown(results: dict) -> str:
         lines.append(f"| {g} | {c['threshold']} | {c['precision']} | {c['recall']} | {c['f1']} |")
     lines += [
         "",
-        "If the best-F1 threshold is far from 0.5, the 0.5 default used in "
-        "`serve/explain_viral.py` should be revisited (chosen on a validation "
-        "split, never on this test set).",
+        f"The serving threshold ({threshold:.2f}) is picked out-of-fold on the training "
+        "rows and stored in the model bundle, so this section is a check, not a tuning "
+        "knob. A best-F1 threshold far from it means the split is unstable.",
         "",
         "![Calibration curves](calibration.png)",
         "",
@@ -283,16 +287,16 @@ def main() -> None:
     parser.add_argument("--plot", type=Path, default=DEFAULT_PLOT)
     args = parser.parse_args()
 
-    y, proba, src = score_test_set(args.data, args.model, args.test_size, args.seed)
+    y, proba, src, threshold = score_test_set(args.data, args.model, args.test_size, args.seed)
 
-    results = {"overall": evaluate_group(y, proba, args.n_boot)}
+    results = {"overall": evaluate_group(y, proba, args.n_boot, threshold)}
     for s in sorted(pd.unique(src)):
         mask = src == s
-        results[s] = evaluate_group(y[mask], proba[mask], args.n_boot)
+        results[s] = evaluate_group(y[mask], proba[mask], args.n_boot, threshold)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     make_plot(y, proba, src, args.plot)
-    args.out.write_text(build_markdown(results), encoding="utf-8")
+    args.out.write_text(build_markdown(results, threshold), encoding="utf-8")
 
     o = results["overall"]
     print("=== Answer verification (overall) ===")
@@ -301,8 +305,8 @@ def main() -> None:
         print(f" ROC-AUC={o['roc_auc']} CI95={_fmt_ci(o.get('roc_auc_ci95'))}")
         print(f" PR-AUC ={o['pr_auc']} CI95={_fmt_ci(o.get('pr_auc_ci95'))}")
         print(f" Brier={o['brier']}  ECE={o.get('ece')}")
-        c = o["confusion_0.5"]
-        print(f" @0.5: precision={c['precision']} recall={c['recall']} f1={c['f1']}")
+        c = o["confusion_serving"]
+        print(f" @{threshold:.2f}: precision={c['precision']} recall={c['recall']} f1={c['f1']}")
     print(f"\nReport : {args.out}")
     print(f"Plot   : {args.plot}")
 

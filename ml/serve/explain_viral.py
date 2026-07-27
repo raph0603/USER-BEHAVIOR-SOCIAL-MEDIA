@@ -23,6 +23,7 @@ if str(ML_ROOT) not in sys.path:
 from features.rhetorical_roles import RoleFeaturizer
 from features.topics import TopicFeaturizer
 from preprocess.build_dataset import add_text_features, clean_text
+from train.train_viral import apply_calibrator
 
 MODEL_PATH = ML_ROOT / "models" / "stage1_multisource.joblib"
 DECISION_THRESHOLD = 0.50
@@ -79,6 +80,9 @@ class ViralExplainer:
         bundle = joblib.load(model_path)
         self.model = bundle["model"]
         self.features = bundle["features"]
+        # Both absent in models trained before calibration; 0.5 was the old default.
+        self.calibrator = bundle.get("calibrator")
+        self.threshold = float(bundle.get("threshold") or DECISION_THRESHOLD)
         if "content_model" in bundle:
             self.content_model = bundle["content_model"]
         else:  # BERT backend: rebuild from the saved model folder
@@ -134,10 +138,14 @@ class ViralExplainer:
         text: str,
         source: str = "",
         audience: float | None = None,
-        threshold: float = DECISION_THRESHOLD,
+        threshold: float | None = None,
     ) -> dict:
+        threshold = self.threshold if threshold is None else threshold
         X = self._feature_row(text, source, audience)
         score = float(self.model.predict_proba(X)[0, 1])
+        if self.calibrator is not None:
+            # Monotonic, so the SHAP factors below still explain the reported score.
+            score = float(apply_calibrator(self.calibrator, [score])[0])
         contribs = self._contributions(X)
 
         top = contribs.reindex(contribs.abs().sort_values(ascending=False).index).head(TOP_K)
@@ -164,7 +172,9 @@ class ViralExplainer:
         return {
             "viral_score": round(score, 3),
             "label": "viral-likely" if is_viral else "not-viral",
-            "confidence": round(2 * abs(score - 0.5), 3),
+            # Distance from the decision boundary, not from 0.5: the calibrated
+            # threshold sits near the base rate, so 0.5 is no longer the tipping point.
+            "confidence": round(abs(score - threshold) / max(threshold, 1 - threshold), 3),
             "top_factors": top_factors,
             "explanation_text": " ".join(parts),
             "suggestions": self._suggestions(X, is_viral),
