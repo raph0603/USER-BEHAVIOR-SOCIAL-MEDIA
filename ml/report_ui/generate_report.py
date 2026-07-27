@@ -41,11 +41,17 @@ DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 # Prompt (shared by the LLM backends) - adapted from ml/HANDOFF.md section 4
 # --------------------------------------------------------------------------- #
 PROMPT_TEMPLATES = {
+    # The verdict is handed over, never re-derived: the decision threshold sits near the
+    # base rate (~0.23), so a small model asked to compare the probability against it
+    # reliably concludes the opposite of `label` and contradicts the very JSON it quotes.
     "en": (
         "You are a marketing assistant. Below is the analysis of one social-media "
         "post (JSON) about an electric-vehicle ad campaign. Write a SHORT report "
         "with exactly three sections:\n"
-        "1. Viral likelihood (state the probability and whether it is likely viral).\n"
+        "1. Viral likelihood: quote `viral_score` as a percentage, then state the verdict "
+        "EXACTLY as the `label` field gives it -- \"viral-likely\" means likely to go "
+        "viral, \"not-viral\" means unlikely. Never work the verdict out yourself from the "
+        "probability or the threshold; the model already did that.\n"
         "2. Main reasons (explain the top factors in plain language).\n"
         "3. 2-3 concrete improvement tips.\n"
         "Keep it under 180 words. Do not invent numbers not present in the JSON.\n\n"
@@ -55,7 +61,10 @@ PROMPT_TEMPLATES = {
         "Bạn là trợ lý marketing. Dưới đây là phân tích của một bài đăng mạng xã hội "
         "(JSON) về chiến dịch quảng cáo xe điện. Hãy viết một BÁO CÁO NGẮN gồm đúng "
         "ba phần:\n"
-        "1. Khả năng lan truyền (nêu xác suất và bài có khả năng viral hay không).\n"
+        "1. Khả năng lan truyền: nêu `viral_score` dưới dạng phần trăm, rồi kết luận ĐÚNG "
+        "theo trường `label` -- \"viral-likely\" nghĩa là CÓ khả năng lan truyền, "
+        "\"not-viral\" nghĩa là KHÔNG có khả năng lan truyền. Tuyệt đối không tự suy ra kết "
+        "luận từ xác suất hay ngưỡng; mô hình đã quyết định rồi.\n"
         "2. Lý do chính (giải thích các yếu tố quan trọng bằng ngôn ngữ dễ hiểu).\n"
         "3. 2-3 gợi ý cải thiện cụ thể.\n"
         "Giữ dưới 180 từ. Không bịa ra số liệu không có trong JSON.\n\n"
@@ -147,7 +156,14 @@ def render_ollama(result: dict, lang: str, model: str) -> str:
     import urllib.request
 
     prompt = PROMPT_TEMPLATES[lang].format(payload=json.dumps(result, ensure_ascii=False, indent=2))
-    body = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
+    # Low temperature: the report restates a fixed analysis, so sampling variety only buys
+    # us paraphrases of the same facts and more chances to drift away from them.
+    body = json.dumps({
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": 0.2},
+    }).encode("utf-8")
     base_url = os.environ.get("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).rstrip("/")
     req = urllib.request.Request(
         f"{base_url}/api/generate", data=body,
