@@ -1,0 +1,15 @@
+# The ai-server image builds with `context: ./ml`, so Docker reads THIS file and never the
+# one at the repo root -- without it the build ships the 2 GB ml/.venv as build context.
+# Keep models/: the image can run standalone, and compose still mounts a fresher copy over
+# it read-only.
+
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+
+data/                 # exports, parquet datasets and reports; regenerable and large
+models_backup_*/      # local snapshots kept while retraining
+notebooks/            # exploration only, and they pull in jupyter
+kaggle/               # trained on Kaggle, not here

@@ -110,6 +110,20 @@ def add_text_features(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([df, base, friction], axis=1)
 
 
+def as_bool(series: pd.Series) -> pd.Series:
+    """Coerce an export coverage flag (bool, "true"/"1"/"yes", or null) to bool."""
+    return (
+        series.map(
+            lambda value: value
+            if isinstance(value, (bool, np.bool_))
+            else str(value).strip().lower() in {"1", "true", "yes"}
+            if pd.notna(value)
+            else False
+        )
+        .astype(bool)
+    )
+
+
 def add_channel_features(df: pd.DataFrame) -> pd.DataFrame:
     """Unified channel/author audience-size features (best-effort).
 
@@ -135,21 +149,17 @@ def add_channel_features(df: pd.DataFrame) -> pd.DataFrame:
         flag = f"{column}_available"
         if column == "audience_count" and "audience_available" in df.columns:
             flag = "audience_available"
+        has_value = numeric[column].notna()
         if flag in df.columns:
-            availability[column] = (
-                df[flag]
-                .map(
-                    lambda value: value
-                    if isinstance(value, (bool, np.bool_))
-                    else str(value).strip().lower() in {"1", "true", "yes"}
-                    if pd.notna(value)
-                    else False
-                )
-                .astype(bool)
-            )
+            # The flag records what ONE observation covered, but the export merges
+            # values and flags coming from different collectors (YouTube videos.list
+            # cannot see subscribers, yet the row carries a count fetched by
+            # channels.list). A positive number can only exist because some collector
+            # observed it, so the value wins; the flag still decides whether a 0 is a
+            # real audience of zero or an un-observed placeholder.
+            availability[column] = has_value & (as_bool(df[flag]) | numeric[column].gt(0))
         else:
-            availability[column] = numeric[column].notna()
-        availability[column] &= numeric[column].notna()
+            availability[column] = has_value
     known = availability.any(axis=1)
     audience = numeric.where(availability).max(axis=1, skipna=True).where(known)
     df["chan_log_audience"] = np.log1p(audience)
