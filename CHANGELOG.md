@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.22.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.21.0...v1.22.0) (2026-07-27)
+
+
+### Features
+
+* **ml:** build stage-2 sequences with a strict time split ([d016d09](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/d016d097fe88c0f18e323b29be47691de0d08cad))
+* **ml:** calibrate viral probability and pick threshold out-of-fold ([81a7f36](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/81a7f36524888e2fad0f20d5c37c4c9821dc629a))
+* **ml:** fuse the stage-1 prior into a stage-2 engagement model ([85e06e8](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/85e06e814b84675980292cd4b29dacaadef8b7bd))
+* **ml:** resolve channel audience through the official YouTube API ([bea9835](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/bea98356d92ad5a73cc1380365b57ef7c8a1f721))
+
+
+### Bug Fixes
+
+* **ml:** correct the audience contract, calibrate the score, seed stage 2 ([eed0e0d](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/eed0e0d08a47a2b2d21d0bb31f625c3e22c41d6c))
+* **ml:** hand the verdict to the report model instead of letting it guess ([e6971d4](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/e6971d46b255cce4b0bc379b4b1300cc78262813))
+* **ml:** keep API subscriber counts when applying channel cache ([eda2bea](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/eda2bea9eca249aa69d46a5f44b4c69f95a7df17))
+* **ml:** keep the prediction when report generation fails ([12b33ae](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/12b33aed48f3bbed09eff4135a44038dca623fbe))
+* **ml:** stop serving an invented zero audience ([3349f70](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/3349f70e72e0941d398a6024f82fe0c2ea1b34c3))
+* **ml:** trust observed audience values over coverage flags ([69d866c](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/69d866c4a72aa7e791d1bd684826424f02834838))
+* **test:** update xgboost version constraint in requirements ([004e418](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/004e418e9c408736c23ee3a3178cf175c445373c))
+* **test:** update xgboost version constraints in requirements ([f3a1c7e](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/f3a1c7e28fab6c31fe467d09dac8bbf7b725cea3))
+
+
+### Performance Improvements
+
+* **ml:** shallower trees picked on out-of-fold PR-AUC ([972bc8a](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/972bc8a3ead4124a07bee97b60d169a15214d8b9))
+
 ## [1.21.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.20.0...v1.21.0) (2026-07-24)
 
 
