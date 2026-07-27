@@ -60,6 +60,7 @@ extras once before running the suite:
 
 ```powershell
 & ".\ml\.venv\Scripts\pip.exe" install -r ml/requirements-dev.txt
+& ".\ml\.venv\Scripts\pip.exe" install -r ml/requirements-notebooks.txt   # only for ml/notebooks/
 ```
 
 ```powershell
