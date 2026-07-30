@@ -77,8 +77,42 @@ _STALE_DERIVED = ["text_len_chars", "text_len_words", "has_question"]
 
 
 def load_events(path: Path) -> pd.DataFrame:
-    df = pd.read_parquet(path) if path.is_dir() or path.suffix == ".parquet" else pd.read_csv(path)
+    df = (
+        pd.read_parquet(path)
+        if path.is_dir() or path.suffix == ".parquet"
+        else pd.read_csv(path, low_memory=False)
+    )
     df = df.drop(columns=[c for c in _STALE_DERIVED if c in df.columns])
+    # The lossless Silver export keeps canonical lakehouse names, whereas the
+    # older dashboard export already renamed these fields for ML consumers.
+    # Accept both so retraining can use the current database directly.
+    compatibility_names = {
+        "user_id": "author_hash",
+        "title": "text",
+        "event_ts": "created_at",
+    }
+    df = df.rename(
+        columns={
+            source: target
+            for source, target in compatibility_names.items()
+            if source in df.columns and target not in df.columns
+        }
+    )
+    for identifier in (
+        "author_hash",
+        "platform_event_id",
+        "event_id",
+        "conversation_id",
+        "content_id",
+        "parent_content_id",
+        "root_content_id",
+        "video_id",
+        "channel_id",
+        "correlation_id",
+        "observation_id",
+    ):
+        if identifier in df.columns:
+            df[identifier] = df[identifier].astype("string")
     df["source"] = df["source"].astype("string").str.strip().str.lower()
     official = "label_value" in df.columns
     if official and "dataset_version" not in df.columns:
@@ -162,6 +196,14 @@ def add_channel_features(df: pd.DataFrame) -> pd.DataFrame:
             availability[column] = has_value
     known = availability.any(axis=1)
     audience = numeric.where(availability).max(axis=1, skipna=True).where(known)
+    # A subreddit member count describes a community, not the audience of the
+    # individual Reddit author. Keep Reddit audience missing until a genuine
+    # author-level, pre-outcome metric (for example timestamped author karma)
+    # is collected. YouTube subscribers and X followers remain eligible.
+    if "source" in df.columns:
+        reddit = df["source"].astype("string").str.strip().str.lower().eq("reddit")
+        known = known & ~reddit
+        audience = audience.mask(reddit)
     df["chan_log_audience"] = np.log1p(audience)
     df["chan_has_audience"] = known.astype(int)
     df["chan_audience_available"] = known.astype(int)

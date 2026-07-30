@@ -97,9 +97,22 @@ def content_scores(text: pd.Series, y: pd.Series, train_idx, test_idx, seed: int
     return train_score, test_score, model
 
 
-def train_model(X_train: pd.DataFrame, y_train: pd.Series, seed: int) -> xgb.XGBClassifier:
-    pos = int(y_train.sum())
-    neg = int(len(y_train) - pos)
+def train_model(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    seed: int,
+    *,
+    colsample_bytree: float = 0.9,
+    sample_weight=None,
+) -> xgb.XGBClassifier:
+    if sample_weight is None:
+        pos = float(y_train.sum())
+        neg = float(len(y_train) - y_train.sum())
+    else:
+        weights = np.asarray(sample_weight, dtype=float)
+        labels = np.asarray(y_train, dtype=int)
+        pos = float(weights[labels == 1].sum())
+        neg = float(weights[labels == 0].sum())
     # depth/learning-rate picked by grid search on author-grouped out-of-fold PR-AUC over
     # the train split (0.618 -> 0.631); at ~2.9k rows deeper trees only overfit.
     model = xgb.XGBClassifier(
@@ -107,7 +120,7 @@ def train_model(X_train: pd.DataFrame, y_train: pd.Series, seed: int) -> xgb.XGB
         max_depth=3,
         learning_rate=0.03,
         subsample=0.9,
-        colsample_bytree=0.9,
+        colsample_bytree=colsample_bytree,
         min_child_weight=2,
         reg_lambda=1.0,
         scale_pos_weight=(neg / pos) if pos else 1.0,
@@ -115,7 +128,7 @@ def train_model(X_train: pd.DataFrame, y_train: pd.Series, seed: int) -> xgb.XGB
         eval_metric="aucpr",
         random_state=seed,
     )
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train, sample_weight=sample_weight)
     return model
 
 
@@ -124,7 +137,15 @@ def logit(proba) -> np.ndarray:
     return np.log(p / (1 - p))
 
 
-def fit_calibrator(X_train: pd.DataFrame, y_train: pd.Series, groups, seed: int):
+def fit_calibrator(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    groups,
+    seed: int,
+    *,
+    model_kwargs: dict | None = None,
+    sample_weight=None,
+):
     """Platt scaling so the returned probability means what it says.
 
     `scale_pos_weight` optimises ranking but systematically inflates the scores, and
@@ -136,10 +157,18 @@ def fit_calibrator(X_train: pd.DataFrame, y_train: pd.Series, groups, seed: int)
     them pass 0.5 when only a quarter of posts go viral, so the decision threshold is
     re-picked here on the same out-of-fold scores and travels with the model.
     """
+    model_kwargs = model_kwargs or {}
+    weights = None if sample_weight is None else np.asarray(sample_weight, dtype=float)
     oof = np.zeros(len(X_train))
     splitter = GroupKFold(n_splits=CALIBRATION_FOLDS)
     for fit_idx, held_idx in splitter.split(X_train, y_train, groups):
-        fold_model = train_model(X_train.iloc[fit_idx], y_train.iloc[fit_idx], seed)
+        fold_model = train_model(
+            X_train.iloc[fit_idx],
+            y_train.iloc[fit_idx],
+            seed,
+            sample_weight=None if weights is None else weights[fit_idx],
+            **model_kwargs,
+        )
         oof[held_idx] = fold_model.predict_proba(X_train.iloc[held_idx])[:, 1]
     calibrator = LogisticRegression()
     calibrator.fit(logit(oof).reshape(-1, 1), y_train)
