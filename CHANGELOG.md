@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.23.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.22.1...v1.23.0) (2026-07-30)
+
+
+### Features
+
+* **ml:** balance multisource training and enrich x audience ([44f5cd9](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/44f5cd9083365848d3cd665f44401403329504db))
+* **ml:** balance multisource training and enrich x audience ([2727d80](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/2727d800b7d1cadfb4042cec854e377497d2ec5a))
+
 ## [1.22.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.22.0...v1.22.1) (2026-07-30)
 
 
