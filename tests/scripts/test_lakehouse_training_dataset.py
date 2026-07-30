@@ -123,6 +123,23 @@ class DatasetManifestTests(unittest.TestCase):
 
 
 class AudienceFeatureTests(unittest.TestCase):
+    def test_reddit_community_size_is_not_treated_as_author_audience(self):
+        frame = pd.DataFrame(
+            {
+                "source": ["reddit", "youtube", "x"],
+                "subreddit_member_count": [500_000, np.nan, np.nan],
+                "subscriber_count": [np.nan, 10_000, np.nan],
+                "follower_count": [np.nan, np.nan, 2_000],
+            }
+        )
+
+        result = BUILD_DATASET.add_channel_features(frame)
+
+        self.assertTrue(np.isnan(result.loc[0, "chan_log_audience"]))
+        self.assertEqual(result.loc[0, "chan_has_audience"], 0)
+        self.assertAlmostEqual(result.loc[1, "chan_log_audience"], np.log1p(10_000))
+        self.assertAlmostEqual(result.loc[2, "chan_log_audience"], np.log1p(2_000))
+
     def test_known_zero_and_unknown_audience_are_distinct(self):
         frame = pd.DataFrame(
             {
@@ -181,6 +198,24 @@ class AudienceFeatureTests(unittest.TestCase):
 
 
 class OfficialTrainingInputTests(unittest.TestCase):
+    def test_builder_accepts_lossless_silver_column_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "silver.csv"
+            pd.DataFrame(
+                {
+                    "user_id": ["author-1"],
+                    "title": ["Example post"],
+                    "event_ts": ["2026-07-30T00:00:00Z"],
+                    "source": ["youtube"],
+                }
+            ).to_csv(path, index=False)
+
+            result = BUILD_DATASET.load_events(path)
+
+            self.assertEqual(result.loc[0, "author_hash"], "author-1")
+            self.assertEqual(result.loc[0, "clean_text"], "Example post")
+            self.assertIn("created_at", result.columns)
+
     def test_manifest_resolves_one_exact_relative_parquet_dataset(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

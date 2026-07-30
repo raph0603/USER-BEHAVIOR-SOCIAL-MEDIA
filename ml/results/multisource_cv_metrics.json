@@ -1,0 +1,414 @@
+{
+  "balanced_dataset": "ml\\data\\train_dataset_multisource_2000.parquet",
+  "dataset": "ml\\data\\train_dataset_multisource_expanded.parquet",
+  "dataset_version": null,
+  "final_model_threshold": 0.3,
+  "fold_metrics": [
+    {
+      "accuracy": 0.795,
+      "brier": 0.13658411570336063,
+      "f1": 0.5953947368421053,
+      "false_negative": 119,
+      "false_positive": 127,
+      "fold": 1,
+      "n": 1200,
+      "pr_auc": 0.6445008537562207,
+      "precision": 0.5876623376623377,
+      "recall": 0.6033333333333334,
+      "roc_auc": 0.8097888888888889,
+      "threshold": 0.29,
+      "true_negative": 773,
+      "true_positive": 181,
+      "viral_rate": 0.25
+    },
+    {
+      "accuracy": 0.7266666666666667,
+      "brier": 0.13931160900198372,
+      "f1": 0.5555555555555556,
+      "false_negative": 95,
+      "false_positive": 233,
+      "fold": 2,
+      "n": 1200,
+      "pr_auc": 0.639240713005529,
+      "precision": 0.4680365296803653,
+      "recall": 0.6833333333333333,
+      "roc_auc": 0.7823055555555556,
+      "threshold": 0.25,
+      "true_negative": 667,
+      "true_positive": 205,
+      "viral_rate": 0.25
+    },
+    {
+      "accuracy": 0.74,
+      "brier": 0.14027304820968314,
+      "f1": 0.5370919881305638,
+      "false_negative": 119,
+      "false_positive": 193,
+      "fold": 3,
+      "n": 1200,
+      "pr_auc": 0.6230987904679511,
+      "precision": 0.4839572192513369,
+      "recall": 0.6033333333333334,
+      "roc_auc": 0.7894851851851852,
+      "threshold": 0.27,
+      "true_negative": 707,
+      "true_positive": 181,
+      "viral_rate": 0.25
+    },
+    {
+      "accuracy": 0.7541666666666667,
+      "brier": 0.14168435904935486,
+      "f1": 0.5468509984639017,
+      "false_negative": 122,
+      "false_positive": 173,
+      "fold": 4,
+      "n": 1200,
+      "pr_auc": 0.6161830336483307,
+      "precision": 0.5071225071225072,
+      "recall": 0.5933333333333334,
+      "roc_auc": 0.7958611111111111,
+      "threshold": 0.28,
+      "true_negative": 727,
+      "true_positive": 178,
+      "viral_rate": 0.25
+    },
+    {
+      "accuracy": 0.7875,
+      "brier": 0.13844368509710583,
+      "f1": 0.5714285714285714,
+      "false_negative": 130,
+      "false_positive": 125,
+      "fold": 5,
+      "n": 1200,
+      "pr_auc": 0.6413264011076708,
+      "precision": 0.576271186440678,
+      "recall": 0.5666666666666667,
+      "roc_auc": 0.7887296296296294,
+      "threshold": 0.32,
+      "true_negative": 775,
+      "true_positive": 170,
+      "viral_rate": 0.25
+    }
+  ],
+  "fold_metrics_summary": {
+    "accuracy": {
+      "mean": 0.7606666666666666,
+      "std": 0.029682346043846786
+    },
+    "brier": {
+      "mean": 0.13925936341229764,
+      "std": 0.0019191906971354874
+    },
+    "f1": {
+      "mean": 0.5612643700841395,
+      "std": 0.02287374487320456
+    },
+    "pr_auc": {
+      "mean": 0.6328699583971404,
+      "std": 0.012462993668492298
+    },
+    "precision": {
+      "mean": 0.524609956031445,
+      "std": 0.05432194308674924
+    },
+    "recall": {
+      "mean": 0.61,
+      "std": 0.04365266951236265
+    },
+    "roc_auc": {
+      "mean": 0.793234074074074,
+      "std": 0.010425208892519862
+    },
+    "threshold": {
+      "mean": 0.28200000000000003,
+      "std": 0.02588435821108957
+    }
+  },
+  "input_rows": 7834,
+  "input_source_counts": {
+    "reddit": 3522,
+    "x": 2312,
+    "youtube": 2000
+  },
+  "known_audience_by_source": {
+    "reddit": 0,
+    "x": 575,
+    "youtube": 1969
+  },
+  "metrics": {
+    "overall": {
+      "accuracy": 0.7606666666666667,
+      "brier": 0.13925936341229767,
+      "f1": 0.5603184323331292,
+      "false_negative": 585,
+      "false_positive": 851,
+      "n": 6000,
+      "pr_auc": 0.6304730342063525,
+      "precision": 0.5181200453001132,
+      "recall": 0.61,
+      "roc_auc": 0.7928915555555556,
+      "threshold": 0.282,
+      "true_negative": 3649,
+      "true_positive": 915,
+      "viral_rate": 0.25
+    },
+    "per_source": {
+      "reddit": {
+        "accuracy": 0.749,
+        "brier": 0.15316104886003343,
+        "f1": 0.47489539748953974,
+        "false_negative": 273,
+        "false_positive": 229,
+        "n": 2000,
+        "pr_auc": 0.5649053255936313,
+        "precision": 0.49780701754385964,
+        "recall": 0.454,
+        "roc_auc": 0.7091686666666667,
+        "threshold": 0.282,
+        "true_negative": 1271,
+        "true_positive": 227,
+        "viral_rate": 0.25
+      },
+      "x": {
+        "accuracy": 0.706,
+        "brier": 0.16172203134587312,
+        "f1": 0.4913494809688581,
+        "false_negative": 216,
+        "false_positive": 372,
+        "n": 2000,
+        "pr_auc": 0.5008527209880549,
+        "precision": 0.4329268292682927,
+        "recall": 0.568,
+        "roc_auc": 0.7248333333333333,
+        "threshold": 0.2820000000000001,
+        "true_negative": 1128,
+        "true_positive": 284,
+        "viral_rate": 0.25
+      },
+      "youtube": {
+        "accuracy": 0.827,
+        "brier": 0.10289501003098644,
+        "f1": 0.7001733102253033,
+        "false_negative": 96,
+        "false_positive": 250,
+        "n": 2000,
+        "pr_auc": 0.7696967941810643,
+        "precision": 0.617737003058104,
+        "recall": 0.808,
+        "roc_auc": 0.9006619999999999,
+        "threshold": 0.282,
+        "true_negative": 1250,
+        "true_positive": 404,
+        "viral_rate": 0.25
+      }
+    }
+  },
+  "rows": 6000,
+  "seed": 42,
+  "source_counts": {
+    "reddit": 2000,
+    "x": 2000,
+    "youtube": 2000
+  },
+  "validation": {
+    "fold_validation_resampled": false,
+    "folds": 5,
+    "folds_detail": [
+      {
+        "effective_source_weight": {
+          "reddit": 1600.0,
+          "x": 1600.0,
+          "youtube": 1600.0
+        },
+        "fold": 1,
+        "train_authors": 4312,
+        "train_rows": 4800,
+        "train_source_class_counts": {
+          "reddit|0": 1200,
+          "reddit|1": 400,
+          "x|0": 1200,
+          "x|1": 400,
+          "youtube|0": 1200,
+          "youtube|1": 400
+        },
+        "train_source_counts": {
+          "reddit": 1600,
+          "x": 1600,
+          "youtube": 1600
+        },
+        "validation_authors": 1076,
+        "validation_rows": 1200,
+        "validation_source_class_counts": {
+          "reddit|0": 300,
+          "reddit|1": 100,
+          "x|0": 300,
+          "x|1": 100,
+          "youtube|0": 300,
+          "youtube|1": 100
+        },
+        "validation_source_counts": {
+          "reddit": 400,
+          "x": 400,
+          "youtube": 400
+        }
+      },
+      {
+        "effective_source_weight": {
+          "reddit": 1600.0,
+          "x": 1600.0,
+          "youtube": 1600.0
+        },
+        "fold": 2,
+        "train_authors": 4309,
+        "train_rows": 4800,
+        "train_source_class_counts": {
+          "reddit|0": 1200,
+          "reddit|1": 400,
+          "x|0": 1200,
+          "x|1": 400,
+          "youtube|0": 1200,
+          "youtube|1": 400
+        },
+        "train_source_counts": {
+          "reddit": 1600,
+          "x": 1600,
+          "youtube": 1600
+        },
+        "validation_authors": 1079,
+        "validation_rows": 1200,
+        "validation_source_class_counts": {
+          "reddit|0": 300,
+          "reddit|1": 100,
+          "x|0": 300,
+          "x|1": 100,
+          "youtube|0": 300,
+          "youtube|1": 100
+        },
+        "validation_source_counts": {
+          "reddit": 400,
+          "x": 400,
+          "youtube": 400
+        }
+      },
+      {
+        "effective_source_weight": {
+          "reddit": 1600.0,
+          "x": 1600.0,
+          "youtube": 1600.0
+        },
+        "fold": 3,
+        "train_authors": 4309,
+        "train_rows": 4800,
+        "train_source_class_counts": {
+          "reddit|0": 1200,
+          "reddit|1": 400,
+          "x|0": 1200,
+          "x|1": 400,
+          "youtube|0": 1200,
+          "youtube|1": 400
+        },
+        "train_source_counts": {
+          "reddit": 1600,
+          "x": 1600,
+          "youtube": 1600
+        },
+        "validation_authors": 1079,
+        "validation_rows": 1200,
+        "validation_source_class_counts": {
+          "reddit|0": 300,
+          "reddit|1": 100,
+          "x|0": 300,
+          "x|1": 100,
+          "youtube|0": 300,
+          "youtube|1": 100
+        },
+        "validation_source_counts": {
+          "reddit": 400,
+          "x": 400,
+          "youtube": 400
+        }
+      },
+      {
+        "effective_source_weight": {
+          "reddit": 1600.0,
+          "x": 1600.0,
+          "youtube": 1600.0
+        },
+        "fold": 4,
+        "train_authors": 4313,
+        "train_rows": 4800,
+        "train_source_class_counts": {
+          "reddit|0": 1200,
+          "reddit|1": 400,
+          "x|0": 1200,
+          "x|1": 400,
+          "youtube|0": 1200,
+          "youtube|1": 400
+        },
+        "train_source_counts": {
+          "reddit": 1600,
+          "x": 1600,
+          "youtube": 1600
+        },
+        "validation_authors": 1075,
+        "validation_rows": 1200,
+        "validation_source_class_counts": {
+          "reddit|0": 300,
+          "reddit|1": 100,
+          "x|0": 300,
+          "x|1": 100,
+          "youtube|0": 300,
+          "youtube|1": 100
+        },
+        "validation_source_counts": {
+          "reddit": 400,
+          "x": 400,
+          "youtube": 400
+        }
+      },
+      {
+        "effective_source_weight": {
+          "reddit": 1600.0,
+          "x": 1600.0,
+          "youtube": 1600.0
+        },
+        "fold": 5,
+        "train_authors": 4309,
+        "train_rows": 4800,
+        "train_source_class_counts": {
+          "reddit|0": 1200,
+          "reddit|1": 400,
+          "x|0": 1200,
+          "x|1": 400,
+          "youtube|0": 1200,
+          "youtube|1": 400
+        },
+        "train_source_counts": {
+          "reddit": 1600,
+          "x": 1600,
+          "youtube": 1600
+        },
+        "validation_authors": 1079,
+        "validation_rows": 1200,
+        "validation_source_class_counts": {
+          "reddit|0": 300,
+          "reddit|1": 100,
+          "x|0": 300,
+          "x|1": 100,
+          "youtube|0": 300,
+          "youtube|1": 100
+        },
+        "validation_source_counts": {
+          "reddit": 400,
+          "x": 400,
+          "youtube": 400
+        }
+      }
+    ],
+    "group": "author_hash",
+    "scheme": "StratifiedGroupKFold",
+    "source_balance": "stratified undersampling to the minimum source count, with fold-local residual equal-total weights",
+    "source_balancing_applied_before_folds": true,
+    "stratification": "source \u00d7 viral"
+  }
+}
