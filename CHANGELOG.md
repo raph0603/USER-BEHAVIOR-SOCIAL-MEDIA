@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.22.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.22.0...v1.22.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **youtube:** quarantine oversized kafka events ([654bb09](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/654bb09f789bc11484a1478d524f376e0f87849f))
+* **youtube:** quarantine oversized kafka events ([99b7cd3](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/99b7cd323ea66a662329ff5ff471e223ebb54577))
+
 ## [1.22.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.21.0...v1.22.0) (2026-07-27)
 
 
