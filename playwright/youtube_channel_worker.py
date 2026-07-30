@@ -133,7 +133,8 @@ def main() -> None:
                 )
                 summary["new_channels" if inserted else "cache_hits"] += 1
                 summary["requests"] += 1
-            consumer.commit()
+            if events:
+                consumer.commit()
 
         used = state.api_requests_today("channels.list", now)
         legacy_remaining = max(0, daily_budget - used)

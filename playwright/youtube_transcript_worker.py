@@ -373,15 +373,9 @@ def main() -> None:
                 transcript_lifecycle_status=lifecycle_status,
                 transcript_status=compatibility_status,
                 transcript_text=payload.get("text"),
-                transcript_segments_json=(
-                    json.dumps(
-                        payload.get("segments"),
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    )
-                    if payload.get("segments") is not None
-                    else None
-                ),
+                # Segment detail remains in durable SQLite state. Kafka carries
+                # the transcript text and compact provenance only.
+                transcript_segments_json=None,
                 transcript_requested_language=requested_language,
                 transcript_requested_language_code=requested_language_code,
                 transcript_obtained_language=payload.get("language"),
@@ -420,10 +414,24 @@ def main() -> None:
                     attempted_at.isoformat() if fallback_result else None
                 ),
                 transcript_primary_result_json=json.dumps(
-                    primary_result, ensure_ascii=False, sort_keys=True
+                    {
+                        "status": primary_result.get("status"),
+                        "error_code": primary_result.get("error_code"),
+                        "attempt_count": primary_result.get("attempt_count"),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
                 ),
                 transcript_fallback_result_json=(
-                    json.dumps(fallback_result, ensure_ascii=False, sort_keys=True)
+                    json.dumps(
+                        {
+                            "status": fallback_result.get("status"),
+                            "error_code": fallback_result.get("error_code"),
+                            "attempt_count": fallback_result.get("attempt_count"),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
                     if fallback_result
                     else None
                 ),
@@ -444,7 +452,15 @@ def main() -> None:
                 transcript_error_message=result.get("error_message"),
                 last_attempt_at=attempted_at.isoformat(),
                 next_attempt_at=next_attempt.isoformat() if next_attempt else None,
-                payload_json=json.dumps(result, ensure_ascii=False, sort_keys=True),
+                payload_json=json.dumps(
+                    {
+                        "status": result.get("status"),
+                        "error_code": result.get("error_code"),
+                        "content_version": payload.get("content_version"),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
             )
             with state.transaction():
                 state.record_api_usage(
