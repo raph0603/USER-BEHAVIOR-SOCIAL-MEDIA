@@ -144,3 +144,35 @@ The dashboard should display the stored status, not infer one generic state
 from empty text. Refresh content analytics after the transcript table changes.
 An unavailable track, a pending attempt, a rate limit, and a failed request
 need different user-facing messages.
+# YouTube Kafka message too large
+
+YouTube workers retain publish intents in the shared SQLite outbox. Events larger
+than `YOUTUBE_KAFKA_MAX_EVENT_BYTES` (default `900000`) are retained with
+`status=failed_terminal` and `failure_reason=message_size_too_large`; later rows
+continue to drain. The limit stays below Kafka's default broker message limit to
+leave room for the key and record envelope.
+
+Inspect oversized pending rows without changing them:
+
+```bash
+docker compose run --rm youtube-collector \
+  python /app/youtube_outbox_cli.py \
+  --state-db /app/state/youtube-pipeline.sqlite list
+```
+
+Preview or apply quarantine for rows that were created before the guard existed:
+
+```bash
+docker compose run --rm youtube-collector \
+  python /app/youtube_outbox_cli.py \
+  --state-db /app/state/youtube-pipeline.sqlite quarantine --dry-run
+
+docker compose run --rm youtube-collector \
+  python /app/youtube_outbox_cli.py \
+  --state-db /app/state/youtube-pipeline.sqlite quarantine
+```
+
+No command deletes `event_json`. Terminal rows can be inspected with
+`--include-terminal`. Broker limits are configured separately through
+`KAFKA_MESSAGE_MAX_BYTES` and `KAFKA_REPLICA_FETCH_MAX_BYTES`; raising them is
+not a substitute for compacting or quarantining anomalous payloads.

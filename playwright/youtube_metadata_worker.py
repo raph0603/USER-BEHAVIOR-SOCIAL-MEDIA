@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
@@ -63,11 +64,7 @@ def _compact_caption_tracks(value: Any) -> dict[str, list[dict[str, Any]]]:
         if not isinstance(tracks, list):
             continue
         compact[str(language)] = [
-            {
-                key: track.get(key)
-                for key in ("ext", "name")
-                if track.get(key) is not None
-            }
+            {key: track.get(key) for key in ("ext", "name") if track.get(key) is not None}
             for track in tracks
             if isinstance(track, dict)
         ]
@@ -181,7 +178,8 @@ def _ingest_discoveries(
                 published_at=event.get("published_at"),
                 correlation_id=event.get("correlation_id") or event["video_id"],
             )
-        consumer.commit()
+        if events:
+            consumer.commit()
         return len(events)
 
 
@@ -299,7 +297,6 @@ def main() -> None:
                 try:
                     raw, metadata = futures[video_id].result()
                     raw = thumbnail_url_only_metadata(raw)
-                    event_raw = compact_yt_dlp_event_payload(raw)
                     request_latency_ms = (time.monotonic() - request_started) * 1000
                     thumbnail = select_thumbnail_reference(
                         metadata.get("thumbnails"),
@@ -308,10 +305,14 @@ def main() -> None:
                         source="yt-dlp",
                     )
                     output_dir.mkdir(parents=True, exist_ok=True)
-                    (output_dir / f"{video_id}-{int(observed_at.timestamp())}.json").write_text(
-                        json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str),
-                        encoding="utf-8",
+                    diagnostic_path = output_dir / f"{video_id}-{int(observed_at.timestamp())}.json"
+                    diagnostic_json = json.dumps(
+                        raw,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
                     )
+                    diagnostic_path.write_text(diagnostic_json, encoding="utf-8")
                     with state.transaction():
                         state.record_api_usage(
                             endpoint="yt-dlp.extract_info",
@@ -371,10 +372,15 @@ def main() -> None:
                                 default=str,
                             ),
                             raw_source_payload=json.dumps(
-                                event_raw,
+                                {
+                                    "storage_uri": str(diagnostic_path),
+                                    "sha256": hashlib.sha256(
+                                        diagnostic_json.encode("utf-8")
+                                    ).hexdigest(),
+                                    "schema": "yt_dlp_raw_v1",
+                                },
                                 ensure_ascii=False,
                                 sort_keys=True,
-                                default=str,
                             ),
                         )
                         state.enqueue_outbox(
