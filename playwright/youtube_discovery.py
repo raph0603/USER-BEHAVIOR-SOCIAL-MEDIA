@@ -136,15 +136,18 @@ def main() -> None:
         "duplicates": 0,
         "new_videos": 0,
         "outbox_redrained": 0,
+        "outbox_quarantined": 0,
         "queries": {},
         "backfill": backfill,
     }
 
     with YouTubeStateStore(state_path) as state:
+        outbox_stats: dict[str, int] = {}
         totals["outbox_redrained"] = drain_outbox(
             state,
             producer,
             include_deferred=True,
+            stats=outbox_stats,
         )
         for spec in specs:
             if totals["new_videos"] >= run_limit:
@@ -214,11 +217,13 @@ def main() -> None:
                         published_at=snippet.get("publishedAt"),
                         query_id=spec.query_id,
                         language=spec.language,
+                        title=snippet.get("title"),
+                        channel_id=snippet.get("channelId"),
                         payload_json=json.dumps(
                             {
                                 "query": spec.query,
                                 "language": spec.language,
-                                "search_snippet": snippet,
+                                "published_at": snippet.get("publishedAt"),
                             },
                             ensure_ascii=False,
                             sort_keys=True,
@@ -263,7 +268,7 @@ def main() -> None:
                     searched_at=started_at,
                     last_published_at_seen=last_published,
                 )
-            drain_outbox(state, producer)
+            drain_outbox(state, producer, stats=outbox_stats)
             totals["new_videos"] += len(query_events)
             totals["queries"][spec.query_id] = {
                 "query": spec.query,
@@ -273,6 +278,7 @@ def main() -> None:
                 "published_after": isoformat(after),
             }
 
+        totals["outbox_quarantined"] = outbox_stats.get("quarantined", 0)
         processed = totals["new_videos"] + totals["duplicates"]
         state.record_worker_health(
             worker_name="youtube_discovery",

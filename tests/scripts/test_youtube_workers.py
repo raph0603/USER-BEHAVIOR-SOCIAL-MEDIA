@@ -236,7 +236,28 @@ class YouTubeWorkerArchitectureTests(unittest.TestCase):
 
         self.assertIn("def compact_yt_dlp_event_payload", source)
         self.assertIn('for field in ("subtitles", "automatic_captions")', source)
-        self.assertIn("raw_source_payload=json.dumps(\n                                event_raw,", source)
+        self.assertIn('"storage_uri": str(diagnostic_path)', source)
+        self.assertIn('"sha256": hashlib.sha256(', source)
+        self.assertNotIn(
+            "raw_source_payload=json.dumps(\n                                event_raw,", source
+        )
+
+    def test_worker_events_do_not_duplicate_heavy_api_results(self):
+        discovery = (PLAYWRIGHT_DIR / "youtube_discovery.py").read_text(encoding="utf-8")
+        comments = (PLAYWRIGHT_DIR / "youtube_comment_worker.py").read_text(encoding="utf-8")
+        transcripts = (PLAYWRIGHT_DIR / "youtube_transcript_worker.py").read_text(encoding="utf-8")
+
+        self.assertNotIn('"search_snippet": snippet', discovery)
+        self.assertIn('"comment_count": len(comments)', comments)
+        self.assertNotIn(
+            "payload_json=json.dumps(result, ensure_ascii=False, sort_keys=True)",
+            comments,
+        )
+        self.assertIn("transcript_segments_json=None", transcripts)
+        self.assertNotIn(
+            "payload_json=json.dumps(result, ensure_ascii=False, sort_keys=True)",
+            transcripts,
+        )
 
     def test_transcript_and_comment_workers_have_separate_topics(self):
         transcript = (PLAYWRIGHT_DIR / "youtube_transcript_worker.py").read_text(encoding="utf-8")
@@ -247,10 +268,18 @@ class YouTubeWorkerArchitectureTests(unittest.TestCase):
         self.assertIn("youtube.comment.requests", comments)
         self.assertIn("youtube.comment.results", comments)
 
-    def test_transcript_worker_commits_only_after_polling_events(self):
-        source = (PLAYWRIGHT_DIR / "youtube_transcript_worker.py").read_text(encoding="utf-8")
+    def test_workers_commit_only_after_polling_events(self):
+        worker_paths = (
+            "youtube_channel_worker.py",
+            "youtube_comment_worker.py",
+            "youtube_metadata_worker.py",
+            "youtube_transcript_worker.py",
+        )
 
-        self.assertIn("if events:\n            consumer.commit()", source)
+        for worker_path in worker_paths:
+            with self.subTest(worker=worker_path):
+                source = (PLAYWRIGHT_DIR / worker_path).read_text(encoding="utf-8")
+                self.assertRegex(source, r"if events:\s+consumer\.commit\(\)")
 
     def test_lakehouse_dags_use_independent_youtube_tasks(self):
         source = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(

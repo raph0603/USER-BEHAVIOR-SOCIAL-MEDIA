@@ -268,7 +268,11 @@ class YouTubeStateStore(
               delivery_attempts INTEGER NOT NULL DEFAULT 0,
               last_attempt_at TEXT,
               delivered_at TEXT,
-              last_error TEXT
+              last_error TEXT,
+              status TEXT NOT NULL DEFAULT 'pending',
+              failure_reason TEXT,
+              failed_at TEXT,
+              payload_size_bytes INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_youtube_worker_outbox_pending
               ON youtube_worker_outbox (delivered_at, available_at, created_at);
@@ -328,6 +332,32 @@ class YouTubeStateStore(
                 self.connection.execute(
                     f"ALTER TABLE youtube_transcript_lifecycle ADD COLUMN {column} {data_type}"
                 )
+        outbox_columns = {
+            "status": "TEXT NOT NULL DEFAULT 'pending'",
+            "failure_reason": "TEXT",
+            "failed_at": "TEXT",
+            "payload_size_bytes": "INTEGER",
+        }
+        current_outbox_columns = {
+            row[1] for row in self.connection.execute("PRAGMA table_info(youtube_worker_outbox)")
+        }
+        for column, data_type in outbox_columns.items():
+            if column not in current_outbox_columns:
+                self.connection.execute(
+                    f"ALTER TABLE youtube_worker_outbox ADD COLUMN {column} {data_type}"
+                )
+        self.connection.execute(
+            """
+            UPDATE youtube_worker_outbox
+            SET status = CASE
+              WHEN delivered_at IS NOT NULL THEN 'delivered'
+              ELSE 'pending'
+            END
+            WHERE status IS NULL
+               OR status = ''
+               OR (delivered_at IS NOT NULL AND status = 'pending')
+            """
+        )
         self.connection.execute(
             """
             UPDATE youtube_api_usage

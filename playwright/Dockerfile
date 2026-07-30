@@ -18,6 +18,7 @@ COPY playwright/youtube_transcript_worker.py /app/youtube_transcript_worker.py
 COPY playwright/youtube_comment_worker.py /app/youtube_comment_worker.py
 COPY playwright/youtube_channel_worker.py /app/youtube_channel_worker.py
 COPY playwright/youtube_metrics_worker.py /app/youtube_metrics_worker.py
+COPY scripts/youtube_outbox_cli.py /app/youtube_outbox_cli.py
 COPY common/ /app/common/
 COPY schemas/ /app/schemas/
 COPY API/ /app/api/

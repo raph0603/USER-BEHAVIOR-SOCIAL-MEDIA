@@ -4,21 +4,91 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from confluent_kafka import DeserializingConsumer, SerializingProducer
+from confluent_kafka import (
+    DeserializingConsumer,
+    KafkaError,
+    KafkaException,
+    SerializingProducer,
+)
 from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroDeserializer, AvroSerializer
-from confluent_kafka.serialization import StringDeserializer, StringSerializer
+from confluent_kafka.serialization import (
+    MessageField,
+    SerializationContext,
+    StringDeserializer,
+    StringSerializer,
+)
 
 from common.event_envelope import enrich_event_envelope
+from common.youtube_outbox import MESSAGE_SIZE_TOO_LARGE, canonical_event_json
 
 
 UTC = timezone.utc
+LOGGER = logging.getLogger(__name__)
+DEFAULT_YOUTUBE_KAFKA_MAX_EVENT_BYTES = 900_000
+MIN_YOUTUBE_KAFKA_MAX_EVENT_BYTES = 1_024
+MAX_YOUTUBE_KAFKA_MAX_EVENT_BYTES = 100_000_000
+KAFKA_RECORD_MARGIN_BYTES = 100_000
+
+
+class OversizedKafkaEvent(ValueError):
+    def __init__(self, *, size_bytes: int, max_event_bytes: int) -> None:
+        self.size_bytes = int(size_bytes)
+        self.max_event_bytes = int(max_event_bytes)
+        super().__init__(
+            f"serialized event is {self.size_bytes} bytes; limit is {self.max_event_bytes} bytes"
+        )
+
+
+def youtube_kafka_max_event_bytes(value: str | int | None = None) -> int:
+    raw_value = os.getenv("YOUTUBE_KAFKA_MAX_EVENT_BYTES") if value is None else value
+    if raw_value is None or str(raw_value).strip() == "":
+        return DEFAULT_YOUTUBE_KAFKA_MAX_EVENT_BYTES
+    try:
+        parsed = int(str(raw_value).strip())
+    except ValueError as exc:
+        raise ValueError("YOUTUBE_KAFKA_MAX_EVENT_BYTES must be an integer") from exc
+    if not MIN_YOUTUBE_KAFKA_MAX_EVENT_BYTES <= parsed <= MAX_YOUTUBE_KAFKA_MAX_EVENT_BYTES:
+        raise ValueError(
+            "YOUTUBE_KAFKA_MAX_EVENT_BYTES must be between "
+            f"{MIN_YOUTUBE_KAFKA_MAX_EVENT_BYTES} and "
+            f"{MAX_YOUTUBE_KAFKA_MAX_EVENT_BYTES}"
+        )
+    return parsed
+
+
+def _is_message_size_too_large(error: BaseException | object) -> bool:
+    candidates = [error]
+    if isinstance(error, KafkaException):
+        candidates.extend(error.args)
+    for candidate in candidates:
+        code = getattr(candidate, "code", None)
+        if callable(code):
+            try:
+                if code() == KafkaError.MSG_SIZE_TOO_LARGE:
+                    return True
+            except (TypeError, ValueError):
+                pass
+    return False
+
+
+def _event_log_context(row: dict, event: dict, *, size_bytes: int) -> dict:
+    return {
+        "outbox_id": row.get("outbox_id"),
+        "topic": row.get("topic"),
+        "event_type": event.get("event_type"),
+        "event_id": event.get("event_id"),
+        "video_id": event.get("video_id") or event.get("platform_event_id"),
+        "size_bytes": int(size_bytes),
+        "delivery_attempts": int(row.get("delivery_attempts") or 0) + 1,
+    }
 
 
 _YOUTUBE_EVENT_PROVENANCE = {
@@ -105,36 +175,63 @@ class EventProducer:
         schema_text = Path(schema_path).read_text(encoding="utf-8")
         schema = json.loads(schema_text)
         self.fields = tuple(field["name"] for field in schema["fields"])
+        self.max_event_bytes = youtube_kafka_max_event_bytes()
         registry = SchemaRegistryClient({"url": schema_registry_url})
+        self._key_serializer = StringSerializer("utf_8")
+        self._value_serializer = AvroSerializer(registry, schema_text)
         self._producer = SerializingProducer(
             {
                 "bootstrap.servers": bootstrap_servers,
-                "key.serializer": StringSerializer("utf_8"),
-                "value.serializer": AvroSerializer(registry, schema_text),
+                "message.max.bytes": self.max_event_bytes + KAFKA_RECORD_MARGIN_BYTES,
+                "key.serializer": self._key_serializer,
+                "value.serializer": self._value_serializer,
             }
         )
-        self._errors: list[str] = []
+
+    def _value(self, event: dict) -> dict:
+        return {field: event.get(field) for field in self.fields}
+
+    def serialized_size_bytes(self, topic: str, event: dict) -> int:
+        context = SerializationContext(topic, MessageField.VALUE)
+        value_bytes = self._value_serializer(self._value(event), context) or b""
+        key = event.get("video_id") or event.get("platform_event_id")
+        key_bytes = str(key).encode("utf-8") if key is not None else b""
+        return len(value_bytes) + len(key_bytes)
 
     def publish(self, topic: str, events: Iterable[dict]) -> int:
         count = 0
+        errors: list[object] = []
 
         def delivery(error, _message) -> None:
             if error:
-                self._errors.append(str(error))
+                errors.append(error)
 
         for event in events:
-            value = {field: event.get(field) for field in self.fields}
+            size_bytes = self.serialized_size_bytes(topic, event)
+            if size_bytes > self.max_event_bytes:
+                raise OversizedKafkaEvent(
+                    size_bytes=size_bytes,
+                    max_event_bytes=self.max_event_bytes,
+                )
             self._producer.produce(
                 topic=topic,
                 key=event.get("video_id") or event.get("platform_event_id"),
-                value=value,
+                value=self._value(event),
                 on_delivery=delivery,
             )
             self._producer.poll(0)
             count += 1
         undelivered = self._producer.flush(60)
-        if undelivered or self._errors:
-            raise RuntimeError(f"Kafka delivery failed: {undelivered} undelivered, {self._errors}")
+        if errors:
+            first_error = errors[0]
+            if _is_message_size_too_large(first_error):
+                raise KafkaException(first_error)
+            raise RuntimeError(
+                f"Kafka delivery failed: {undelivered} undelivered, "
+                f"{[str(error) for error in errors]}"
+            )
+        if undelivered:
+            raise RuntimeError(f"Kafka delivery failed: {undelivered} undelivered")
         return count
 
 
@@ -145,6 +242,7 @@ def drain_outbox(
     limit: int = 1000,
     include_deferred: bool = False,
     now: datetime | None = None,
+    stats: dict[str, int] | None = None,
 ) -> int:
     """Publish pending rows and acknowledge SQLite only after Kafka delivery."""
 
@@ -155,12 +253,51 @@ def drain_outbox(
         limit=limit,
         include_deferred=include_deferred,
     )
+    quarantined = 0
     for row in rows:
         attempted_at = datetime.now(UTC)
+        event: dict = {}
+        size_bytes = 0
         try:
             event = json.loads(row["event_json"])
+            size_method = getattr(producer, "serialized_size_bytes", None)
+            size_bytes = (
+                int(size_method(row["topic"], event))
+                if callable(size_method)
+                else len(canonical_event_json(event).encode("utf-8"))
+            )
+            context = _event_log_context(row, event, size_bytes=size_bytes)
+            LOGGER.info("youtube_outbox_publish_attempt %s", json.dumps(context, sort_keys=True))
+            max_event_bytes = int(
+                getattr(producer, "max_event_bytes", youtube_kafka_max_event_bytes())
+            )
+            if size_bytes > max_event_bytes:
+                raise OversizedKafkaEvent(
+                    size_bytes=size_bytes,
+                    max_event_bytes=max_event_bytes,
+                )
             producer.publish(row["topic"], [event])
         except BaseException as exc:
+            if isinstance(exc, OversizedKafkaEvent) or _is_message_size_too_large(exc):
+                if isinstance(exc, OversizedKafkaEvent):
+                    size_bytes = exc.size_bytes
+                context = _event_log_context(row, event, size_bytes=size_bytes)
+                LOGGER.error(
+                    "youtube_outbox_quarantined %s",
+                    json.dumps(
+                        {**context, "failure_reason": MESSAGE_SIZE_TOO_LARGE},
+                        sort_keys=True,
+                    ),
+                )
+                state.quarantine_outbox(
+                    row["outbox_id"],
+                    failed_at=attempted_at,
+                    reason=MESSAGE_SIZE_TOO_LARGE,
+                    error=exc,
+                    payload_size_bytes=size_bytes or None,
+                )
+                quarantined += 1
+                continue
             state.record_outbox_failure(
                 row["outbox_id"],
                 attempted_at=attempted_at,
@@ -172,6 +309,11 @@ def drain_outbox(
             delivered_at=datetime.now(UTC),
         )
         drained += 1
+    if stats is not None:
+        stats["published"] = stats.get("published", 0) + drained
+        stats["quarantined"] = stats.get("quarantined", 0) + quarantined
+    if rows and drained == 0 and quarantined == len(rows):
+        raise RuntimeError(f"All {quarantined} pending YouTube outbox event(s) were quarantined")
     return drained
 
 

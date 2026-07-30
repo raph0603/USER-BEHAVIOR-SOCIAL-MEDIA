@@ -110,7 +110,8 @@ def _ingest_requests(state, bootstrap, registry, topic, limit):
                 published_at=event.get("published_at"),
                 request=event,
             )
-        consumer.commit()
+        if events:
+            consumer.commit()
 
 
 def main() -> None:
@@ -201,7 +202,15 @@ def main() -> None:
                     comments_status="success",
                     comments_collected_at=attempted_at.isoformat(),
                     next_attempt_at=next_refresh_at.isoformat(),
-                    payload_json=json.dumps(result, ensure_ascii=False, sort_keys=True),
+                    payload_json=json.dumps(
+                        {
+                            "comment_count": len(comments),
+                            "pages": pages,
+                            "stopped_on_known": stopped,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                 )
                 with state.transaction():
                     state.record_api_usage(
