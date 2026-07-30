@@ -88,27 +88,37 @@ class ViralExplainer:
         else:  # BERT backend: rebuild from the saved model folder
             from features.bert_content import BertContentModel
             self.content_model = BertContentModel(bundle["content_model_dir"])
-        self.roles = RoleFeaturizer()
-        self.topics = TopicFeaturizer()
+        self.roles = (
+            RoleFeaturizer()
+            if any(feature.startswith("role_") for feature in self.features)
+            else None
+        )
+        self.topics = (
+            TopicFeaturizer()
+            if any(feature.startswith("topic_") for feature in self.features)
+            else None
+        )
 
     def _feature_row(self, text: str, source: str, audience: float | None = None):
         cleaned = clean_text(text)
         df = add_text_features(pd.DataFrame({"clean_text": [cleaned]}))
-        for name, value in self.roles.post_features(cleaned).items():
-            df[name] = value
-        for name, value in self.topics.transform([cleaned]).iloc[0].items():
-            df[name] = value
+        if self.roles is not None:
+            for name, value in self.roles.post_features(cleaned).items():
+                df[name] = value
+        if self.topics is not None:
+            for name, value in self.topics.transform([cleaned]).iloc[0].items():
+                df[name] = value
         df["content_score"] = self.content_model.predict_proba([cleaned])[:, 1]
         src = (source or "").strip().lower()
         for col in self.features:
             if col.startswith("src_"):
                 df[col] = 1.0 if col == f"src_{src}" else 0.0
-        # Mirror preprocess.build_dataset.add_channel_features: an unknown audience is
-        # NaN in training and 0 means an author with no followers, so serving must not
-        # collapse the two -- the model never saw a 0 and reads it as a real, tiny
-        # audience, which alone drags the score to ~0.
+        # Mirror preprocess.build_dataset.add_channel_features: Reddit's subreddit size
+        # is a community-level value, not an author audience, so it stays unavailable.
+        # For the other sources, an unknown audience is NaN and 0 means an author with
+        # no followers; serving must not collapse those two cases.
         if "chan_log_audience" in self.features:
-            known = audience is not None
+            known = audience is not None and src != "reddit"
             aud = max(float(audience), 0.0) if known else np.nan
             df["chan_log_audience"] = np.log1p(aud) if known else np.nan
             df["chan_has_audience"] = 1.0 if known else 0.0

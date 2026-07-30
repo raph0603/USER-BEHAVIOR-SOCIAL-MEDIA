@@ -54,6 +54,14 @@ class AudienceParityTests(unittest.TestCase):
         self.assertAlmostEqual(row.loc[0, "chan_log_audience"], float(np.log1p(1000)))
         self.assertEqual(row.loc[0, "chan_audience_is_zero"], 0.0)
 
+    def test_reddit_ignores_community_size_as_author_audience(self):
+        row = self.explainer._feature_row(self.text, "reddit", 100_000)
+
+        self.assertTrue(np.isnan(row.loc[0, "chan_log_audience"]))
+        self.assertEqual(row.loc[0, "chan_has_audience"], 0.0)
+        self.assertEqual(row.loc[0, "chan_audience_available"], 0.0)
+        self.assertEqual(row.loc[0, "chan_audience_is_zero"], 0.0)
+
     def test_every_training_feature_is_produced(self):
         row = self._row(None)
 
