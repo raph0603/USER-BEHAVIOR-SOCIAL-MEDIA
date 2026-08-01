@@ -340,7 +340,7 @@ class AvroCompatibilityTests(unittest.TestCase):
         self.assertIn('endswith(".result")', source)
         self.assertIn(".when(~component_result, invalid_reason", source)
 
-    def test_online_cleaning_rotates_only_the_youtube_checkpoint(self):
+    def test_online_cleaning_rotates_affected_platform_checkpoints(self):
         cleaner = (
             ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py"
         ).read_text(encoding="utf-8")
@@ -353,7 +353,7 @@ class AvroCompatibilityTests(unittest.TestCase):
             'checkpoint_variable = f"{platform.upper()}_CLEAN_CHECKPOINT_VERSION"',
             factory,
         )
-        self.assertIn('checkpoint_default="pre_bronze_v6"', factory)
+        self.assertEqual(factory.count('checkpoint_default="pre_bronze_v6"'), 2)
         self.assertIn(
             'CLEAN_CHECKPOINT_VERSION="${{{checkpoint_variable}:-{checkpoint_default}}}"',
             factory,
