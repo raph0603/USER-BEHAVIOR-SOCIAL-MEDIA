@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.23.3](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.23.2...v1.23.3) (2026-08-01)
+
+
+### Bug Fixes
+
+* **pipeline:** rotate stale kafka checkpoints ([bdd2bcb](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/bdd2bcb7d3fd87c7f581cd8792aa65d9e1935549))
+* **pipeline:** rotate stale lakehouse checkpoints ([2af04cf](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/2af04cf8f53b889bde8afe0bb1432516aed9748f))
+* **pipeline:** rotate stale reddit checkpoint ([4d21132](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/4d21132df7a7d91d5a6c172ee1acb9c1f866870a))
+* **pipeline:** rotate stale x checkpoint ([0a2932e](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/0a2932ee38049b85d9a894f34d1520c80a2385bf))
+
 ## [1.23.2](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.23.1...v1.23.2) (2026-08-01)
 
 
