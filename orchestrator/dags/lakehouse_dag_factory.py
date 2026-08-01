@@ -91,7 +91,9 @@ def clean_stream_command(
     clean_default: str,
     dlq_variable: str,
     dlq_default: str,
+    checkpoint_default: str = "pre_bronze_v5",
 ) -> str:
+    checkpoint_variable = f"{platform.upper()}_CLEAN_CHECKPOINT_VERSION"
     return f"""
     set -euo pipefail
     docker exec \\
@@ -100,7 +102,7 @@ def clean_stream_command(
       -e CLEAN_KAFKA_TOPIC="${{{clean_variable}:-{clean_default}}}" \\
       -e DLQ_KAFKA_TOPIC="${{{dlq_variable}:-{dlq_default}}}" \\
       -e CLEAN_SOURCE_VALUE_FORMAT=avro \\
-      -e CLEAN_CHECKPOINT_VERSION=pre_bronze_v5 \\
+      -e CLEAN_CHECKPOINT_VERSION="${{{checkpoint_variable}:-{checkpoint_default}}}" \\
       -e CLEAN_TRIGGER_MODE=available_now \\
       spark-master /bin/bash -lc "set -o pipefail; mkdir -p /tmp/user-behavior-lakehouse; /opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=1 --conf spark.executor.cores=1 /opt/spark/jobs/pipeline/collector_stream_pipeline.py 2>&1 | tee /tmp/user-behavior-lakehouse/clean_{platform}.log"
     """
@@ -506,6 +508,7 @@ def build_lakehouse_dag(
                 "youtube.clean.events",
                 "YOUTUBE_DLQ_KAFKA_TOPIC",
                 "youtube.dlq.events",
+                checkpoint_default="pre_bronze_v6",
             ),
         )
 
