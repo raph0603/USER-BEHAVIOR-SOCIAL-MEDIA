@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.23.2](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.23.1...v1.23.2) (2026-08-01)
+
+
+### Bug Fixes
+
+* **pipeline:** tolerate missing avro subjects ([100a449](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/100a4499c84f0d571f4f1b9c16c9ebad64b4614c))
+* **pipeline:** tolerate missing avro subjects ([565ff17](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/565ff17fc8bdcd7532b27a84e79cd0c21d511482))
+
 ## [1.23.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.23.0...v1.23.1) (2026-08-01)
 
 
