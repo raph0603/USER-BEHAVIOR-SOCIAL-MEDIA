@@ -1,5 +1,6 @@
 import ast
 import copy
+import contextlib
 import importlib.util
 import io
 import json
@@ -10,6 +11,8 @@ import types
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.parse import quote
 
 import numpy as np
 import pandas as pd
@@ -39,6 +42,7 @@ from common.transcripts import (
 
 ROOT = Path(__file__).resolve().parents[2]
 PRODUCER_PATH = ROOT / "playwright" / "producer.py"
+COLLECTOR_PIPELINE_PATH = ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py"
 
 
 def _producer_functions(*names):
@@ -47,6 +51,15 @@ def _producer_functions(*names):
         node
         for node in module.body
         if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names
+    ]
+
+
+def _collector_functions(*names):
+    module = ast.parse(COLLECTOR_PIPELINE_PATH.read_text(encoding="utf-8"))
+    return [
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name in names
     ]
 
 
@@ -183,6 +196,55 @@ class RedditCommentExtractionTests(unittest.TestCase):
 
         self.assertEqual(event["user_id"], "reddit-anonymous-comment-1")
         self.assertEqual(event["title"], "Useful comment")
+
+
+class SchemaRegistryLookupTests(unittest.TestCase):
+    @staticmethod
+    def _lookup_with_status(status: int):
+        def urlopen(url, timeout):
+            raise HTTPError(url, status, "registry error", None, None)
+
+        namespace = {
+            "HTTPError": HTTPError,
+            "json": json,
+            "quote": quote,
+            "urlopen": urlopen,
+        }
+        exec(
+            compile(
+                ast.Module(
+                    body=_collector_functions("_registered_avro_schemas"),
+                    type_ignores=[],
+                ),
+                str(COLLECTOR_PIPELINE_PATH),
+                "exec",
+            ),
+            namespace,
+        )
+        return namespace["_registered_avro_schemas"]
+
+    def test_missing_optional_subject_does_not_abort_cleaning(self):
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            schemas = self._lookup_with_status(404)(
+                "http://schema-registry:8081",
+                "youtube.channel.results-value",
+            )
+
+        self.assertEqual(schemas, [])
+        warning = json.loads(output.getvalue())
+        self.assertEqual(warning["event"], "schema_registry_subject_missing")
+        self.assertEqual(warning["subject"], "youtube.channel.results-value")
+
+    def test_non_missing_registry_errors_still_fail_cleaning(self):
+        with self.assertRaises(HTTPError) as raised:
+            self._lookup_with_status(503)(
+                "http://schema-registry:8081",
+                "youtube.channel.results-value",
+            )
+
+        self.assertEqual(raised.exception.code, 503)
 
 
 @unittest.skipUnless(parse_schema is not None, "fastavro is not installed")
