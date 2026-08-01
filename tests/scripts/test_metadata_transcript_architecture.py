@@ -278,17 +278,24 @@ class AvroCompatibilityTests(unittest.TestCase):
         self.assertIn('endswith(".result")', source)
         self.assertIn(".when(~component_result, invalid_reason", source)
 
-    def test_online_cleaning_uses_the_post_migration_checkpoint(self):
-        paths = (
-            ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py",
-            ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py",
+    def test_online_cleaning_rotates_only_the_youtube_checkpoint(self):
+        cleaner = (
+            ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py"
+        ).read_text(encoding="utf-8")
+        factory = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(
+            encoding="utf-8"
         )
 
-        for path in paths:
-            with self.subTest(path=path):
-                source = path.read_text(encoding="utf-8")
-                self.assertIn("pre_bronze_v5", source)
-                self.assertNotIn("pre_bronze_v4", source)
+        self.assertIn('_env("CLEAN_CHECKPOINT_VERSION", "pre_bronze_v5")', cleaner)
+        self.assertIn(
+            'checkpoint_variable = f"{platform.upper()}_CLEAN_CHECKPOINT_VERSION"',
+            factory,
+        )
+        self.assertIn('checkpoint_default="pre_bronze_v6"', factory)
+        self.assertIn(
+            'CLEAN_CHECKPOINT_VERSION="${{{checkpoint_variable}:-{checkpoint_default}}}"',
+            factory,
+        )
 
 
 class ProcessedStateTests(unittest.TestCase):
