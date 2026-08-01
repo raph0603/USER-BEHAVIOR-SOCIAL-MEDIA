@@ -536,6 +536,7 @@ def build_lakehouse_dag(
                 "reddit.clean.events",
                 "REDDIT_DLQ_KAFKA_TOPIC",
                 "reddit.dlq.events",
+                checkpoint_default="pre_bronze_v6",
             ),
         )
 
