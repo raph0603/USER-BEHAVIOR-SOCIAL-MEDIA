@@ -92,8 +92,8 @@ class ReconciliationCommandTests(unittest.TestCase):
         self.assertIn('task_id="reconcile_bronze_silver"', source)
         self.assertIn("reconcile_bronze_silver.py", source)
         self.assertIn("--mode repair", source)
-        self.assertIn("event_log_v1", source)
-        self.assertIn("applied_events_v1", source)
+        self.assertIn('BRONZE_CHECKPOINT_VERSION:-event_log_v2', source)
+        self.assertIn('SILVER_CHECKPOINT_VERSION:-applied_events_v2', source)
         reconciliation_dependency = source.index(
             "start_silver_stream >> verify_silver_recovery_lock >> reconcile_bronze_silver"
         )
