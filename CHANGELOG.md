@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.23.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.23.0...v1.23.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **pipeline:** rotate stale youtube checkpoint ([c278cc2](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/c278cc2f0c07d32d316fccbd8db869e1d95262fb))
+* **pipeline:** rotate stale youtube checkpoint ([b4d52fe](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/b4d52feb86bb46aaf9afdf54f84d4b41cd91f810))
+
 ## [1.23.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.22.1...v1.23.0) (2026-07-30)
 
 
