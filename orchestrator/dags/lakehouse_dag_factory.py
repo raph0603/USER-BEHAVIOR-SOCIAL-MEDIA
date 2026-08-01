@@ -522,6 +522,7 @@ def build_lakehouse_dag(
                 "x.clean.events",
                 "X_DLQ_KAFKA_TOPIC",
                 "x.dlq.events",
+                checkpoint_default="pre_bronze_v6",
             ),
         )
 
@@ -535,6 +536,7 @@ def build_lakehouse_dag(
                 "reddit.clean.events",
                 "REDDIT_DLQ_KAFKA_TOPIC",
                 "reddit.dlq.events",
+                checkpoint_default="pre_bronze_v6",
             ),
         )
 
@@ -551,7 +553,7 @@ def build_lakehouse_dag(
               -e KAFKA_FAIL_ON_DATA_LOSS="${KAFKA_FAIL_ON_DATA_LOSS:-true}" \
               -e ALLOW_KAFKA_DATA_LOSS="${ALLOW_KAFKA_DATA_LOSS:-false}" \
               -e PIPELINE_RUN_ID="{{ dag.dag_id }}__{{ run_id }}" \
-              -e BRONZE_CHECKPOINT_VERSION=event_log_v1 \
+              -e BRONZE_CHECKPOINT_VERSION="${BRONZE_CHECKPOINT_VERSION:-event_log_v2}" \
               -e BRONZE_TRIGGER_MODE=available_now \
               spark-master /bin/bash -lc "set -o pipefail; mkdir -p /tmp/user-behavior-lakehouse; /opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=2 --conf spark.executor.cores=1 /opt/spark/jobs/streaming/kafka_to_iceberg_bronze.py 2>&1 | tee /tmp/user-behavior-lakehouse/bronze_stream.log"
             """,
@@ -567,7 +569,7 @@ def build_lakehouse_dag(
               -e ALLOW_KAFKA_DATA_LOSS="${ALLOW_KAFKA_DATA_LOSS:-false}" \
               -e PIPELINE_RUN_ID="{{ dag.dag_id }}__{{ run_id }}" \
               -e SILVER_TRIGGER_MODE=available_now \
-              -e SILVER_CHECKPOINT_VERSION=applied_events_v1 \
+              -e SILVER_CHECKPOINT_VERSION="${SILVER_CHECKPOINT_VERSION:-applied_events_v2}" \
               spark-master /bin/bash -lc "set -o pipefail; mkdir -p /tmp/user-behavior-lakehouse; /opt/spark/bin/spark-submit --master spark://spark-master:7077 --driver-memory 512m --executor-memory 512m --conf spark.cores.max=2 --conf spark.executor.cores=1 /opt/spark/jobs/batch/bronze_to_silver_from_kafka.py 2>&1 | tee /tmp/user-behavior-lakehouse/silver_stream.log"
             """,
         )
