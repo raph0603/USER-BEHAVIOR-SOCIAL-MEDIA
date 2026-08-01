@@ -4,6 +4,7 @@ import sys
 import json
 from pathlib import Path
 from typing import Mapping
+from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import urlopen
 
@@ -64,11 +65,24 @@ def _registered_avro_schemas(registry_url: str, subject: str) -> list[tuple[int,
     """Load every writer schema so historical Confluent records decode safely."""
 
     subject_url = quote(subject, safe="")
-    with urlopen(
-        f"{registry_url.rstrip('/')}/subjects/{subject_url}/versions",
-        timeout=30,
-    ) as response:
-        versions = json.load(response)
+    versions_url = f"{registry_url.rstrip('/')}/subjects/{subject_url}/versions"
+    try:
+        with urlopen(versions_url, timeout=30) as response:
+            versions = json.load(response)
+    except HTTPError as exc:
+        if exc.code != 404:
+            raise
+        print(
+            json.dumps(
+                {
+                    "level": "warning",
+                    "event": "schema_registry_subject_missing",
+                    "subject": subject,
+                },
+                sort_keys=True,
+            )
+        )
+        return []
 
     schemas = []
     for version in versions:
