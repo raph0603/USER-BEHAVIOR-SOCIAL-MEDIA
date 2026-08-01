@@ -88,6 +88,10 @@ If the checkpoint offsets belong to a deleted or recreated Kafka topic and are
 beyond the current partition offsets, increment the checkpoint version after
 fixing the topology. Start the replacement checkpoint from retained Kafka
 data; downstream MERGE stages deduplicate the replay by canonical identifier.
+The online DAG accepts `YOUTUBE_CLEAN_CHECKPOINT_VERSION`,
+`X_CLEAN_CHECKPOINT_VERSION`, and `REDDIT_CLEAN_CHECKPOINT_VERSION`; increment
+only the affected platform's value and recreate the Airflow services so the
+new environment reaches the scheduler.
 
 ## Bronze-to-Silver lag
 
