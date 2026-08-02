@@ -508,7 +508,7 @@ def build_lakehouse_dag(
                 "youtube.clean.events",
                 "YOUTUBE_DLQ_KAFKA_TOPIC",
                 "youtube.dlq.events",
-                checkpoint_default="pre_bronze_v6",
+                checkpoint_default="pre_bronze_v7",
             ),
         )
 
