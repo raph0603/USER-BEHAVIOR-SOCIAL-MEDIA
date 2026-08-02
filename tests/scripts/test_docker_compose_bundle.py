@@ -62,6 +62,13 @@ class DockerComposeBundleTests(unittest.TestCase):
         )
         self.assertIn("- GEMINI_API_KEY=${GEMINI_API_KEY:-}", compose)
 
+    def test_kafka_data_survives_container_recreation(self):
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertIn("- KAFKA_LOG_DIRS=/var/lib/kafka/data", compose)
+        self.assertIn("- kafka-data:/var/lib/kafka/data", compose)
+        self.assertIn("  kafka-data:\n", compose)
+
 
 if __name__ == "__main__":
     unittest.main()

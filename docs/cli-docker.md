@@ -22,7 +22,7 @@ names. The snapshot includes:
   metadata, and every other object in the lakehouse bucket;
 - named application volumes for collector SQLite state, insight refreshes,
   balancing reports, Airflow PostgreSQL, and Airflow logs;
-- anonymous volumes such as Kafka data and Kafka or Schema Registry runtime
+- the named Kafka data volume and anonymous Kafka or Schema Registry runtime
   state;
 - any new named or anonymous volume attached to a project service in a later
   Compose version.
