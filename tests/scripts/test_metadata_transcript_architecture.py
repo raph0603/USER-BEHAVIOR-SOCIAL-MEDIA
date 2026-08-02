@@ -353,8 +353,7 @@ class AvroCompatibilityTests(unittest.TestCase):
             'checkpoint_variable = f"{platform.upper()}_CLEAN_CHECKPOINT_VERSION"',
             factory,
         )
-        self.assertEqual(factory.count('checkpoint_default="pre_bronze_v7"'), 1)
-        self.assertEqual(factory.count('checkpoint_default="pre_bronze_v6"'), 2)
+        self.assertEqual(factory.count('checkpoint_default="pre_bronze_v7"'), 3)
         self.assertIn(
             'CLEAN_CHECKPOINT_VERSION="${{{checkpoint_variable}:-{checkpoint_default}}}"',
             factory,

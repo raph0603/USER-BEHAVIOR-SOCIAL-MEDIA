@@ -522,7 +522,7 @@ def build_lakehouse_dag(
                 "x.clean.events",
                 "X_DLQ_KAFKA_TOPIC",
                 "x.dlq.events",
-                checkpoint_default="pre_bronze_v6",
+                checkpoint_default="pre_bronze_v7",
             ),
         )
 
@@ -536,7 +536,7 @@ def build_lakehouse_dag(
                 "reddit.clean.events",
                 "REDDIT_DLQ_KAFKA_TOPIC",
                 "reddit.dlq.events",
-                checkpoint_default="pre_bronze_v6",
+                checkpoint_default="pre_bronze_v7",
             ),
         )
 
