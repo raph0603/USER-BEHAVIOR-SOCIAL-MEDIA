@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from collections.abc import Iterator
@@ -32,6 +33,18 @@ from common.youtube_usage_state import YouTubeUsageStateMixin
 
 
 _GEMINI_QUOTA_TIME_ZONE = ZoneInfo("America/Los_Angeles")
+_DEFAULT_SQLITE_LOCK_TIMEOUT_SECONDS = 300.0
+
+
+def _sqlite_lock_timeout_seconds() -> float:
+    raw_timeout = os.getenv(
+        "YOUTUBE_STATE_LOCK_TIMEOUT_SECONDS",
+        str(_DEFAULT_SQLITE_LOCK_TIMEOUT_SECONDS),
+    )
+    try:
+        return max(1.0, float(raw_timeout))
+    except ValueError:
+        return _DEFAULT_SQLITE_LOCK_TIMEOUT_SECONDS
 
 
 def _gemini_quota_window(now: datetime) -> tuple[str, str]:
@@ -57,9 +70,10 @@ class YouTubeStateStore(
     def __init__(self, path: str | Path) -> None:
         state_path = Path(path)
         state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(state_path, timeout=30)
+        lock_timeout_seconds = _sqlite_lock_timeout_seconds()
+        self.connection = sqlite3.connect(state_path, timeout=lock_timeout_seconds)
         self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA busy_timeout = 30000")
+        self.connection.execute(f"PRAGMA busy_timeout = {int(lock_timeout_seconds * 1000)}")
         self.connection.execute("PRAGMA journal_mode = WAL")
         self._transaction_depth = 0
         self._migrate()
