@@ -12,6 +12,22 @@ SPEC.loader.exec_module(MANUAL_IMPORT)
 
 
 class ManualImportTests(unittest.TestCase):
+    def test_canonical_export_uses_event_ts_when_timestamp_is_null(self):
+        payload = json.dumps(
+            {
+                "user_id": "x-user",
+                "url": "https://x.com/example/status/1",
+                "title": "Example",
+                "event_ts": "2026-06-16T13:02:02.000Z",
+                "timestamp": None,
+                "source": "x",
+            }
+        )
+
+        event = MANUAL_IMPORT.load_import_events("events.jsonl", payload)[0]
+
+        self.assertEqual(event["timestamp"], "2026-06-16T13:02:02.000Z")
+
     def test_canonical_round_trip_preserves_transcript_fields_and_types(self):
         payload = json.dumps(
             {
