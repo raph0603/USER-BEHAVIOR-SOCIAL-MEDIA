@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.23.4](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.23.3...v1.23.4) (2026-08-02)
+
+
+### Bug Fixes
+
+* **kafka:** persist broker data across recreates ([a0af90d](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/a0af90d50ed1ae0a4e205cbdb05e48450244d0a3))
+* **kafka:** persist broker data across recreates ([9820bcf](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/9820bcfa54aa8f1ca3bc8dd2116aa4fc91cfa4a4))
+
 ## [1.23.3](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.23.2...v1.23.3) (2026-08-01)
 
 
