@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.23.5](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.23.4...v1.23.5) (2026-08-02)
+
+
+### Bug Fixes
+
+* **pipeline:** rotate kafka checkpoints after storage migration ([7927088](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/79270883be9a58df18adcbce7a36d2965d9e859d))
+* **pipeline:** rotate remaining kafka checkpoints ([8573ba1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/8573ba15c482946c894c4bba07e468d03fddb05f))
+* **pipeline:** rotate youtube checkpoint after kafka migration ([b699fbc](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/b699fbc1971085ce402b4f6a7275d2aeb7ff3ff1))
+
 ## [1.23.4](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.23.3...v1.23.4) (2026-08-02)
 
 
