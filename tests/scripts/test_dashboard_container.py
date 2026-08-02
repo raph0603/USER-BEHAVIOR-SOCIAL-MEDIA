@@ -76,7 +76,7 @@ class DashboardContainerTests(unittest.TestCase):
 
         self.assertIn("COPY dashboard/ .", dashboard)
         self.assertIn("COPY scripts/ /app/scripts/", dashboard)
-        self.assertIn("COPY schemas/ /app/schemas/", dashboard)
+        self.assertIn("COPY schemas/ /schemas/", dashboard)
         self.assertIn("COPY playwright/producer.py /app/producer.py", playwright)
         self.assertIn("COPY schemas/ /app/schemas/", playwright)
         self.assertIn("COPY API/ /app/api/", playwright)
