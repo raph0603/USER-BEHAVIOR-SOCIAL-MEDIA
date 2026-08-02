@@ -63,6 +63,17 @@ class YouTubeOutboxTests(unittest.TestCase):
             "collected_at": "2026-07-20T00:00:00+00:00",
         }
 
+    def test_state_store_uses_configured_sqlite_lock_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(
+                os.environ,
+                {"YOUTUBE_STATE_LOCK_TIMEOUT_SECONDS": "123.5"},
+            ):
+                with YouTubeStateStore(Path(directory) / "youtube.sqlite") as state:
+                    timeout = state.connection.execute("PRAGMA busy_timeout").fetchone()[0]
+
+        self.assertEqual(timeout, 123_500)
+
     def test_transaction_rolls_back_state_and_outbox_together(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "youtube.sqlite"
