@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.23.6](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.23.5...v1.23.6) (2026-08-02)
+
+
+### Bug Fixes
+
+* **youtube:** wait for shared state locks ([56dbdf8](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/56dbdf85003b322b5f362448482285fd8a2b0f94))
+* **youtube:** wait for shared state locks ([39b059e](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/39b059e53385bf0d0501a0b8bda4bdb44b7f2609))
+
 ## [1.23.5](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.23.4...v1.23.5) (2026-08-02)
 
 
