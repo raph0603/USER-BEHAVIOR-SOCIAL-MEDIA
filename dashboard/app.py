@@ -29,6 +29,7 @@ from youtube_presentation import (
     format_timestamp,
     freshness_warning,
     metric_is_available,
+    merge_youtube_silver_event_fallback,
     provenance_summary,
     transcript_lifecycle_status,
     transcript_provenance_label,
@@ -126,6 +127,7 @@ MODEL_PIPELINE_TABLES = {
     "training_examples": ("gold", "training_examples"),
 }
 CONTENT_ANALYTICS_TABLES = {
+    "events": ("silver", "events"),
     "contents": ("silver", "contents"),
     "interactions": ("silver", "interactions"),
     "engagement_snapshots": ("silver", "engagement_snapshots"),
@@ -2194,6 +2196,7 @@ def render_content_interactions(content_row, interactions):
 def render_content_analytics():
     st.subheader("Content analytics")
     tables, errors = get_content_analytics_tables()
+    silver_events = prepare_optional_table(tables["events"])
     contents = enrich_content_rows(prepare_optional_table(tables["contents"]))
     interactions = prepare_optional_table(tables["interactions"])
     engagement_snapshots = prepare_optional_table(tables["engagement_snapshots"])
@@ -2355,6 +2358,10 @@ def render_content_analytics():
                 transcripts,
                 content_stats,
                 engagement_snapshots,
+            )
+            youtube_display = merge_youtube_silver_event_fallback(
+                youtube_display,
+                silver_events,
             )
             enrichment_stale_hours = positive_env_float(
                 "DASHBOARD_YOUTUBE_ENRICHMENT_STALE_HOURS",
