@@ -616,7 +616,13 @@ def publish_events(events, config=None):
         if error is not None:
             errors.append(str(error))
 
-    producer = Producer({"bootstrap.servers": config["bootstrap_servers"]})
+    producer = Producer(
+        {
+            "bootstrap.servers": config["bootstrap_servers"],
+            "enable.idempotence": True,
+            "acks": "all",
+        }
+    )
     for event in events:
         producer.produce(
             topic=topic_by_source[event["source"]],

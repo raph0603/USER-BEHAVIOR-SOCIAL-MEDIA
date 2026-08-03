@@ -92,13 +92,26 @@ def clean_stream_command(
     dlq_variable: str,
     dlq_default: str,
     checkpoint_default: str = "pre_bronze_v5",
+    required_source_variable: str | None = None,
+    required_source_default: str | None = None,
 ) -> str:
     checkpoint_variable = f"{platform.upper()}_CLEAN_CHECKPOINT_VERSION"
+    required_source = ""
+    if required_source_variable and required_source_default:
+        required_source = f"""
+    REQUIRED_SOURCE_TOPIC="${{{required_source_variable}:-{required_source_default}}}"
+    case ",${{SOURCE_TOPICS}}," in
+      *",${{REQUIRED_SOURCE_TOPIC}},"*) ;;
+      *) SOURCE_TOPICS="${{SOURCE_TOPICS}},${{REQUIRED_SOURCE_TOPIC}}" ;;
+    esac
+        """
     return f"""
     set -euo pipefail
+    SOURCE_TOPICS="${{{source_variable}:-{source_default}}}"
+    {required_source}
     docker exec \\
       -e PLATFORM={platform} \\
-      -e COLLECTOR_SOURCE_TOPIC="${{{source_variable}:-{source_default}}}" \\
+      -e COLLECTOR_SOURCE_TOPIC="${{SOURCE_TOPICS}}" \\
       -e CLEAN_KAFKA_TOPIC="${{{clean_variable}:-{clean_default}}}" \\
       -e DLQ_KAFKA_TOPIC="${{{dlq_variable}:-{dlq_default}}}" \\
       -e CLEAN_SOURCE_VALUE_FORMAT=avro \\
@@ -503,12 +516,14 @@ def build_lakehouse_dag(
             bash_command=clean_stream_command(
                 "youtube",
                 "YOUTUBE_PIPELINE_SOURCE_TOPICS",
-                "youtube.metadata.events,youtube.transcript.results,youtube.comment.results,youtube.channel.results",
+                "youtube.metadata.events,youtube.transcript.results,youtube.comment.results,youtube.channel.results,youtube.engagement.snapshots",
                 "YOUTUBE_CLEAN_KAFKA_TOPIC",
                 "youtube.clean.events",
                 "YOUTUBE_DLQ_KAFKA_TOPIC",
                 "youtube.dlq.events",
                 checkpoint_default="pre_bronze_v7",
+                required_source_variable="YOUTUBE_ENGAGEMENT_TOPIC",
+                required_source_default="youtube.engagement.snapshots",
             ),
         )
 

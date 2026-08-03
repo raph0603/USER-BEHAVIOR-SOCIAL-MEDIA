@@ -207,6 +207,15 @@ class PipelineStructureTests(unittest.TestCase):
                 self.assertNotIn('.option("failOnDataLoss", "false")', source)
                 self.assertIn("fail_on_data_loss_option", source)
 
+    def test_engagement_snapshots_do_not_require_content_text(self):
+        source = (
+            ROOT / "spark" / "jobs" / "pipeline" / "collector_stream_pipeline.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('".engagement.snapshot"', source)
+        self.assertIn("~non_content_event", source)
+        self.assertIn(".when(engagement_snapshot, col(\"user_id\"))", source)
+
     def test_event_id_is_additive_in_avro_and_spark_contracts(self):
         avro = json.loads((ROOT / "schemas" / "playwright_event.avsc").read_text(encoding="utf-8"))
         fields = {field["name"]: field for field in avro["fields"]}

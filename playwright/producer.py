@@ -2793,6 +2793,8 @@ def main() -> None:
     producer = SerializingProducer(
         {
             "bootstrap.servers": bootstrap,
+            "enable.idempotence": True,
+            "acks": "all",
             "key.serializer": StringSerializer("utf_8"),
             "value.serializer": AvroSerializer(
                 SchemaRegistryClient({"url": schema_registry_url}),

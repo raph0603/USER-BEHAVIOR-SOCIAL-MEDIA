@@ -153,7 +153,13 @@ The separate `refresh_recent_engagement_insights` DAG refreshes engagement
 metrics for events already stored in Silver. It runs every 30 minutes by
 default, but selects only rows whose source-specific next refresh is due. For
 YouTube it batches up to 50 IDs in `videos.list` requests and collects only
-view, like and comment counters. After validation, it appends an idempotent
+view, like and comment counters. Every source refresh is acknowledged by Kafka
+before the worker writes its JSON handoff: YouTube uses its engagement topic,
+while X and Reddit reuse their raw source topics. Collector producers also
+require idempotent, all-replica acknowledgements before marking local state.
+Kafka data is kept for 30 days by default on its persistent volume, so a
+downstream failure can be retried without discarding an accepted observation.
+After validation, the DAG appends an idempotent
 historical observation, merges the latest values, and materializes current
 velocity, acceleration and virality signals.
 Rows are matched by `platform_event_id` when available, with the older

@@ -74,6 +74,16 @@ class YouTubeOutboxTests(unittest.TestCase):
 
         self.assertEqual(timeout, 123_500)
 
+    def test_state_store_accepts_a_short_non_blocking_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with YouTubeStateStore(
+                Path(directory) / "youtube.sqlite",
+                lock_timeout_seconds=0.25,
+            ) as state:
+                timeout = state.connection.execute("PRAGMA busy_timeout").fetchone()[0]
+
+        self.assertEqual(timeout, 250)
+
     def test_transaction_rolls_back_state_and_outbox_together(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "youtube.sqlite"

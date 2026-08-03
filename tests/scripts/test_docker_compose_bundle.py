@@ -66,6 +66,7 @@ class DockerComposeBundleTests(unittest.TestCase):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
         self.assertIn("- KAFKA_LOG_DIRS=/var/lib/kafka/data", compose)
+        self.assertIn("- KAFKA_LOG_RETENTION_HOURS=${KAFKA_LOG_RETENTION_HOURS:-720}", compose)
         self.assertIn("- kafka-data:/var/lib/kafka/data", compose)
         self.assertIn("  kafka-data:\n", compose)
 

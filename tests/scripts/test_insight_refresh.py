@@ -155,6 +155,15 @@ class InsightRefreshTests(unittest.TestCase):
         self.assertNotIn("sync_playwright", refresh_reddit)
         self.assertNotIn("wait_for(state=\"attached\"", refresh_reddit)
 
+    def test_all_source_refreshes_publish_before_the_output_handoff(self):
+        source = (ROOT / "playwright" / "insight_refresh.py").read_text(encoding="utf-8")
+
+        publish = source.index("kafka_published = _publish_engagement(updates, source)")
+        output_write = source.index("temporary_path =", publish)
+        self.assertLess(publish, output_write)
+        self.assertIn('"x": _env("X_KAFKA_TOPIC", _env("KAFKA_TOPIC", "x.raw.events"))', source)
+        self.assertIn('"REDDIT_KAFKA_TOPIC", _env("KAFKA_TOPIC", "reddit.raw.events")', source)
+
 
 if __name__ == "__main__":
     unittest.main()
