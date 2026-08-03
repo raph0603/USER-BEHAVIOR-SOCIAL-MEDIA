@@ -2213,6 +2213,51 @@ def _x_auth_cookies() -> list[dict]:
     return cookies
 
 
+def _reddit_auth_cookies() -> list[dict]:
+    cookie_environment = {
+        "reddit_session": "REDDIT_SESSION_COOKIE",
+        "token_v2": "REDDIT_TOKEN_V2_COOKIE",
+        "csrf_token": "REDDIT_CSRF_TOKEN_COOKIE",
+        "loid": "REDDIT_LOID_COOKIE",
+        "session_tracker": "REDDIT_SESSION_TRACKER_COOKIE",
+    }
+    cookies = []
+    for cookie_name, variable_name in cookie_environment.items():
+        cookie_value = os.getenv(variable_name, "").strip()
+        if not cookie_value:
+            continue
+        cookies.append(
+            {
+                "name": cookie_name,
+                "value": cookie_value,
+                "domain": ".reddit.com",
+                "path": "/",
+                "httpOnly": cookie_name in {"reddit_session", "token_v2"},
+                "secure": True,
+                "sameSite": "Lax",
+            }
+        )
+    return cookies
+
+
+def _verify_reddit_authenticated_session(page) -> None:
+    response = page.goto(
+        "https://old.reddit.com/",
+        wait_until="domcontentloaded",
+        timeout=60000,
+    )
+    if response is None or response.status >= 400:
+        status = "no response" if response is None else f"HTTP {response.status}"
+        raise RuntimeError(f"Reddit authentication verification failed: {status}")
+    account_link = page.locator('span.user a[href*="/user/"]')
+    if account_link.count() != 1:
+        raise RuntimeError(
+            "Reddit cookies were provided but the authenticated session was not accepted. "
+            "Refresh REDDIT_SESSION_COOKIE and the related Reddit cookie values."
+        )
+    print("Reddit authenticated session verified.", flush=True)
+
+
 def _x_browser_context_options() -> dict:
     return {
         "locale": "en-US",
@@ -2523,7 +2568,12 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                 "Mozilla/5.0 Chrome/124 Safari/537.36 user-behavior-lakehouse/1.0",
             )
         )
+        auth_cookies = _reddit_auth_cookies()
+        if auth_cookies:
+            context.add_cookies(auth_cookies)
         page = context.new_page()
+        if auth_cookies:
+            _verify_reddit_authenticated_session(page)
 
         for subreddit in subreddits:
             subreddit_info = _extract_reddit_subreddit_info(context, subreddit)

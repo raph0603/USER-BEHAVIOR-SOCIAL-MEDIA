@@ -606,6 +606,15 @@ per Reddit page and follows pagination until it reaches the configured scan
 limit for each subreddit. It then sorts comments globally by publication time
 and publishes the newest unprocessed comments first.
 
+For authenticated collection, copy the current `reddit_session` cookie value
+to `REDDIT_SESSION_COOKIE` in `.env`. The optional `token_v2`, `csrf_token`,
+`loid`, and `session_tracker` values can be supplied through their corresponding
+`REDDIT_*_COOKIE` variables. Quote cookie values with single quotes in `.env`,
+keep that file out of version control, and refresh the values when Reddit ends
+the session. When cookies are configured, the collector verifies the account
+session before collecting and fails without printing any cookie value if Reddit
+does not accept it.
+
 If Reddit pages do not load or the expected comment markup is missing, the
 collector fails instead of reporting a successful zero-event run. A zero-event
 run is only valid after comments were actually scanned and every candidate was
