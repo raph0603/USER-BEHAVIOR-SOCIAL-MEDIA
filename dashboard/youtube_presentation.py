@@ -381,6 +381,136 @@ def _merge_latest_snapshot_fallback(
     return merged
 
 
+def _first_nonempty_series(dataframe: pd.DataFrame, columns: tuple[str, ...]) -> pd.Series:
+    result = pd.Series(pd.NA, index=dataframe.index, dtype="object")
+    for column in columns:
+        if column not in dataframe.columns:
+            continue
+        values = dataframe[column].astype("string").str.strip().replace("", pd.NA)
+        result = result.combine_first(values)
+    return result
+
+
+def _youtube_video_key_series(
+    dataframe: pd.DataFrame,
+    identifier_columns: tuple[str, ...],
+) -> pd.Series:
+    result = _first_nonempty_series(dataframe, ("video_id",))
+    if "url" in dataframe.columns:
+        url_video_ids = dataframe["url"].astype("string").str.extract(
+            r"(?:[?&]v=|youtu\.be/|/shorts/)([^&/?]+)",
+            expand=False,
+        )
+        result = result.combine_first(url_video_ids)
+    return result.combine_first(_first_nonempty_series(dataframe, identifier_columns))
+
+
+def merge_youtube_silver_event_fallback(
+    display_rows: pd.DataFrame,
+    silver_events: pd.DataFrame,
+) -> pd.DataFrame:
+    """Fill temporarily stale analytics cards from values already present in Silver."""
+
+    if display_rows.empty or silver_events.empty or "source" not in silver_events.columns:
+        return display_rows
+    events = silver_events[
+        silver_events["source"].astype("string").str.lower() == "youtube"
+    ].copy()
+    if events.empty:
+        return display_rows
+
+    events["_youtube_video_key"] = _youtube_video_key_series(
+        events,
+        ("conversation_id", "platform_event_id"),
+    )
+    events = events[events["_youtube_video_key"].notna()].copy()
+    if events.empty:
+        return display_rows
+
+    events["_fallback_sort_at"] = pd.to_datetime(
+        _first_nonempty_series(
+            events,
+            ("updated_at", "collected_at", "observed_at", "event_ts", "timestamp"),
+        ),
+        errors="coerce",
+        utc=True,
+    )
+    events = events.sort_values("_fallback_sort_at", ascending=False, na_position="last")
+    source_to_target = {
+        "title": "title",
+        "youtube_channel_name": "youtube_channel_name",
+        "thumbnail_url": "thumbnail_url",
+        "metadata_status": "metadata_status",
+        "metadata_available": "metadata_available",
+        "view_count": "latest_view_count",
+        "like_count": "latest_like_count",
+        "comment_count": "latest_comment_count",
+        "coverage_json": "latest_snapshot_coverage_json",
+        "provenance_json": "latest_snapshot_provenance_json",
+        "producer_name": "latest_snapshot_producer_name",
+        "producer_run_id": "latest_snapshot_producer_run_id",
+        "collection_method": "latest_snapshot_collection_method",
+        "api_endpoint": "latest_snapshot_api_endpoint",
+    }
+    available_sources = [column for column in source_to_target if column in events.columns]
+    fallback = (
+        events[["_youtube_video_key", "_fallback_sort_at", *available_sources]]
+        .groupby("_youtube_video_key", as_index=False)
+        .first()
+        .rename(
+            columns={
+                **{source: f"{target}__event" for source, target in source_to_target.items()},
+                "_fallback_sort_at": "latest_snapshot_at__event",
+            }
+        )
+    )
+
+    merged = display_rows.copy()
+    merged["_youtube_video_key"] = _youtube_video_key_series(
+        merged,
+        ("conversation_id", "platform_content_id", "platform_event_id"),
+    )
+    merged = merged.merge(fallback, on="_youtube_video_key", how="left", validate="many_to_one")
+
+    for target in (*source_to_target.values(), "latest_snapshot_at"):
+        fallback_column = f"{target}__event"
+        if fallback_column not in merged.columns:
+            continue
+        if target in merged.columns:
+            if target in {
+                "title",
+                "youtube_channel_name",
+                "thumbnail_url",
+                "metadata_status",
+                "latest_snapshot_coverage_json",
+                "latest_snapshot_provenance_json",
+                "latest_snapshot_producer_name",
+                "latest_snapshot_producer_run_id",
+                "latest_snapshot_collection_method",
+                "latest_snapshot_api_endpoint",
+            }:
+                merged[target] = (
+                    merged[target].astype("string").str.strip().replace("", pd.NA)
+                )
+            merged[target] = merged[target].combine_first(merged[fallback_column])
+        else:
+            merged[target] = merged[fallback_column]
+        merged = merged.drop(columns=[fallback_column])
+
+    for metric in ("view_count", "like_count", "comment_count"):
+        value_column = f"latest_{metric}"
+        available_column = f"latest_{metric}_available"
+        if value_column not in merged.columns:
+            continue
+        observed = merged[value_column].notna()
+        if available_column in merged.columns:
+            merged.loc[observed, available_column] = True
+        else:
+            merged[available_column] = observed
+
+    return merged.drop(columns=["_youtube_video_key"])
+
+
 def build_youtube_display_rows(
     youtube_contents: pd.DataFrame,
     transcripts: pd.DataFrame,

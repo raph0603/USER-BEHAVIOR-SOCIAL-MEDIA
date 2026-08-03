@@ -15,6 +15,7 @@ from youtube_presentation import (  # noqa: E402
     coverage_summary,
     format_available_metric,
     freshness_warning,
+    merge_youtube_silver_event_fallback,
     provenance_summary,
     transcript_lifecycle_status,
     transcript_provenance_label,
@@ -26,6 +27,44 @@ from youtube_presentation import (  # noqa: E402
 
 
 class DashboardMetricAvailabilityTests(unittest.TestCase):
+    def test_silver_events_fill_stale_youtube_card_values(self):
+        display_rows = pd.DataFrame(
+            [
+                {
+                    "content_id": "content-1",
+                    "platform_content_id": "comment-1",
+                    "url": "https://www.youtube.com/watch?v=video-1",
+                    "title": "",
+                    "latest_view_count": None,
+                    "latest_view_count_available": False,
+                }
+            ]
+        )
+        silver_events = pd.DataFrame(
+            [
+                {
+                    "source": "youtube",
+                    "platform_event_id": "comment-1",
+                    "conversation_id": "video-1",
+                    "title": "Available directly in Silver",
+                    "view_count": 1250,
+                    "like_count": 42,
+                    "comment_count": 7,
+                    "event_ts": "2026-08-03T00:00:00Z",
+                    "coverage_json": '{"view_count_available":true}',
+                }
+            ]
+        )
+
+        result = merge_youtube_silver_event_fallback(display_rows, silver_events).iloc[0]
+
+        self.assertEqual(result["title"], "Available directly in Silver")
+        self.assertEqual(result["latest_view_count"], 1250)
+        self.assertEqual(result["latest_like_count"], 42)
+        self.assertEqual(result["latest_comment_count"], 7)
+        self.assertTrue(result["latest_view_count_available"])
+        self.assertEqual(coverage_summary(result), "3/3 snapshot metrics observed")
+
     def test_unsafe_or_missing_thumbnail_is_not_exposed_as_complete(self):
         for value in (None, "https://example.test/thumbnail.jpg"):
             with self.subTest(value=value):
