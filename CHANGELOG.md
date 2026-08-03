@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.24.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.23.6...v1.24.0) (2026-08-03)
+
+
+### Features
+
+* **reddit:** support authenticated cookie sessions ([eff1444](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/eff14443787e3002af6c39b9eb48c91aacd8e00d))
+* **reddit:** support authenticated cookie sessions ([7c1db27](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/7c1db270c6b4b9e4a382b44dd473d7b6cd694e85))
+
 ## [1.23.6](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.23.5...v1.23.6) (2026-08-02)
 
 
