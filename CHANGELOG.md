@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.24.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.24.0...v1.24.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* **dashboard:** restore portable data imports ([71686d3](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/71686d3107e0564180d0c41491067ac307be67bc))
+* **dashboard:** show youtube data from silver events ([1c493a8](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/1c493a8a59e04b6d1c7833ce221e43e6dee42a56))
+* **dashboard:** show youtube data from silver events ([5f84fa0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/5f84fa077444179fde212dfe6c69354b15fdfe33))
+
 ## [1.24.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.23.6...v1.24.0) (2026-08-03)
 
 
