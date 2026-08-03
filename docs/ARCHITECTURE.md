@@ -95,10 +95,18 @@ by `channel_id` and fetched with `channels.list`, never by reopening every
 video page. A failure in these secondary workers does not prevent the separate
 engagement DAG from refreshing metrics.
 
-All independent workers use the same transactional SQLite outbox pattern.
-Outcome state and the Kafka publish intent commit together; the intent is
-marked delivered only after producer acknowledgement and is redrained on the
-next worker start.
+State-dependent discovery and enrichment workers use the transactional SQLite
+outbox pattern. Outcome state and the Kafka publish intent commit together;
+the intent is marked delivered only after producer acknowledgement and is
+redrained on the next worker start.
+
+The engagement metrics worker is Kafka-first because its due targets already
+come from Silver rather than the shared worker queue. It publishes each
+observation synchronously to `youtube.engagement.snapshots` before attempting
+a short best-effort SQLite update. The engagement topic is always appended to
+the configured YouTube ingestion sources, including when an older `.env`
+override omits it. A SQLite lock can delay local monitoring state but cannot
+prevent the accepted observation from reaching Bronze and Silver.
 
 The `refresh_recent_engagement_insights` DAG runs every 30 minutes by default,
 but selects only due rows according to `next_metrics_refresh_at`. After output
@@ -107,9 +115,11 @@ latest values into the current event table. The append key is a stable hash of
 `source`, `platform_event_id` and `observed_at`. Velocity and virality are
 materialized only after the append succeeds.
 
-API calls are recorded first in persistent collector state and then appended
-to `lakehouse.monitoring.external_api_usage`; the legacy
-`lakehouse.monitoring.youtube_api_usage` projection remains compatible.
+API calls from state-dependent workers are recorded in persistent collector
+state and then appended to `lakehouse.monitoring.external_api_usage`. Metrics
+usage is recorded after Kafka acknowledgement when SQLite is available; a
+per-run request ceiling preserves its quota bound while state is locked. The
+legacy `lakehouse.monitoring.youtube_api_usage` projection remains compatible.
 `lakehouse.monitoring.pipeline_health` carries queue age/depth, circuit state,
 and Bronze/Silver lag. Unit-based budgets and a recent-snapshot reserve
 prioritize video statistics and stop secondary discovery, descriptive

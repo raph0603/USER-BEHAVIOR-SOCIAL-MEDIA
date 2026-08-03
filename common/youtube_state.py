@@ -67,16 +67,29 @@ class YouTubeStateStore(
 ):
     """SQLite state shared by discovery and bounded enrichment workers."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        lock_timeout_seconds: float | None = None,
+    ) -> None:
         state_path = Path(path)
         state_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_timeout_seconds = _sqlite_lock_timeout_seconds()
-        self.connection = sqlite3.connect(state_path, timeout=lock_timeout_seconds)
+        timeout_seconds = (
+            _sqlite_lock_timeout_seconds()
+            if lock_timeout_seconds is None
+            else max(0.0, float(lock_timeout_seconds))
+        )
+        self.connection = sqlite3.connect(state_path, timeout=timeout_seconds)
         self.connection.row_factory = sqlite3.Row
-        self.connection.execute(f"PRAGMA busy_timeout = {int(lock_timeout_seconds * 1000)}")
-        self.connection.execute("PRAGMA journal_mode = WAL")
-        self._transaction_depth = 0
-        self._migrate()
+        try:
+            self.connection.execute(f"PRAGMA busy_timeout = {int(timeout_seconds * 1000)}")
+            self.connection.execute("PRAGMA journal_mode = WAL")
+            self._transaction_depth = 0
+            self._migrate()
+        except BaseException:
+            self.connection.close()
+            raise
 
     def _migrate(self) -> None:
         self.connection.executescript(

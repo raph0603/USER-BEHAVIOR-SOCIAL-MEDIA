@@ -3,7 +3,8 @@
 This runbook describes the reliability architecture that is implemented in the
 repository. Iceberg tables stored in MinIO are the system of record. Kafka is
 the transport and replay boundary; SQLite holds durable worker scheduling,
-quota, circuit-breaker, and outbox state.
+quota, circuit-breaker, and outbox state for state-dependent workers. The
+engagement metrics refresh publishes to Kafka before touching SQLite.
 
 Elasticsearch is not part of the ingestion, serving, monitoring, or recovery
 path. No Elasticsearch integration is required for this architecture.
@@ -88,15 +89,22 @@ displayed as `N/A`, not zero.
 
 ### Transactional worker outbox
 
-Each worker writes its outcome state and Kafka publish intent into the shared
-SQLite transaction. `youtube_worker_outbox` uses a deterministic hash of topic
-and canonical event JSON. At startup, every worker redrains undelivered rows.
+Each state-dependent worker writes its outcome state and Kafka publish intent
+into the shared SQLite transaction. `youtube_worker_outbox` uses a
+deterministic hash of topic and canonical event JSON. At startup, these workers
+redrain undelivered rows.
 An outbox row receives `delivered_at` only after the Kafka producer confirms
 delivery; failures retain the row and schedule bounded exponential backoff.
 
 This ordering prevents a worker from recording success while losing the
 corresponding Kafka result. Back up the SQLite database at
 `/app/state/youtube-pipeline.sqlite` before migration or rollback.
+
+The metrics refresh is the deliberate exception: its targets are recoverable
+from Silver, so it publishes idempotently and synchronously to
+`youtube.engagement.snapshots` first. SQLite metrics, quota, and health rows are
+then updated with a short timeout. If that update is locked, the task reports
+`state_persisted=false` but keeps the Kafka-acknowledged result successful.
 
 ## Transcript lifecycle and compatibility
 

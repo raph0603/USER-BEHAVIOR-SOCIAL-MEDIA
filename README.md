@@ -153,7 +153,11 @@ The separate `refresh_recent_engagement_insights` DAG refreshes engagement
 metrics for events already stored in Silver. It runs every 30 minutes by
 default, but selects only rows whose source-specific next refresh is due. For
 YouTube it batches up to 50 IDs in `videos.list` requests and collects only
-view, like and comment counters. After validation, it appends an idempotent
+view, like and comment counters. YouTube metric observations are acknowledged
+by Kafka before the worker attempts its auxiliary SQLite update, and the
+engagement topic is part of the default YouTube Bronze/Silver ingestion. A
+SQLite lock therefore cannot discard an observation already accepted by
+Kafka. After validation, the DAG appends an idempotent
 historical observation, merges the latest values, and materializes current
 velocity, acceleration and virality signals.
 Rows are matched by `platform_event_id` when available, with the older

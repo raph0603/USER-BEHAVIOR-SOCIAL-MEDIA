@@ -1,9 +1,15 @@
+import contextlib
 import importlib.util
+import io
 import json
+import os
+import sqlite3
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -54,6 +60,16 @@ class _YouTube:
         return self.resource
 
 
+class _Producer:
+    def __init__(self):
+        self.published = []
+
+    def publish(self, topic, events):
+        materialized = list(events)
+        self.published.extend((topic, event) for event in materialized)
+        return len(materialized)
+
+
 class YouTubeMetricsWorkerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -83,6 +99,20 @@ class YouTubeMetricsWorkerTests(unittest.TestCase):
         self.assertEqual(len(updates), 51)
         self.assertEqual([len(call[1]) for call in youtube.resource.calls], [50, 1])
         self.assertTrue(all(call[0] == "statistics" for call in youtube.resource.calls))
+
+    def test_stateless_request_limit_preserves_daily_quota_budget(self):
+        targets = [self._target(f"video-{index}") for index in range(51)]
+        youtube = _YouTube({target["platform_event_id"]: {"viewCount": "1"} for target in targets})
+
+        updates = self.worker.collect_metrics(
+            targets,
+            youtube=youtube,
+            max_requests=1,
+            now=lambda: self.observed_at,
+        )
+
+        self.assertEqual(len(updates), 50)
+        self.assertEqual([len(call[1]) for call in youtube.resource.calls], [50])
 
     def test_known_zero_and_missing_metric_have_distinct_coverage(self):
         youtube = _YouTube({"video-1": {"viewCount": "0", "commentCount": "0"}})
@@ -130,6 +160,44 @@ class YouTubeMetricsWorkerTests(unittest.TestCase):
         self.assertEqual(first["observation_id"], replay["observation_id"])
         self.assertEqual(first["payload_fingerprint"], replay["payload_fingerprint"])
 
+    def test_sqlite_lock_after_collection_does_not_prevent_kafka_delivery(self):
+        producer = _Producer()
+        youtube = _YouTube({"video-1": {"viewCount": "10", "likeCount": "2"}})
+
+        def locked_state(*_args, **_kwargs):
+            self.assertEqual(len(producer.published), 1)
+            raise sqlite3.OperationalError("database is locked")
+
+        with tempfile.TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            targets_path = directory_path / "targets.jsonl"
+            output_path = directory_path / "youtube.jsonl"
+            targets_path.write_text(json.dumps(self._target("video-1")) + "\n", encoding="utf-8")
+            environment = {
+                "INSIGHT_REFRESH_TARGETS_PATH": str(targets_path),
+                "INSIGHT_REFRESH_OUTPUT_PATH": str(output_path),
+                "YOUTUBE_PIPELINE_STATE_DB": str(directory_path / "state.sqlite"),
+                "YOUTUBE_API_KEY": "test-key",
+                "YOUTUBE_METRICS_MAX_REQUESTS_PER_RUN": "1",
+            }
+            with (
+                patch.dict(os.environ, environment, clear=False),
+                patch.object(self.worker, "EventProducer", return_value=producer),
+                patch.object(self.worker, "YouTubeStateStore", side_effect=locked_state),
+                patch("googleapiclient.discovery.build", return_value=youtube),
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
+                self.worker.main()
+
+            summary = json.loads(output.getvalue())
+            persisted_updates = [json.loads(line) for line in output_path.read_text().splitlines()]
+
+        self.assertEqual(summary["delivery_mode"], "kafka_first")
+        self.assertEqual(summary["kafka_published"], 1)
+        self.assertFalse(summary["state_persisted"])
+        self.assertEqual(persisted_updates[0]["view_count"], 10)
+        self.assertEqual(producer.published[0][0], "youtube.engagement.snapshots")
+
     def test_worker_does_not_depend_on_browser_or_watch_navigation(self):
         source = (PLAYWRIGHT_DIR / "youtube_metrics_worker.py").read_text(encoding="utf-8")
 
@@ -138,6 +206,8 @@ class YouTubeMetricsWorkerTests(unittest.TestCase):
         self.assertNotIn(".goto(", source)
         self.assertNotIn("/watch", source)
         self.assertIn('.list(part="statistics"', source)
+        self.assertIn("producer.publish(topic, events)", source)
+        self.assertNotIn("enqueue_outbox(", source)
 
 
 if __name__ == "__main__":
