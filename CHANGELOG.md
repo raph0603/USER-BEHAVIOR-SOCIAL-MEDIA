@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.24.2](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.24.1...v1.24.2) (2026-08-03)
+
+
+### Bug Fixes
+
+* **pipeline:** retain all source data in kafka ([e0aac56](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/e0aac56c97b056ade0191fc80b8388277e015040))
+* **pipeline:** retain all source data in kafka ([1bb4d4b](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/1bb4d4b477406168a18c5854c9fa3d3261938ee9))
+* **youtube:** publish metrics to kafka before sqlite ([833634c](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/833634c3a2f480dbb084b56c5816bb558435012b))
+
 ## [1.24.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.24.0...v1.24.1) (2026-08-03)
 
 
