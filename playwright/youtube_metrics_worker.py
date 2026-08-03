@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import math
 import os
+import sqlite3
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -14,11 +17,12 @@ from urllib.parse import parse_qs, urlparse
 from common.youtube_pipeline import next_metrics_refresh_at, parse_datetime
 from common.youtube_state import YouTubeStateStore
 from engagement import parse_count
-from youtube_pipeline_events import EventProducer, drain_outbox, pipeline_event
+from youtube_pipeline_events import EventProducer, pipeline_event
 
 
 UTC = timezone.utc
 MAX_VIDEOS_PER_REQUEST = 50
+LOGGER = logging.getLogger(__name__)
 
 
 def _env(name: str, default: str = "") -> str:
@@ -58,6 +62,35 @@ def _canonical_json(value: dict) -> str:
         separators=(",", ":"),
         default=str,
     )
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw_value = _env(name, str(default))
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        return default
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    raw_value = _env(name, str(default))
+    try:
+        return max(0.0, float(raw_value))
+    except ValueError:
+        return default
+
+
+def _metrics_request_limit() -> int:
+    configured = _env("YOUTUBE_METRICS_MAX_REQUESTS_PER_RUN")
+    if configured:
+        return _positive_int_env("YOUTUBE_METRICS_MAX_REQUESTS_PER_RUN", 10)
+    daily_budget = _positive_int_env(
+        "YOUTUBE_VIDEOS_DAILY_QUOTA_UNITS",
+        _positive_int_env("YOUTUBE_VIDEOS_DAILY_REQUEST_BUDGET", 500),
+    )
+    schedule_minutes = _positive_int_env("INSIGHT_REFRESH_SCHEDULE_MINUTES", 30)
+    scheduled_runs = max(1, math.ceil(1440 / schedule_minutes))
+    return max(1, daily_budget // scheduled_runs)
 
 
 def _observation_id(video_id: str, observed_at: datetime) -> str:
@@ -198,13 +231,16 @@ def collect_metrics(
     *,
     youtube,
     usage_store: YouTubeStateStore | None = None,
+    max_requests: int | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> list[dict]:
     """Collect due target metrics in API batches of at most 50 IDs."""
 
     targets_by_id = {video_id: target for target in targets if (video_id := _video_id(target))}
     video_ids = list(targets_by_id)
-    if usage_store:
+    if max_requests is not None:
+        video_ids = video_ids[: max(0, int(max_requests)) * MAX_VIDEOS_PER_REQUEST]
+    elif usage_store:
         budget_units = int(
             _env(
                 "YOUTUBE_VIDEOS_DAILY_QUOTA_UNITS",
@@ -259,6 +295,69 @@ def collect_metrics(
             for video_id in batch_ids
         )
     return updates
+
+
+def _persist_state_after_kafka(
+    state_path: str,
+    updates: list[dict],
+    summary: dict,
+    *,
+    run_started: float,
+) -> bool:
+    """Persist auxiliary state without making acknowledged Kafka data fail."""
+
+    timeout_seconds = _positive_float_env(
+        "YOUTUBE_METRICS_STATE_WRITE_TIMEOUT_SECONDS",
+        1.0,
+    )
+    try:
+        with YouTubeStateStore(
+            state_path,
+            lock_timeout_seconds=timeout_seconds,
+        ) as state:
+            if updates:
+                request_count = math.ceil(len(updates) / MAX_VIDEOS_PER_REQUEST)
+                with state.transaction():
+                    for update in updates:
+                        state.record_metrics_observation(update)
+                observed_at = parse_datetime(updates[-1]["metadata_refreshed_at"])
+                if observed_at is None:
+                    raise ValueError("metrics observation is missing metadata_refreshed_at")
+                state.record_api_usage(
+                    endpoint="videos.list",
+                    request_count=request_count,
+                    resource_count=len(updates),
+                    success_count=request_count,
+                    error_count=0,
+                    quota_bucket="recent_metrics",
+                    observed_at=observed_at,
+                    priority="critical",
+                    latency_ms=(time.monotonic() - run_started) * 1000,
+                )
+            state.record_worker_health(
+                worker_name="youtube_metrics",
+                observed_at=datetime.now(UTC),
+                status=(
+                    "idle"
+                    if not summary["targets"]
+                    else "success"
+                    if summary["observations"] == summary["targets"]
+                    else "partial"
+                ),
+                processed_count=summary["observations"],
+                success_count=summary["observations"],
+                error_count=max(0, summary["targets"] - summary["observations"]),
+                latency_ms=(time.monotonic() - run_started) * 1000,
+                details={**summary, "state_persisted": True},
+            )
+    except sqlite3.Error as exc:
+        LOGGER.warning(
+            "youtube_metrics_state_deferred error=%s kafka_published=%s",
+            type(exc).__name__,
+            summary["kafka_published"],
+        )
+        return False
+    return True
 
 
 def _outbox_events(updates: list[dict]) -> list[dict]:
@@ -326,77 +425,35 @@ def main() -> None:
         ),
         schema_path=_env("SCHEMA_PATH", "/app/schemas/playwright_event.avsc"),
     )
-    with YouTubeStateStore(state_path) as state:
-        outbox_redrained = drain_outbox(
-            state,
-            producer,
-            include_deferred=True,
-        )
-        if not targets:
-            _write_updates(output_path, [])
-            summary = {
-                "event": "youtube_metrics_complete",
-                "targets": 0,
-                "observations": 0,
-                "max_batch_size": MAX_VIDEOS_PER_REQUEST,
-                "outbox_redrained": outbox_redrained,
-            }
-            state.record_worker_health(
-                worker_name="youtube_metrics",
-                observed_at=datetime.now(UTC),
-                status="idle",
-                processed_count=0,
-                success_count=0,
-                error_count=0,
-                latency_ms=(time.monotonic() - run_started) * 1000,
-                details=summary,
-            )
-            print(
-                json.dumps(
-                    summary,
-                    sort_keys=True,
-                )
-            )
-            return
+    if not targets:
+        updates = []
+    else:
         api_key = _env("YOUTUBE_API_KEY")
         if not api_key:
             raise RuntimeError("YOUTUBE_API_KEY is required for YouTube metrics")
         youtube = build("youtube", "v3", developerKey=api_key, cache_discovery=False)
-        updates = collect_metrics(targets, youtube=youtube, usage_store=state)
-        _write_updates(output_path, updates)
-        events = _outbox_events(updates)
-        with state.transaction():
-            for update, event in zip(updates, events, strict=True):
-                observed_at = parse_datetime(update["metadata_refreshed_at"])
-                if observed_at is None:
-                    raise ValueError("metrics observation is missing metadata_refreshed_at")
-                state.record_metrics_observation(update)
-                state.enqueue_outbox(
-                    worker_name="youtube_metrics",
-                    aggregate_id=update["platform_event_id"],
-                    topic=topic,
-                    event=event,
-                    created_at=observed_at,
-                )
-        outbox_drained = drain_outbox(state, producer)
-        summary = {
-            "event": "youtube_metrics_complete",
-            "targets": len(targets),
-            "observations": len(updates),
-            "max_batch_size": MAX_VIDEOS_PER_REQUEST,
-            "outbox_redrained": outbox_redrained,
-            "outbox_drained": outbox_drained,
-        }
-        state.record_worker_health(
-            worker_name="youtube_metrics",
-            observed_at=datetime.now(UTC),
-            status="success" if len(updates) == len(targets) else "partial",
-            processed_count=len(updates),
-            success_count=len(updates),
-            error_count=max(0, len(targets) - len(updates)),
-            latency_ms=(time.monotonic() - run_started) * 1000,
-            details=summary,
+        updates = collect_metrics(
+            targets,
+            youtube=youtube,
+            max_requests=_metrics_request_limit(),
         )
+    events = _outbox_events(updates)
+    kafka_published = producer.publish(topic, events) if events else 0
+    _write_updates(output_path, updates)
+    summary = {
+        "event": "youtube_metrics_complete",
+        "targets": len(targets),
+        "observations": len(updates),
+        "max_batch_size": MAX_VIDEOS_PER_REQUEST,
+        "kafka_published": kafka_published,
+        "delivery_mode": "kafka_first",
+    }
+    summary["state_persisted"] = _persist_state_after_kafka(
+        state_path,
+        updates,
+        summary,
+        run_started=run_started,
+    )
     print(
         json.dumps(
             summary,

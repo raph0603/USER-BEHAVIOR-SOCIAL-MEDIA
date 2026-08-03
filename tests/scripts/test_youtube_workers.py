@@ -209,11 +209,10 @@ class YouTubeDiscoveryWorkerTests(unittest.TestCase):
 
 
 class YouTubeWorkerArchitectureTests(unittest.TestCase):
-    def test_worker_results_are_published_only_through_the_outbox(self):
+    def test_state_dependent_worker_results_are_published_through_the_outbox(self):
         for name in (
             "youtube_discovery.py",
             "youtube_metadata_worker.py",
-            "youtube_metrics_worker.py",
             "youtube_transcript_worker.py",
             "youtube_comment_worker.py",
             "youtube_channel_worker.py",
@@ -223,6 +222,34 @@ class YouTubeWorkerArchitectureTests(unittest.TestCase):
             self.assertNotIn("producer.publish(", source, name)
             self.assertIn("enqueue_outbox(", source, name)
             self.assertIn("drain_outbox(", source, name)
+
+    def test_metrics_worker_publishes_before_auxiliary_sqlite_state(self):
+        source = (PLAYWRIGHT_DIR / "youtube_metrics_worker.py").read_text(encoding="utf-8")
+
+        publish_position = source.index("producer.publish(topic, events)")
+        state_position = source.index("_persist_state_after_kafka(", publish_position)
+        self.assertLess(publish_position, state_position)
+        self.assertNotIn("enqueue_outbox(", source)
+
+    def test_kafka_producer_enables_idempotent_delivery(self):
+        source = (PLAYWRIGHT_DIR / "youtube_pipeline_events.py").read_text(encoding="utf-8")
+        collector_source = (PLAYWRIGHT_DIR / "producer.py").read_text(encoding="utf-8")
+
+        self.assertIn('"enable.idempotence": True', source)
+        self.assertIn('"acks": "all"', source)
+        self.assertIn('"enable.idempotence": True', collector_source)
+        self.assertIn('"acks": "all"', collector_source)
+
+    def test_engagement_topic_is_consumed_into_the_lakehouse(self):
+        source = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "youtube.channel.results,youtube.engagement.snapshots",
+            source,
+        )
+        self.assertIn('required_source_variable="YOUTUBE_ENGAGEMENT_TOPIC"', source)
 
     def test_yt_dlp_worker_never_downloads_media(self):
         source = (PLAYWRIGHT_DIR / "youtube_metadata_worker.py").read_text(encoding="utf-8")

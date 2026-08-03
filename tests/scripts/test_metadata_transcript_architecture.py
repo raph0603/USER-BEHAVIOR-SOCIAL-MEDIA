@@ -338,7 +338,7 @@ class AvroCompatibilityTests(unittest.TestCase):
         )
 
         self.assertIn('endswith(".result")', source)
-        self.assertIn(".when(~component_result, invalid_reason", source)
+        self.assertIn(".when(~non_content_event, invalid_reason", source)
 
     def test_online_cleaning_rotates_affected_platform_checkpoints(self):
         cleaner = (

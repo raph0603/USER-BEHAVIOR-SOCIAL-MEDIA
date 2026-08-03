@@ -244,10 +244,14 @@ def main() -> None:
         )
 
     decoded = decoded.filter((col("source") == lit(platform)) | col("_decode_error").isNotNull())
+    event_type = coalesce(col("event_type"), lit(""))
+    engagement_snapshot = event_type.endswith(".engagement.snapshot")
     protected = (
         decoded.withColumn(
             "user_id",
-            when(col("user_id").isNull(), lit(None)).otherwise(
+            when(col("user_id").isNull(), lit(None))
+            .when(engagement_snapshot, col("user_id"))
+            .otherwise(
                 sha2(
                     concat_ws(":", lit(privacy_hash_salt), col("user_id")),
                     256,
@@ -262,7 +266,7 @@ def main() -> None:
         .withColumn("error", clean_text(col("error")))
     )
 
-    component_result = coalesce(col("event_type"), lit("")).endswith(".result")
+    non_content_event = event_type.endswith(".result") | engagement_snapshot
     reason = (
         when(
             protected["_decode_error"].isNotNull(),
@@ -272,7 +276,7 @@ def main() -> None:
         .when(protected["url"].isNull(), lit("missing_url"))
         .when(protected["timestamp"].isNull(), lit("missing_timestamp"))
         .when(protected["error"].isNotNull(), lit("collector_error"))
-        .when(~component_result, invalid_reason(protected["title"]))
+        .when(~non_content_event, invalid_reason(protected["title"]))
         .otherwise(lit(None).cast("string"))
     )
     validated = protected.withColumn("_invalid_reason", reason)

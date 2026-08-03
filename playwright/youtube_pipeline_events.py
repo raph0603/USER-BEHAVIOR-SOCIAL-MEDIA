@@ -182,6 +182,8 @@ class EventProducer:
         self._producer = SerializingProducer(
             {
                 "bootstrap.servers": bootstrap_servers,
+                "enable.idempotence": True,
+                "acks": "all",
                 "message.max.bytes": self.max_event_bytes + KAFKA_RECORD_MARGIN_BYTES,
                 "key.serializer": self._key_serializer,
                 "value.serializer": self._value_serializer,
