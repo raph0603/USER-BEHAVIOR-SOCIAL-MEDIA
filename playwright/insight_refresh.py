@@ -632,57 +632,27 @@ def _refresh_reddit(targets: list[dict]) -> list[dict]:
     return updates
 
 
-def _publish_youtube_engagement(updates: list[dict]) -> None:
-    if not updates or not _env("KAFKA_BOOTSTRAP"):
-        return
-    from youtube_pipeline_events import EventProducer, pipeline_event
+def _publish_engagement(updates: list[dict], source: str) -> int:
+    if not updates:
+        return 0
+    bootstrap = _env("KAFKA_BOOTSTRAP")
+    if not bootstrap:
+        raise RuntimeError("KAFKA_BOOTSTRAP is required to retain engagement refreshes")
+    from youtube_pipeline_events import EventProducer
 
     producer = EventProducer(
-        bootstrap_servers=_env("KAFKA_BOOTSTRAP", "kafka:9092"),
+        bootstrap_servers=bootstrap,
         schema_registry_url=_env("SCHEMA_REGISTRY_URL", "http://schema-registry:8081"),
         schema_path=_env("SCHEMA_PATH", "/app/schemas/playwright_event.avsc"),
     )
-    events = [
-        pipeline_event(
-            "youtube.engagement.snapshot",
-            update["platform_event_id"],
-            collected_at=parse_datetime(update["metadata_refreshed_at"]),
-            attempt_count=update.get("metrics_refresh_count") or 1,
-            published_at=update.get("event_ts"),
-            view_count=update.get("view_count"),
-            like_count=update.get("like_count"),
-            comment_count=update.get("comment_count"),
-            last_metrics_refresh_at=update.get("last_metrics_refresh_at"),
-            next_metrics_refresh_at=update.get("next_metrics_refresh_at"),
-            metrics_refresh_count=update.get("metrics_refresh_count"),
-            metrics_refresh_status=update.get("metrics_refresh_status"),
-            collection_status=update.get("metrics_refresh_status"),
-            event_id=update.get("event_id"),
-            observation_id=update.get("observation_id"),
-            observed_at=update.get("observed_at"),
-            producer_name=update.get("producer_name"),
-            producer_run_id=update.get("producer_run_id"),
-            collection_method=update.get("collection_method"),
-            api_endpoint=update.get("api_endpoint"),
-            payload_fingerprint=update.get("payload_fingerprint"),
-            provenance_json=update.get("provenance_json"),
-            coverage_json=update.get("coverage_json"),
-            **{
-                f"{metric}_available": update.get(f"{metric}_available")
-                for metric in METRIC_COLUMNS
-            },
-            metadata_available=update.get("metadata_available"),
-            transcript_available=update.get("transcript_available"),
-            comments_available=update.get("comments_available"),
-            payload_json=json.dumps(update, ensure_ascii=False, sort_keys=True),
-        )
-        for update in updates
-        if update.get("platform_event_id")
-    ]
-    producer.publish(
-        _env("YOUTUBE_ENGAGEMENT_TOPIC", "youtube.engagement.snapshots"),
-        events,
-    )
+    topics = {
+        "youtube": _env("YOUTUBE_ENGAGEMENT_TOPIC", "youtube.engagement.snapshots"),
+        "x": _env("X_KAFKA_TOPIC", _env("KAFKA_TOPIC", "x.raw.events")),
+        "reddit": _env(
+            "REDDIT_KAFKA_TOPIC", _env("KAFKA_TOPIC", "reddit.raw.events")
+        ),
+    }
+    return producer.publish(topics[source], updates)
 
 
 def main() -> None:
@@ -711,8 +681,7 @@ def main() -> None:
     updates = (
         [_finalize_update(update) for update in refreshers[source](targets)] if targets else []
     )
-    if source == "youtube":
-        _publish_youtube_engagement(updates)
+    kafka_published = _publish_engagement(updates, source)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = output_path.with_suffix(f"{output_path.suffix}.tmp")
@@ -721,7 +690,10 @@ def main() -> None:
             output.write(json.dumps(update, ensure_ascii=True) + "\n")
     temporary_path.replace(output_path)
 
-    print(f"Refreshed {len(updates)} of {len(targets)} {source} insight targets")
+    print(
+        f"Refreshed {len(updates)} of {len(targets)} {source} insight targets; "
+        f"Kafka acknowledged {kafka_published}"
+    )
     if targets and not updates and source not in SKIPPED_REFRESH_SOURCES:
         raise RuntimeError(f"No {source} insight target could be refreshed")
 

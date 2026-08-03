@@ -233,9 +233,12 @@ class YouTubeWorkerArchitectureTests(unittest.TestCase):
 
     def test_kafka_producer_enables_idempotent_delivery(self):
         source = (PLAYWRIGHT_DIR / "youtube_pipeline_events.py").read_text(encoding="utf-8")
+        collector_source = (PLAYWRIGHT_DIR / "producer.py").read_text(encoding="utf-8")
 
         self.assertIn('"enable.idempotence": True', source)
         self.assertIn('"acks": "all"', source)
+        self.assertIn('"enable.idempotence": True', collector_source)
+        self.assertIn('"acks": "all"', collector_source)
 
     def test_engagement_topic_is_consumed_into_the_lakehouse(self):
         source = (ROOT / "orchestrator" / "dags" / "lakehouse_dag_factory.py").read_text(

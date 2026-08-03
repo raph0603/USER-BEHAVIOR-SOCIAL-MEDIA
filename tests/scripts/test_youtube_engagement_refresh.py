@@ -71,6 +71,16 @@ class FakeYouTube:
         return self._videos
 
 
+class FakeKafkaProducer:
+    def __init__(self):
+        self.published = []
+
+    def publish(self, topic, events):
+        materialized = list(events)
+        self.published.extend((topic, event) for event in materialized)
+        return len(materialized)
+
+
 class YouTubeEngagementRefreshTests(unittest.TestCase):
     def _target(self, index):
         video_id = f"video-{index}"
@@ -130,6 +140,30 @@ class YouTubeEngagementRefreshTests(unittest.TestCase):
         self.assertNotIn("YOUTUBE_WATCH_PAGE_TIMEOUT_SECONDS", source)
         self.assertIn('"comment_count": parse_count(', source)
         self.assertIn('statistics.get("commentCount")', source)
+
+    def test_every_source_refresh_is_acknowledged_by_kafka(self):
+        topics = {
+            "youtube": "youtube.engagement.snapshots",
+            "x": "x.raw.events",
+            "reddit": "reddit.raw.events",
+        }
+        for source, expected_topic in topics.items():
+            with self.subTest(source=source):
+                producer = FakeKafkaProducer()
+                target = {**self._target(1), "source": source}
+                update = insight_refresh._finalize_update(insight_refresh._base_update(target))
+                with (
+                    patch.dict(os.environ, {"KAFKA_BOOTSTRAP": "kafka:9092"}),
+                    patch(
+                        "youtube_pipeline_events.EventProducer",
+                        return_value=producer,
+                    ),
+                ):
+                    published = insight_refresh._publish_engagement([update], source)
+
+                self.assertEqual(published, 1)
+                self.assertEqual(producer.published[0][0], expected_topic)
+                self.assertEqual(producer.published[0][1]["source"], source)
 
 
 if __name__ == "__main__":

@@ -100,13 +100,20 @@ outbox pattern. Outcome state and the Kafka publish intent commit together;
 the intent is marked delivered only after producer acknowledgement and is
 redrained on the next worker start.
 
-The engagement metrics worker is Kafka-first because its due targets already
-come from Silver rather than the shared worker queue. It publishes each
-observation synchronously to `youtube.engagement.snapshots` before attempting
-a short best-effort SQLite update. The engagement topic is always appended to
-the configured YouTube ingestion sources, including when an older `.env`
-override omits it. A SQLite lock can delay local monitoring state but cannot
-prevent the accepted observation from reaching Bronze and Silver.
+Engagement refresh workers are Kafka-first because their due targets already
+come from Silver rather than the shared worker queue. They publish each
+observation synchronously before writing the JSON handoff: YouTube uses
+`youtube.engagement.snapshots`, while X and Reddit reuse their raw source
+topics. The YouTube engagement topic is always appended to its configured
+ingestion sources, including when an older `.env` override omits it. A local
+state or downstream failure cannot prevent a Kafka-acknowledged observation
+from reaching Bronze and Silver on a retry.
+
+All collector producers use idempotent delivery with `acks=all`, and local
+processed state advances only after Kafka flush succeeds. Broker records are
+retained for 30 days by default on the persistent Kafka volume. Checkpoints,
+deterministic event identifiers, the insert-only Bronze journal, and Silver's
+application proof make replay safe across YouTube, X, and Reddit.
 
 The `refresh_recent_engagement_insights` DAG runs every 30 minutes by default,
 but selects only due rows according to `next_metrics_refresh_at`. After output

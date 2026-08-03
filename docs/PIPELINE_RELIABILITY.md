@@ -3,8 +3,9 @@
 This runbook describes the reliability architecture that is implemented in the
 repository. Iceberg tables stored in MinIO are the system of record. Kafka is
 the transport and replay boundary; SQLite holds durable worker scheduling,
-quota, circuit-breaker, and outbox state for state-dependent workers. The
-engagement metrics refresh publishes to Kafka before touching SQLite.
+quota, circuit-breaker, and outbox state for state-dependent workers. Every
+source collector and engagement refresh crosses the Kafka acknowledgement
+boundary before local state or downstream handoff is considered successful.
 
 Elasticsearch is not part of the ingestion, serving, monitoring, or recovery
 path. No Elasticsearch integration is required for this architecture.
@@ -58,6 +59,14 @@ Spark reads Kafka with `failOnDataLoss=true` by default. Setting
 `ALLOW_KAFKA_DATA_LOSS=true` is also set. Treat that pair as a recovery-only,
 audited acceptance of data loss.
 
+Kafka stores its log on the named persistent volume and retains records for
+30 days by default (`KAFKA_LOG_RETENTION_HOURS=720`). Collector producers use
+idempotent delivery and `acks=all`; their local processed state advances only
+after a successful flush. A failed Bronze, Silver, quality, or dashboard step
+therefore leaves Kafka-acknowledged YouTube, X, and Reddit data available for
+the next run. Data that failed before Kafka acknowledgement is outside this
+guarantee and must be recollected by the task retry.
+
 ## YouTube worker and snapshot guarantees
 
 Discovery, metadata, metrics, transcripts, comments, and channels remain
@@ -100,10 +109,12 @@ This ordering prevents a worker from recording success while losing the
 corresponding Kafka result. Back up the SQLite database at
 `/app/state/youtube-pipeline.sqlite` before migration or rollback.
 
-The metrics refresh is the deliberate exception: its targets are recoverable
-from Silver, so it publishes idempotently and synchronously to
-`youtube.engagement.snapshots` first. SQLite metrics, quota, and health rows are
-then updated with a short timeout. If that update is locked, the task reports
+Engagement refreshes are the deliberate exception to the SQLite outbox: their
+targets are recoverable from Silver, so every source publishes synchronously
+before the JSON handoff. YouTube publishes to
+`youtube.engagement.snapshots`; X and Reddit publish to their raw source
+topics. YouTube SQLite metrics, quota, and health rows are then updated with a
+short timeout. If that update is locked, the task reports
 `state_persisted=false` but keeps the Kafka-acknowledged result successful.
 
 ## Transcript lifecycle and compatibility
