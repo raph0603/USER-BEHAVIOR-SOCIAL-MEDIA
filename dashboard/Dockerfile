@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY dashboard/ .
 COPY common/ /app/common/
 COPY scripts/ /app/scripts/
-COPY schemas/ /app/schemas/
+COPY schemas/ /schemas/
 RUN chmod +x /app/scripts/airflow_jobs_cli.py /app/scripts/data_cli.py \
     && printf '%s\n' '#!/bin/sh' \
         'exec python /app/scripts/airflow_jobs_cli.py "$@"' \

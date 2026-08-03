@@ -250,6 +250,15 @@ def _normalize_canonical_event(row, source=None):
         field["name"]: _coerce_canonical_value(row.get(field["name"]), field)
         for field in fields
     }
+    timestamp = _first_value(
+        row,
+        "timestamp",
+        "event_ts",
+        "created_at",
+        "collected_at",
+        "published_at",
+    )
+    event["timestamp"] = _parse_timestamp(timestamp) if timestamp else None
     selected_source = source or event.get("source")
     if selected_source:
         event["source"] = selected_source.lower()
