@@ -13,6 +13,8 @@ Architecture and operations:
 - [Lakehouse data model](docs/data-model.md)
 - [Metadata and caption troubleshooting](docs/TROUBLESHOOTING.md)
 - [YouTube thumbnail URLs and transcript fallback](docs/YOUTUBE_MEDIA_REFERENCES.md)
+- [Démonstration vérifiable RAW → Bronze → Silver → Gold pour un événement X](docs/X_LINEAGE_DEMO.md)
+- [Exemple scientifique des transformations RAW → Clean → Bronze → Silver → Gold](docs/X_TRANSFORMATION_EXAMPLE.md)
 
 ## Privacy gateway
 
@@ -22,8 +24,8 @@ lands in Bronze:
 - `user_id` is replaced by a deterministic SHA-256 hash salted with `PRIVACY_HASH_SALT`.
 - URL fragments are stripped while useful query parameters such as YouTube
   video IDs are preserved.
-- Emails, mentions, phone numbers, IP addresses, embedded URLs, HTML and
-  control characters are removed or replaced in free-text fields.
+- Emails, mentions, phone numbers, IP addresses and embedded URLs are replaced
+  by stable privacy tokens; HTML and control characters are removed.
 - Invalid records are sent to a source-specific DLQ before Bronze.
 
 Set `PRIVACY_HASH_SALT` to a non-default secret outside local development.
