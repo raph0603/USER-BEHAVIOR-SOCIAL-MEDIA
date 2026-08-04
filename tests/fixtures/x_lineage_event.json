@@ -1,0 +1,17 @@
+{
+  "source": "x",
+  "platform_event_id": "1999999999999999999",
+  "url": "https://x.com/example/status/1999999999999999999",
+  "x_account": "raph_dev",
+  "raw_text": "Salut @alice, écris-moi à test@example.com ou au +33 6 12 34 56 78 depuis 192.168.1.10 🚀 #Data https://example.com",
+  "title": "Salut @alice, écris-moi à test@example.com ou au +33 6 12 34 56 78 depuis 192.168.1.10 🚀 #Data https://example.com",
+  "timestamp": "2026-07-29T05:00:00Z",
+  "published_at": "2026-07-29T05:00:00Z",
+  "collected_at": "2026-07-29T05:01:00Z",
+  "like_count": 12,
+  "view_count": 340,
+  "reply_count": 2,
+  "retweet_count": 3,
+  "bookmark_count": 1,
+  "follower_count": 900
+}
