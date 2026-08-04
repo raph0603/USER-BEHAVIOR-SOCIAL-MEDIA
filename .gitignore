@@ -84,9 +84,14 @@ data/
 datasets/
 raw_data/
 processed_data/
+artifacts/x-lineage/
+artifacts/x-transformation-example/
+artifacts/x-transformation-candidates*.json
+/all-events*.jsonl
 API/video_list.txt
 API/yt_raw_json/
 playwright/x_urls.txt
+playwright/x_urls_probe.txt
 playwright/reddit_urls.txt
 dashboard/data/
 *.csv
