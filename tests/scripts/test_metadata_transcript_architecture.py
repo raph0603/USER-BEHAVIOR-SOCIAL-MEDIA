@@ -134,6 +134,91 @@ class ProducerEnvironmentParsingTests(unittest.TestCase):
 
 
 class RedditCommentExtractionTests(unittest.TestCase):
+    @staticmethod
+    def _reddit_score_function():
+        function = _producer_functions("_extract_reddit_score")[0]
+
+        class FakeTimeoutError(Exception):
+            pass
+
+        class FakeLogger:
+            def debug(self, *args, **kwargs):
+                pass
+
+        def parse_count(value):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        namespace = {
+            "LOGGER": FakeLogger(),
+            "PlaywrightTimeoutError": FakeTimeoutError,
+            "PlaywrightError": FakeTimeoutError,
+            "parse_count": parse_count,
+        }
+        exec(
+            compile(ast.Module(body=[function], type_ignores=[]), str(PRODUCER_PATH), "exec"),
+            namespace,
+        )
+        return namespace["_extract_reddit_score"], FakeTimeoutError
+
+    def test_score_timeout_falls_back_to_another_selector(self):
+        extract_score, timeout_error = self._reddit_score_function()
+
+        class FakeLocator:
+            def __init__(self, *, title=None, timeout=False, present=True):
+                self.title = title
+                self.timeout = timeout
+                self.present = present
+                self.first = self
+
+            def count(self):
+                return int(self.present)
+
+            def get_attribute(self, name):
+                return self.title
+
+            def inner_text(self, timeout):
+                if self.timeout:
+                    raise timeout_error("score text did not load")
+                return ""
+
+        class FakeComment:
+            def locator(self, selector):
+                if selector == "span.score.unvoted":
+                    return FakeLocator(timeout=True)
+                if selector == "span.score.likes":
+                    return FakeLocator(title="42")
+                return FakeLocator(present=False)
+
+        self.assertEqual(extract_score(FakeComment()), 42)
+
+    def test_score_timeout_returns_none_when_no_fallback_is_available(self):
+        extract_score, timeout_error = self._reddit_score_function()
+
+        class FakeLocator:
+            first = None
+
+            def __init__(self, present):
+                self.present = present
+                self.first = self
+
+            def count(self):
+                return int(self.present)
+
+            def get_attribute(self, name):
+                return None
+
+            def inner_text(self, timeout):
+                raise timeout_error("score text did not load")
+
+        class FakeComment:
+            def locator(self, selector):
+                return FakeLocator(selector == "span.score.unvoted")
+
+        self.assertIsNone(extract_score(FakeComment()))
+
     def test_author_timeout_keeps_the_comment_with_anonymous_author(self):
         import re
         from urllib.parse import urljoin

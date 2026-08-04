@@ -294,16 +294,18 @@ def _extract_reddit_score(comment) -> int | None:
     )
     for selector in selectors:
         score_locator = comment.locator(selector)
-        if not score_locator.count():
-            continue
-        score_node = score_locator.first
-        for raw_value in (
-            score_node.get_attribute("title"),
-            score_node.inner_text(timeout=1000),
-        ):
-            parsed = parse_count(raw_value)
+        try:
+            if not score_locator.count():
+                continue
+            score_node = score_locator.first
+            parsed = parse_count(score_node.get_attribute("title"))
             if parsed is not None:
                 return parsed
+            parsed = parse_count(score_node.inner_text(timeout=1000))
+            if parsed is not None:
+                return parsed
+        except (PlaywrightTimeoutError, PlaywrightError) as exc:
+            LOGGER.debug("Could not read Reddit score with %s: %s", selector, exc)
     return None
 
 
