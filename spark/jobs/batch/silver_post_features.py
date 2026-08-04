@@ -15,8 +15,10 @@ import os
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
+    array_distinct,
     col,
     coalesce,
+    expr,
     length,
     lit,
     regexp_replace,
@@ -71,36 +73,87 @@ _URL_PATTERN = r"(https?://\S+|www\.\S+)"
 _EMOJI_PATTERN = r"[\x{1F300}-\x{1FAFF}\u2600-\u27BF\uFE00-\uFE0F]"
 
 
+def _occurrence_count(column, literal_value: str):
+    return (
+        (length(column) - length(regexp_replace(column, literal_value, ""))) / len(literal_value)
+    ).cast("int")
+
+
 def compute_post_features(df):
     """Derive text-based features from a DataFrame that has a ``text_for_model`` column."""
     text = col("text_for_model")
-    raw = col("raw_text")
+    cleaned = (
+        coalesce(col("clean_text"), text)
+        if "clean_text" in df.columns
+        else coalesce(col("raw_text"), text)
+    )
 
-    # Text length features
     char_len = length(text)
-    word_len = size(split(trim(text), r"\s+"))
+    tokens = expr("filter(split(trim(text_for_model), '\\\\s+'), token -> token <> '')")
+    word_len = when(text.isNull(), lit(None).cast("int")).otherwise(size(tokens))
+    sentence_count = when(text.isNull(), lit(None).cast("int")).otherwise(
+        expr(
+            "size(filter(split(trim(text_for_model), '[.!?]+'), "
+            "sentence -> trim(sentence) <> ''))"
+        )
+    )
+    line_count = (
+        when(text.isNull(), lit(None).cast("int"))
+        .when(length(text) == 0, lit(0))
+        .otherwise(size(split(text, r"\r\n|\r|\n")))
+    )
 
-    # Structural signal features derived from raw_text (before PII scrub / lowercasing)
-    hashtag_count = size(split(raw, _HASHTAG_PATTERN)) - 1
-    mention_count = size(split(raw, _MENTION_PATTERN)) - 1
-    url_count = size(split(raw, _URL_PATTERN)) - 1
+    hashtag_count = size(split(cleaned, _HASHTAG_PATTERN)) - 1
+    legacy_mentions = size(split(cleaned, _MENTION_PATTERN)) - 1
+    legacy_urls = size(split(cleaned, _URL_PATTERN)) - 1
+    emoji_count = size(split(cleaned, _EMOJI_PATTERN)) - 1
+    question_mark_count = length(cleaned) - length(regexp_replace(cleaned, r"\?", ""))
+    exclamation_mark_count = length(cleaned) - length(regexp_replace(cleaned, "!", ""))
 
-    # Question marker: does the cleaned text contain a "?"
-    has_question = when(text.contains("?"), 1).otherwise(0)
+    mention_token_count = _occurrence_count(text, "<USER>")
+    email_token_count = _occurrence_count(text, "<EMAIL>")
+    phone_token_count = _occurrence_count(text, "<PHONE>")
+    ip_token_count = _occurrence_count(text, "<IP>")
+    url_token_count = _occurrence_count(text, "<URL>")
 
-    # Emoji count: count occurrences in raw text
-    # We split on non-emoji sequences and measure how many emoji-containing tokens exist.
-    # size(split()) - 1 gives the number of delimiters found.
-    emoji_count = size(split(raw, _EMOJI_PATTERN)) - 1
+    alphabetic_count = length(regexp_replace(cleaned, r"[^A-Za-zÀ-ÖØ-öø-ÿ]", ""))
+    uppercase_count = length(regexp_replace(cleaned, r"[^A-ZÀ-ÖØ-Þ]", ""))
+    uppercase_ratio = when(
+        alphabetic_count > 0,
+        uppercase_count.cast("double") / alphabetic_count.cast("double"),
+    ).otherwise(lit(None).cast("double"))
+    digit_count = length(regexp_replace(cleaned, r"\D", ""))
+    digit_ratio = when(
+        length(cleaned) > 0,
+        digit_count.cast("double") / length(cleaned).cast("double"),
+    ).otherwise(lit(None).cast("double"))
+    lexical_diversity = when(
+        word_len > 0,
+        size(array_distinct(tokens)).cast("double") / word_len.cast("double"),
+    ).otherwise(lit(None).cast("double"))
 
     return (
         df.withColumn("text_len_chars", char_len)
         .withColumn("text_len_words", word_len)
-        .withColumn("has_question", has_question)
+        .withColumn("character_count", char_len)
+        .withColumn("word_count", word_len)
+        .withColumn("sentence_count", sentence_count)
+        .withColumn("line_count", line_count)
+        .withColumn("mention_token_count", mention_token_count)
+        .withColumn("email_token_count", email_token_count)
+        .withColumn("phone_token_count", phone_token_count)
+        .withColumn("ip_token_count", ip_token_count)
+        .withColumn("url_token_count", url_token_count)
+        .withColumn("mention_count", legacy_mentions)
+        .withColumn("url_count", legacy_urls)
         .withColumn("hashtag_count", hashtag_count)
-        .withColumn("mention_count", mention_count)
-        .withColumn("url_count", url_count)
         .withColumn("emoji_count", emoji_count)
+        .withColumn("question_mark_count", question_mark_count)
+        .withColumn("exclamation_mark_count", exclamation_mark_count)
+        .withColumn("has_question", when(question_mark_count > 0, 1).otherwise(0))
+        .withColumn("uppercase_character_ratio", uppercase_ratio)
+        .withColumn("digit_character_ratio", digit_ratio)
+        .withColumn("lexical_diversity", lexical_diversity)
     )
 
 
@@ -129,18 +182,44 @@ CREATE TABLE IF NOT EXISTS lakehouse.silver.post_features (
   clean_text            STRING   COMMENT 'Cleaned text (before lowercasing)',
   text_len_chars        INT      COMMENT 'Character length of text_for_model',
   text_len_words        INT      COMMENT 'Word count of text_for_model',
+  character_count       INT      COMMENT 'Character count of cleaned model text',
+  word_count            INT      COMMENT 'Whitespace-delimited token count',
+  sentence_count        INT      COMMENT 'Non-empty segments delimited by sentence punctuation',
+  line_count            INT      COMMENT 'Line count after privacy cleaning',
   has_question          INT      COMMENT '1 if text contains a question mark, else 0',
   hashtag_count         INT      COMMENT 'Number of #hashtags in raw_text',
-  mention_count         INT      COMMENT 'Number of @mentions in raw_text',
-  url_count             INT      COMMENT 'Number of URLs in raw_text',
+  mention_count         INT      COMMENT 'Legacy count of literal @mentions when present',
+  url_count             INT      COMMENT 'Legacy count of literal URLs when present',
   emoji_count           INT      COMMENT 'Number of emoji characters in raw_text',
+  mention_token_count   INT      COMMENT 'Number of <USER> tokens after privacy cleaning',
+  email_token_count     INT      COMMENT 'Number of <EMAIL> tokens after privacy cleaning',
+  phone_token_count     INT      COMMENT 'Number of <PHONE> tokens after privacy cleaning',
+  ip_token_count        INT      COMMENT 'Number of <IP> tokens after privacy cleaning',
+  url_token_count       INT      COMMENT 'Number of <URL> tokens after privacy cleaning',
+  question_mark_count   INT      COMMENT 'Number of question marks',
+  exclamation_mark_count INT     COMMENT 'Number of exclamation marks',
+  uppercase_character_ratio DOUBLE COMMENT 'Uppercase alphabetic characters / alphabetic characters',
+  digit_character_ratio DOUBLE   COMMENT 'Digit characters / all characters',
+  lexical_diversity     DOUBLE   COMMENT 'Unique whitespace tokens / all whitespace tokens',
+  like_count            BIGINT,
+  view_count            BIGINT,
+  reply_count           BIGINT,
+  retweet_count         BIGINT,
+  bookmark_count        BIGINT,
+  follower_count        BIGINT,
+  like_count_available  BOOLEAN,
+  view_count_available  BOOLEAN,
+  reply_count_available BOOLEAN,
+  retweet_count_available BOOLEAN,
+  bookmark_count_available BOOLEAN,
+  follower_count_available BOOLEAN,
   feature_version       STRING   COMMENT 'Schema/feature-set version for reproducibility'
 )
 USING iceberg
 PARTITIONED BY (event_date)
 """
 
-_FEATURE_VERSION = "v1"
+_FEATURE_VERSION = "v2"
 
 _UPSERT_COLUMNS = [
     "source",
@@ -154,11 +233,37 @@ _UPSERT_COLUMNS = [
     "clean_text",
     "text_len_chars",
     "text_len_words",
+    "character_count",
+    "word_count",
+    "sentence_count",
+    "line_count",
     "has_question",
     "hashtag_count",
     "mention_count",
     "url_count",
     "emoji_count",
+    "mention_token_count",
+    "email_token_count",
+    "phone_token_count",
+    "ip_token_count",
+    "url_token_count",
+    "question_mark_count",
+    "exclamation_mark_count",
+    "uppercase_character_ratio",
+    "digit_character_ratio",
+    "lexical_diversity",
+    "like_count",
+    "view_count",
+    "reply_count",
+    "retweet_count",
+    "bookmark_count",
+    "follower_count",
+    "like_count_available",
+    "view_count_available",
+    "reply_count_available",
+    "retweet_count_available",
+    "bookmark_count_available",
+    "follower_count_available",
     "feature_version",
 ]
 
@@ -166,8 +271,25 @@ _UPSERT_COLUMNS = [
 def prepare_post_features(df):
     """Build the deterministic feature projection from the current Silver state."""
 
+    prepared = df
+    for metric in (
+        "like_count",
+        "view_count",
+        "reply_count",
+        "retweet_count",
+        "bookmark_count",
+        "follower_count",
+    ):
+        if metric not in prepared.columns:
+            prepared = prepared.withColumn(metric, lit(None).cast("bigint"))
+        availability = f"{metric}_available"
+        if availability not in prepared.columns:
+            prepared = prepared.withColumn(
+                availability,
+                col(metric).isNotNull(),
+            )
     prepared = (
-        df.filter(col("text_for_model").isNotNull())
+        prepared.filter(col("text_for_model").isNotNull())
         .withColumn("event_date", to_date(col("event_ts")))
         .transform(with_author_hash)
         .transform(compute_post_features)
@@ -282,6 +404,32 @@ def main() -> None:
             "author_hash": "STRING",
             "emoji_count": "INT",
             "feature_version": "STRING",
+            "character_count": "INT",
+            "word_count": "INT",
+            "sentence_count": "INT",
+            "line_count": "INT",
+            "mention_token_count": "INT",
+            "email_token_count": "INT",
+            "phone_token_count": "INT",
+            "ip_token_count": "INT",
+            "url_token_count": "INT",
+            "question_mark_count": "INT",
+            "exclamation_mark_count": "INT",
+            "uppercase_character_ratio": "DOUBLE",
+            "digit_character_ratio": "DOUBLE",
+            "lexical_diversity": "DOUBLE",
+            "like_count": "BIGINT",
+            "view_count": "BIGINT",
+            "reply_count": "BIGINT",
+            "retweet_count": "BIGINT",
+            "bookmark_count": "BIGINT",
+            "follower_count": "BIGINT",
+            "like_count_available": "BOOLEAN",
+            "view_count_available": "BOOLEAN",
+            "reply_count_available": "BOOLEAN",
+            "retweet_count_available": "BOOLEAN",
+            "bookmark_count_available": "BOOLEAN",
+            "follower_count_available": "BOOLEAN",
         },
     )
 

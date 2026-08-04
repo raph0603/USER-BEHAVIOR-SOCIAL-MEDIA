@@ -58,6 +58,7 @@ from common.transcripts import (
     legacy_transcript_status,
     transcript_lifecycle_status,
 )
+from common.x_lineage import RawCaptureWriter
 from engagement import extract_x_followers, extract_x_metric, parse_count
 import youtube_authors
 from youtube_authors import fetch_youtube_collaborators
@@ -2811,6 +2812,12 @@ def main() -> None:
     if not schema_fields:
         raise RuntimeError(f"Avro schema has no named fields: {schema_path}")
 
+    raw_capture = RawCaptureWriter.from_environment(
+        producer_name=_env_str("COLLECTOR_PRODUCER_NAME", "playwright_collector"),
+        producer_run_id=_env_str("PIPELINE_RUN_ID", "standalone"),
+        kafka_topic=topic,
+    )
+
     def publish(events: list[dict]) -> None:
         events[:] = [_prepare_event(event) for event in events]
         for event in events:
@@ -2828,6 +2835,7 @@ def main() -> None:
                     "error": None,
                 }
             )
+            raw_capture.capture(value)
             producer.produce(
                 topic=topic,
                 key=event["user_id"],
