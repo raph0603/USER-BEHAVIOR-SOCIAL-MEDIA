@@ -20,6 +20,8 @@ class ContentAnalyticsContractTests(unittest.TestCase):
             "source",
             "platform_content_id",
             "content_type",
+            "parent_content_id",
+            "depth",
             "author_id_hash",
             "subreddit",
             "subreddit_title",

@@ -214,7 +214,8 @@ class PipelineStructureTests(unittest.TestCase):
 
         self.assertIn('".engagement.snapshot"', source)
         self.assertIn("~non_content_event", source)
-        self.assertIn(".when(engagement_snapshot, col(\"user_id\"))", source)
+        self.assertIn("preserve_user_id=engagement_snapshot", source)
+        self.assertIn("when(preserve_user_id, col(\"user_id\"))", source)
 
     def test_event_id_is_additive_in_avro_and_spark_contracts(self):
         avro = json.loads((ROOT / "schemas" / "playwright_event.avsc").read_text(encoding="utf-8"))

@@ -93,6 +93,8 @@ CREATE_CONTENTS_SQL = """
 CREATE TABLE IF NOT EXISTS lakehouse.silver.contents (
   content_id STRING,
   root_content_id STRING,
+  parent_content_id STRING,
+  depth INT,
   source STRING,
   platform_content_id STRING,
   content_type STRING,
@@ -430,6 +432,8 @@ PROVENANCE_COLUMN_TYPES = {
 CONTENT_COLUMNS = [
     "content_id",
     "root_content_id",
+    "parent_content_id",
+    "depth",
     "source",
     "platform_content_id",
     "content_type",
@@ -1029,6 +1033,8 @@ def build_contents(events: DataFrame) -> DataFrame:
         .groupBy("content_id")
         .agg(
             first("root_content_id", ignorenulls=True).alias("root_content_id"),
+            first("parent_content_id", ignorenulls=True).alias("parent_content_id"),
+            first("depth", ignorenulls=True).alias("depth"),
             first("source", ignorenulls=True).alias("source"),
             first("platform_content_id", ignorenulls=True).alias("platform_content_id"),
             first("content_type", ignorenulls=True).alias("content_type"),
@@ -1474,6 +1480,8 @@ def _create_tables(spark: SparkSession) -> None:
         CONTENT_TABLE,
         {
             "root_content_id": "STRING",
+            "parent_content_id": "STRING",
+            "depth": "INT",
             "platform_content_id": "STRING",
             "subreddit": "STRING",
             "subreddit_title": "STRING",

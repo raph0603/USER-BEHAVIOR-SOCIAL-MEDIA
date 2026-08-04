@@ -21,10 +21,7 @@ import pytest
 pytestmark = pytest.mark.spark
 
 ROOT = Path(__file__).resolve().parents[2]
-if os.name == "nt":
-    os.environ["PYSPARK_PYTHON"] = str(ROOT / "tests" / "scripts" / "run_python.bat")
-else:
-    os.environ["PYSPARK_PYTHON"] = sys.executable
+os.environ["PYSPARK_PYTHON"] = sys.executable
 os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
 # Add the batch jobs folder to the path so we can import the module
@@ -53,9 +50,9 @@ class PostFeatureComputationTests(unittest.TestCase):
         cls.spark.stop()
 
     def _make_df(self, raw_text, text_for_model):
-        return self.spark.createDataFrame(
-            [(raw_text, text_for_model)],
-            schema="raw_text STRING, text_for_model STRING",
+        return self.spark.range(1).select(
+            lit(raw_text).cast("string").alias("raw_text"),
+            lit(text_for_model).cast("string").alias("text_for_model"),
         )
 
     def test_text_len_chars(self):
@@ -108,6 +105,31 @@ class PostFeatureComputationTests(unittest.TestCase):
         row = spf.compute_post_features(df).collect()[0]
         self.assertEqual(row["emoji_count"], 0)
 
+    def test_privacy_token_counts_use_cleaned_model_text(self):
+        df = self.spark.range(1).select(
+            lit("<USER> <EMAIL> <URL> #Data 🚀").alias("raw_text"),
+            lit("<USER> <EMAIL> <URL> #data 🚀").alias("text_for_model"),
+            lit("<USER> <EMAIL> <URL> #Data 🚀").alias("clean_text"),
+        )
+
+        row = spf.compute_post_features(df).collect()[0]
+
+        self.assertEqual(row["mention_token_count"], 1)
+        self.assertEqual(row["email_token_count"], 1)
+        self.assertEqual(row["phone_token_count"], 0)
+        self.assertEqual(row["ip_token_count"], 0)
+        self.assertEqual(row["url_token_count"], 1)
+        self.assertEqual(row["hashtag_count"], 1)
+        self.assertGreaterEqual(row["emoji_count"], 1)
+
+    def test_empty_model_text_has_null_ratios_and_lexical_diversity(self):
+        df = self._make_df("", "")
+        row = spf.compute_post_features(df).collect()[0]
+
+        self.assertIsNone(row["uppercase_character_ratio"])
+        self.assertIsNone(row["digit_character_ratio"])
+        self.assertIsNone(row["lexical_diversity"])
+
     def test_null_text_for_model_produces_null_features(self):
         """Null text_for_model should produce null char/word lengths — not crash."""
         df = self._make_df("raw text", None)
@@ -121,19 +143,16 @@ class PostFeatureComputationTests(unittest.TestCase):
         self.assertTrue(len(spf._FEATURE_VERSION) > 0)
 
     def test_author_hash_falls_back_to_privacy_safe_user_id(self):
-        df = self.spark.createDataFrame(
-            [("hashed-user",)],
-            schema="user_id STRING",
-        )
+        df = self.spark.range(1).select(lit("hashed-user").alias("user_id"))
 
         row = spf.with_author_hash(df).collect()[0]
 
         self.assertEqual(row["author_hash"], "hashed-user")
 
     def test_existing_author_hash_is_preserved(self):
-        df = self.spark.createDataFrame(
-            [("hashed-user", "source-author")],
-            schema="user_id STRING, author_hash STRING",
+        df = self.spark.range(1).select(
+            lit("hashed-user").alias("user_id"),
+            lit("source-author").alias("author_hash"),
         )
 
         row = spf.with_author_hash(df).collect()[0]
@@ -141,34 +160,29 @@ class PostFeatureComputationTests(unittest.TestCase):
         self.assertEqual(row["author_hash"], "source-author")
 
     def test_prepare_post_features_filters_unknown_text_and_sets_version(self):
-        df = self.spark.createDataFrame(
-            [
-                (
-                    "youtube",
-                    "video-1",
-                    "hashed-user",
-                    "https://example.test/video-1",
-                    "2026-07-20T00:00:00Z",
-                    "Hello #Spark",
-                    "hello #spark",
-                    "Hello #Spark",
-                ),
-                (
-                    "youtube",
-                    "video-2",
-                    "hashed-user",
-                    "https://example.test/video-2",
-                    "2026-07-20T00:01:00Z",
-                    "Unavailable",
-                    None,
-                    "Unavailable",
-                ),
-            ],
-            schema=(
-                "source STRING, platform_event_id STRING, user_id STRING, url STRING, "
-                "event_ts STRING, raw_text STRING, text_for_model STRING, clean_text STRING"
-            ),
-        ).withColumn("event_ts", spf.to_timestamp("event_ts"))
+        first = self.spark.range(1).select(
+            lit("youtube").alias("source"),
+            lit("video-1").alias("platform_event_id"),
+            lit("hashed-user").alias("user_id"),
+            lit("https://example.test/video-1").alias("url"),
+            lit("2026-07-20T00:00:00Z").alias("event_ts"),
+            lit("Hello #Spark").alias("raw_text"),
+            lit("hello #spark").alias("text_for_model"),
+            lit("Hello #Spark").alias("clean_text"),
+        )
+        second = self.spark.range(1).select(
+            lit("youtube").alias("source"),
+            lit("video-2").alias("platform_event_id"),
+            lit("hashed-user").alias("user_id"),
+            lit("https://example.test/video-2").alias("url"),
+            lit("2026-07-20T00:01:00Z").alias("event_ts"),
+            lit("Unavailable").alias("raw_text"),
+            lit(None).cast("string").alias("text_for_model"),
+            lit("Unavailable").alias("clean_text"),
+        )
+        df = first.unionByName(second).withColumn(
+            "event_ts", spf.to_timestamp("event_ts")
+        )
 
         rows = spf.prepare_post_features(df).collect()
 
@@ -199,6 +213,32 @@ class PostFeaturesSchemaContractTests(unittest.TestCase):
             "mention_count",
             "url_count",
             "emoji_count",
+            "character_count",
+            "word_count",
+            "sentence_count",
+            "line_count",
+            "mention_token_count",
+            "email_token_count",
+            "phone_token_count",
+            "ip_token_count",
+            "url_token_count",
+            "question_mark_count",
+            "exclamation_mark_count",
+            "uppercase_character_ratio",
+            "digit_character_ratio",
+            "lexical_diversity",
+            "like_count",
+            "view_count",
+            "reply_count",
+            "retweet_count",
+            "bookmark_count",
+            "follower_count",
+            "like_count_available",
+            "view_count_available",
+            "reply_count_available",
+            "retweet_count_available",
+            "bookmark_count_available",
+            "follower_count_available",
             "feature_version",
         }
         for col_name in expected:
