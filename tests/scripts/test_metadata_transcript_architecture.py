@@ -219,6 +219,7 @@ class RedditCommentExtractionTests(unittest.TestCase):
 
         self.assertIsNone(extract_score(FakeComment()))
 
+
     def test_author_timeout_keeps_the_comment_with_anonymous_author(self):
         import re
         from urllib.parse import urljoin
@@ -281,6 +282,51 @@ class RedditCommentExtractionTests(unittest.TestCase):
 
         self.assertEqual(event["user_id"], "reddit-anonymous-comment-1")
         self.assertEqual(event["title"], "Useful comment")
+
+
+class RedditIncrementalPublishingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        function = _producer_functions("_publish_ready_batch")[0]
+        namespace = {}
+        exec(
+            compile(ast.Module(body=[function], type_ignores=[]), str(PRODUCER_PATH), "exec"),
+            namespace,
+        )
+        cls.publish_ready_batch = staticmethod(namespace["_publish_ready_batch"])
+
+    def test_ready_batch_is_published_and_removed_from_buffer(self):
+        events = [{"event_id": str(index)} for index in range(75)]
+        published = []
+
+        published_count = self.publish_ready_batch(events, published.append, 50)
+
+        self.assertEqual(published_count, 50)
+        self.assertEqual(len(published), 1)
+        self.assertEqual(len(published[0]), 50)
+        self.assertEqual(len(events), 25)
+        self.assertEqual(events[0]["event_id"], "50")
+
+    def test_incomplete_batch_stays_buffered(self):
+        events = [{"event_id": str(index)} for index in range(49)]
+        published = []
+
+        published_count = self.publish_ready_batch(events, published.append, 50)
+
+        self.assertEqual(published_count, 0)
+        self.assertEqual(published, [])
+        self.assertEqual(len(events), 49)
+
+    def test_failed_publish_keeps_batch_buffered(self):
+        events = [{"event_id": str(index)} for index in range(50)]
+
+        def fail_publish(batch):
+            raise RuntimeError("Kafka unavailable")
+
+        with self.assertRaisesRegex(RuntimeError, "Kafka unavailable"):
+            self.publish_ready_batch(events, fail_publish, 50)
+
+        self.assertEqual(len(events), 50)
 
 
 class SchemaRegistryLookupTests(unittest.TestCase):
@@ -675,7 +721,14 @@ class YouTubeMetadataMappingTests(unittest.TestCase):
 
         self.assertIn("youtube_processing_deadline = time.monotonic()", source)
         self.assertIn("publish(video_events)", source)
-        self.assertIn('if mode != "youtube":\n            publish(events)', source)
+        self.assertIn('if mode == "x":\n            publish(events)', source)
+
+    def test_reddit_events_are_published_in_configurable_batches(self):
+        source = PRODUCER_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('_env_int("REDDIT_PUBLISH_BATCH_SIZE", 50)', source)
+        self.assertIn("publish_batch=publish_reddit_batch", source)
+        self.assertIn("Published Reddit batch:", source)
 
     def test_video_metadata_and_transcript_provenance_are_preserved(self):
         now = datetime(2026, 1, 2, tzinfo=timezone.utc)
