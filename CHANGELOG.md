@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.25.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.24.2...v1.25.0) (2026-08-04)
+
+
+### Features
+
+* **x:** add raw-to-gold lineage tooling ([35602eb](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/35602eb2a86a713269ef48397ec7bf15ac53971b))
+* **x:** add verifiable raw-to-gold lineage ([bd76e27](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/bd76e27e479b4999731c2b8603b29b009a9b8ddf))
+
 ## [1.24.2](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.24.1...v1.24.2) (2026-08-03)
 
 
