@@ -505,6 +505,9 @@ services:
       - X_FAIL_ON_ERROR=${X_FAIL_ON_ERROR:-true}
       - X_SCROLL_ROUNDS=${X_SCROLL_ROUNDS:-5}
       - X_SCROLL_WAIT_MS=${X_SCROLL_WAIT_MS:-1500}
+      - X_RAW_CAPTURE_ENABLED=${X_RAW_CAPTURE_ENABLED:-false}
+      - X_RAW_CAPTURE_DIR=${X_RAW_CAPTURE_DIR:-/app/captures/x}
+      - X_RAW_CAPTURE_LIMIT=${X_RAW_CAPTURE_LIMIT:-1}
       - PRODUCER_MAX_EVENTS=${X_MAX_EVENTS:-1000}
       - COLLECTOR_STATE_DB=/app/state/x.sqlite
       - BOOTSTRAP_STATE_FROM_KAFKA=true
@@ -512,6 +515,7 @@ services:
     volumes:
       - collector-state:/app/state
       - insight-refresh:/app/insight-refresh
+      - ${X_LINEAGE_HOST_OUTPUT:-./artifacts/x-lineage}:/app/captures/x
 
   reddit-collector:
     image: ${DOCKERHUB_NAMESPACE:-raph0603}/user-behavior-social-media-playwright:${PROJECT_IMAGE_TAG:-latest}
@@ -599,6 +603,7 @@ services:
       - collector-state:/opt/spark/collector-state
       - insight-refresh:/opt/spark/insight-refresh
       - balancing:/opt/spark/balancing
+      - ${X_LINEAGE_HOST_OUTPUT:-./artifacts/x-lineage}:/opt/spark/x-lineage
 
   spark-worker:
     image: ${DOCKERHUB_NAMESPACE:-raph0603}/user-behavior-social-media-spark-worker:${PROJECT_IMAGE_TAG:-latest}

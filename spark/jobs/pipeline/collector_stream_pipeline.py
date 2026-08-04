@@ -13,6 +13,7 @@ from pyspark.sql.avro.functions import from_avro
 from pyspark.sql.functions import (
     col,
     coalesce,
+    concat,
     concat_ws,
     current_timestamp,
     expr,
@@ -154,6 +155,67 @@ def _decode_confluent_avro(
     )
 
 
+def protect_event(
+    decoded,
+    *,
+    platform: str,
+    privacy_hash_salt: str,
+    preserve_user_id=None,
+):
+    """Apply the canonical privacy policy before any Bronze-facing payload."""
+
+    protected_user_id = when(col("user_id").isNull(), lit(None)).otherwise(
+        sha2(concat_ws(":", lit(privacy_hash_salt), col("user_id")), 256)
+    )
+    if preserve_user_id is not None:
+        protected_user_id = when(preserve_user_id, col("user_id")).otherwise(
+            protected_user_id
+        )
+    protected = decoded.withColumn("user_id", protected_user_id)
+    if platform == "x":
+        protected = protected.withColumn(
+            "x_account",
+            when(col("x_account").isNull(), lit(None)).otherwise(
+                sha2(concat_ws(":", lit(privacy_hash_salt), col("x_account")), 256)
+            ),
+        ).withColumn(
+            "url",
+            when(
+                col("platform_event_id").isNotNull(),
+                concat(lit("https://x.com/i/status/"), col("platform_event_id")),
+            ).otherwise(regexp_replace(col("url"), r"#.*$", "")),
+        )
+
+    protected = (
+        protected.withColumn("url", regexp_replace(col("url"), r"#.*$", ""))
+        .withColumn("_privacy_clean_text", clean_text(coalesce(col("raw_text"), col("title"))))
+        .withColumn("clean_text", col("_privacy_clean_text"))
+        .withColumn("text_for_model", prepare_text_for_model(col("_privacy_clean_text")))
+        .withColumn("raw_text", col("_privacy_clean_text"))
+        .withColumn("title", clean_text(col("title")))
+        .withColumn("error", clean_text(col("error")))
+    )
+    for field in (
+        "payload_json",
+        "canonical_metadata",
+        "source_specific_metadata",
+        "raw_source_payload",
+    ):
+        if field in protected.columns:
+            protected = protected.withColumn(field, clean_text(col(field)))
+
+    if platform == "x" and "source_specific_metadata" in protected.columns:
+        protected = protected.withColumn(
+            "source_specific_metadata",
+            regexp_replace(
+                col("source_specific_metadata"),
+                r'("x_account"\s*:\s*)"[^"]*"',
+                '$1"<USER>"',
+            ),
+        )
+    return protected.drop("_privacy_clean_text")
+
+
 def main() -> None:
     platform = _env("PLATFORM", "").strip().lower()
     if platform not in {"youtube", "x", "reddit"}:
@@ -246,24 +308,11 @@ def main() -> None:
     decoded = decoded.filter((col("source") == lit(platform)) | col("_decode_error").isNotNull())
     event_type = coalesce(col("event_type"), lit(""))
     engagement_snapshot = event_type.endswith(".engagement.snapshot")
-    protected = (
-        decoded.withColumn(
-            "user_id",
-            when(col("user_id").isNull(), lit(None))
-            .when(engagement_snapshot, col("user_id"))
-            .otherwise(
-                sha2(
-                    concat_ws(":", lit(privacy_hash_salt), col("user_id")),
-                    256,
-                )
-            ),
-        )
-        .withColumn("url", regexp_replace(col("url"), r"#.*$", ""))
-        .withColumn("raw_text", coalesce(col("raw_text"), col("title")))
-        .withColumn("clean_text", clean_text(col("raw_text")))
-        .withColumn("text_for_model", prepare_text_for_model(col("clean_text")))
-        .withColumn("title", clean_text(col("title")))
-        .withColumn("error", clean_text(col("error")))
+    protected = protect_event(
+        decoded,
+        platform=platform,
+        privacy_hash_salt=privacy_hash_salt,
+        preserve_user_id=engagement_snapshot,
     )
 
     non_content_event = event_type.endswith(".result") | engagement_snapshot
