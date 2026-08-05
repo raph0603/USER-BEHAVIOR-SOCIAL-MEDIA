@@ -41,24 +41,62 @@ DEFAULT_MODEL_HF = "Qwen/Qwen2.5-7B-Instruct"
 # --------------------------------------------------------------------------- #
 PROMPT_TEMPLATES = {
     "en": (
-        "You are a marketing assistant. Below is the analysis of one social-media "
-        "post (JSON) about an electric-vehicle ad campaign. Write a SHORT report "
-        "with exactly three sections:\n"
-        "1. Viral likelihood (state the probability and whether it is likely viral).\n"
-        "2. Main reasons (explain the top factors in plain language).\n"
-        "3. 2-3 concrete improvement tips.\n"
-        "Keep it under 180 words. Do not invent numbers not present in the JSON.\n\n"
-        "JSON:\n{payload}\n"
+        "You are a senior marketing advisor writing for a busy marketer with NO technical "
+        "background. Below is the JSON analysis of one social-media post advertising an "
+        "electric vehicle. The JSON includes the post text under \"post_text\". Write a "
+        "helpful, SPECIFIC report in Markdown with EXACTLY these four sections and headings:\n\n"
+        "#### Verdict\n"
+        "2-3 sentences: will this post likely take off on its platform or not, and the main "
+        "reason why, in everyday words. Do NOT mention probabilities, scores, percentages, "
+        "model names or numbers.\n\n"
+        "#### What's working\n"
+        "3-5 bullet points on the strengths. For EACH point, briefly explain WHY it helps the "
+        "post perform. Translate any technical factor into plain marketing language. No jargon, "
+        "no raw feature names, no values.\n\n"
+        "#### What to improve\n"
+        "3-5 concrete bullet points. Refer to the ACTUAL wording of this post (post_text) and, "
+        "where useful, give a short concrete example of the fix. Make each tip directly "
+        "actionable.\n\n"
+        "#### Bottom line\n"
+        "One sentence: the single most important change to make before publishing.\n\n"
+        "Rules: 220-320 words total; warm, constructive, concrete tone; base every point on the "
+        "post and the JSON, never invent facts. READ post_text CAREFULLY and be factually "
+        "accurate: NEVER say an element is missing if it is actually present — if the post "
+        "already contains a call-to-action, a hook, proof or social proof, acknowledge it and "
+        "only suggest making it stronger; never tell them to 'add' something that is already "
+        "there. Never call plain counts (e.g. '3,000 stations', '25,000 customers') "
+        "'percentages'. Write ONLY in English. Keep any numbers and units from the post EXACTLY "
+        "as written — never convert or change them (keep 'km' as 'km'). Never show numbers or "
+        "internal feature names. Do NOT wrap the report in code fences or backticks; start "
+        "directly with '#### Verdict'. End immediately after the Bottom line sentence — add no closing remarks, summaries or backticks. Output ONLY the Markdown report. JSON:\n{payload}\n"
     ),
     "vi": (
-        "Bạn là trợ lý marketing. Dưới đây là phân tích của một bài đăng mạng xã hội "
-        "(JSON) về chiến dịch quảng cáo xe điện. Hãy viết một BÁO CÁO NGẮN gồm đúng "
-        "ba phần:\n"
-        "1. Khả năng lan truyền (nêu xác suất và bài có khả năng viral hay không).\n"
-        "2. Lý do chính (giải thích các yếu tố quan trọng bằng ngôn ngữ dễ hiểu).\n"
-        "3. 2-3 gợi ý cải thiện cụ thể.\n"
-        "Giữ dưới 180 từ. Không bịa ra số liệu không có trong JSON.\n\n"
-        "JSON:\n{payload}\n"
+        "Bạn là cố vấn marketing cấp cao, viết cho một marketer bận rộn KHÔNG có nền tảng kỹ "
+        "thuật. Dưới đây là phân tích JSON của một bài đăng mạng xã hội quảng cáo xe điện. "
+        "JSON có chứa nội dung bài trong \"post_text\". Hãy viết một báo cáo HỮU ÍCH, CỤ THỂ ở "
+        "định dạng Markdown với ĐÚNG bốn mục và tiêu đề sau:\n\n"
+        "#### Nhận định\n"
+        "2-3 câu: bài này có khả năng lan truyền trên nền tảng của nó hay không, và lý do "
+        "chính, bằng lời lẽ đời thường. KHÔNG nêu xác suất, điểm số, phần trăm, tên mô hình "
+        "hay con số.\n\n"
+        "#### Điểm mạnh\n"
+        "3-5 gạch đầu dòng về điểm mạnh. Với MỖI điểm, giải thích ngắn gọn VÌ SAO nó giúp bài "
+        "hiệu quả. Diễn giải mọi yếu tố kỹ thuật thành ngôn ngữ marketing dễ hiểu. Không thuật "
+        "ngữ, không tên đặc trưng thô, không giá trị số.\n\n"
+        "#### Cần cải thiện\n"
+        "3-5 gạch đầu dòng cụ thể. Hãy tham chiếu ĐÚNG câu chữ của bài này (post_text) và, khi "
+        "hữu ích, đưa ví dụ cụ thể để sửa. Mỗi gợi ý phải khả thi ngay.\n\n"
+        "#### Kết luận\n"
+        "Một câu: thay đổi quan trọng nhất cần làm trước khi đăng.\n\n"
+        "Quy tắc: 220-320 từ; giọng ấm áp, xây dựng, cụ thể; dựa mọi ý vào bài và JSON, không "
+        "bịa thông tin. ĐỌC KỸ post_text và chính xác về nội dung: TUYỆT ĐỐI không nói một yếu "
+        "tố còn thiếu nếu nó thực sự đã có — nếu bài đã có câu kêu gọi hành động, câu mở đầu, "
+        "bằng chứng hay bằng chứng xã hội, hãy ghi nhận và chỉ gợi ý làm mạnh hơn; đừng bảo "
+        "'thêm' thứ đã có sẵn. Không gọi các con số đếm (vd. '3.000 trạm', '25.000 khách hàng') "
+        "là 'phần trăm'. CHỈ viết bằng tiếng Việt; TUYỆT ĐỐI không dùng ký tự tiếng Trung hay "
+        "ngôn ngữ khác. Giữ NGUYÊN mọi con số và đơn vị (giữ 'km' là 'km'). Không hiển thị con "
+        "số hay tên đặc trưng nội bộ. KHÔNG bọc báo cáo trong khối mã (```); bắt đầu trực tiếp "
+        "bằng '#### Nhận định'. Kết thúc ngay sau câu ở mục Kết luận — không thêm lời bình, tóm tắt hay dấu backtick. Chỉ xuất ra báo cáo Markdown. JSON:\n{payload}\n"
     ),
 }
 
@@ -146,13 +184,17 @@ def render_ollama(result: dict, lang: str, model: str) -> str:
     import urllib.request
 
     prompt = PROMPT_TEMPLATES[lang].format(payload=json.dumps(result, ensure_ascii=False, indent=2))
-    body = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
+    body = json.dumps({"model": model, "prompt": prompt, "stream": False, "keep_alive": "1h"}).encode("utf-8")    
     req = urllib.request.Request(
         "http://localhost:11434/api/generate", data=body,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        return json.loads(resp.read())["response"].strip()
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        text = json.loads(resp.read())["response"].strip()
+    # Safety net: drop any code-fence marker lines the model may add anywhere
+    fence = {"```", "```markdown", "```md"}
+    text = "\n".join(ln for ln in text.splitlines() if ln.strip() not in fence).strip()
+    return text
 
 
 # --------------------------------------------------------------------------- #

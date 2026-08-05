@@ -84,10 +84,38 @@ app = FastAPI(
 # Allow the future web UI (any origin during dev) to call the API from the browser.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=["http://localhost:3000", "https://viral-insight-webapp-user-behavior.vercel.app"],
+    allow_origin_regex=r"https://.*\.vercel\.app",    allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --------------------------------------------------------------------------- #
+# Rate limiting : max 60 requêtes / 60 s par IP (anti-abus)
+# --------------------------------------------------------------------------- #
+import time as _t  # noqa: E402
+from collections import defaultdict as _dd, deque as _dq  # noqa: E402
+from fastapi import Request  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+_RATE_WINDOW = 60
+_RATE_MAX = 60
+_rate_hits: dict = _dd(_dq)
+
+
+@app.middleware("http")
+async def _rate_limit(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    fwd = request.headers.get("x-forwarded-for", "")
+    ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "unknown")
+    now = _t.monotonic()
+    hits = _rate_hits[ip]
+    while hits and now - hits[0] > _RATE_WINDOW:
+        hits.popleft()
+    if len(hits) >= _RATE_MAX:
+        return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded. Please slow down."})
+    hits.append(now)
+    return await call_next(request)
 
 
 @app.get("/health")
@@ -125,6 +153,7 @@ import os as _os  # noqa: E402
 
 REPORT_MODEL = _os.environ.get("REPORT_MODEL", "qwen2.5:3b")
 REPORT_BACKEND = _os.environ.get("REPORT_BACKEND", "ollama")
+REPORT_GEN_MODEL = _os.environ.get("REPORT_GEN_MODEL", "qwen2.5:7b")
 
 
 class ReportRequest(BaseModel):
@@ -141,9 +170,149 @@ def report(req: ReportRequest) -> dict:
     if req.lang not in {"en", "vi"}:
         raise HTTPException(status_code=422, detail='lang must be "en" or "vi"')
     prediction = _run(PredictRequest(text=req.text, source=req.source, audience=req.audience))
+    if isinstance(prediction, dict):
+        prediction["post_text"] = req.text
+    # The report LLM should reason from the post + factors, NOT parrot the canned
+    # `suggestions` (e.g. "Add a CTA") that make it recommend things already present.
+    report_input = (
+        {k: v for k, v in prediction.items() if k != "suggestions"}
+        if isinstance(prediction, dict) else prediction
+    )
     try:
         from report_ui.generate_report import generate  # noqa: PLC0415
-        report_text = generate(prediction, REPORT_BACKEND, req.lang, REPORT_MODEL)
+        report_text = generate(report_input, REPORT_BACKEND, req.lang, REPORT_GEN_MODEL)    
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Report generation failed: {exc}") from exc
     return {"report": report_text, "prediction": prediction}
+
+
+# --------------------------------------------------------------------------- #
+# /barriers - EV adoption barrier radar (via Qwen, JSON output)
+# --------------------------------------------------------------------------- #
+import json as _json
+import urllib.request as _urlreq
+
+_BARRIERS = [
+    ("range_anxiety", "Range anxiety"),
+    ("charging_infrastructure", "Charging infrastructure"),
+    ("battery_degradation", "Battery degradation"),
+    ("safety_fire", "Safety / fire concerns"),
+    ("price_incentives", "Price & incentives"),
+    ("maintenance_cost", "Maintenance cost"),
+]
+
+
+class BarrierRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+
+
+@app.post("/barriers")
+def barriers(req: BarrierRequest) -> dict:
+    keys = ", ".join(k for k, _ in _BARRIERS)
+    prompt = (
+        "You analyse a social-media post advertising an electric vehicle. "
+        "For each of these six EV-adoption barriers, decide if the post ADDRESSES it "
+        "(gives a concrete answer), MENTIONS it (raises it without answering), or does "
+        "NOT mention it. Barriers: " + keys + ". Reply ONLY with JSON of shape "
+        '{"barriers": {"range_anxiety": "addressed|mentioned|not_mentioned", ... all six ...}, '
+        '"recommend": ["<up to two barrier keys most worth addressing>"]}. Post:\n' + req.text
+    )
+    body = _json.dumps({"model": REPORT_MODEL, "prompt": prompt, "stream": False, "format": "json"}).encode("utf-8")
+    r = _urlreq.Request("http://localhost:11434/api/generate", data=body, headers={"Content-Type": "application/json"})
+    try:
+        with _urlreq.urlopen(r, timeout=120) as resp:
+            data = _json.loads(_json.loads(resp.read())["response"])
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Barrier analysis failed: {exc}") from exc
+    bmap = data.get("barriers", {}) if isinstance(data, dict) else {}
+    out = []
+    for key, label in _BARRIERS:
+        status = str(bmap.get(key, "not_mentioned")).lower()
+        if status not in ("addressed", "mentioned", "not_mentioned"):
+            status = "not_mentioned"
+        out.append({"key": key, "label": label, "status": status})
+    rec = data.get("recommend", []) if isinstance(data, dict) else []
+    return {"barriers": out, "recommend": rec if isinstance(rec, list) else []}
+
+
+
+
+
+
+# --------------------------------------------------------------------------- #
+# /greenwashing - greenwashing risk (via Qwen, JSON output)
+# --------------------------------------------------------------------------- #
+class GreenwashRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+    lang: str = Field("en", description='"en" or "vi"')
+
+
+@app.post("/greenwashing")
+def greenwashing(req: GreenwashRequest) -> dict:
+    prompt = (
+        "You assess GREENWASHING risk in a social-media post advertising an electric vehicle. "
+        "Greenwashing concerns ENVIRONMENTAL / sustainability claims ONLY — e.g. 'zero "
+        "emissions', 'eco-friendly', 'green', 'carbon-neutral', 'clean energy', 'sustainable', "
+        "'saves the planet'. Do NOT treat performance or business facts (range in km, charging "
+        "speed, number of charging stations, price, number of customers, warranty) as "
+        "environmental claims. Extract ONLY the environmental claims and any concrete evidence "
+        "for them (numbers, certifications, lab tests, measurements). If there are NO "
+        "environmental claims, return risk 'low' with empty claims and evidence. Otherwise, "
+        "many environmental claims with little concrete evidence = higher risk. Reply ONLY with "
+        'JSON of shape {"risk": "low|medium|high", "claims": ["..."], "evidence": ["..."], '
+        '"note": "<one short sentence>"}. Write the "note" field in '
+        + ("Vietnamese" if req.lang == "vi" else "English") + ". Post:\n" + req.text
+    )
+    body = _json.dumps({"model": REPORT_MODEL, "prompt": prompt, "stream": False, "format": "json"}).encode("utf-8")
+    r = _urlreq.Request("http://localhost:11434/api/generate", data=body, headers={"Content-Type": "application/json"})
+    try:
+        with _urlreq.urlopen(r, timeout=120) as resp:
+            data = _json.loads(_json.loads(resp.read())["response"])
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Greenwashing analysis failed: {exc}") from exc
+    risk = str(data.get("risk", "medium")).lower() if isinstance(data, dict) else "medium"
+    if risk not in ("low", "medium", "high"):
+        risk = "medium"
+    claims = data.get("claims", []) if isinstance(data, dict) else []
+    evidence = data.get("evidence", []) if isinstance(data, dict) else []
+    note = data.get("note", "") if isinstance(data, dict) else ""
+    return {
+        "risk": risk,
+        "claims": claims if isinstance(claims, list) else [],
+        "evidence": evidence if isinstance(evidence, list) else [],
+        "note": str(note),
+    }
+
+
+
+
+# --------------------------------------------------------------------------- #
+# /sentiment - likely audience reaction (via Qwen, JSON output)
+# --------------------------------------------------------------------------- #
+class SentimentRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+    lang: str = Field("en", description='"en" or "vi"')
+
+
+@app.post("/sentiment")
+def sentiment(req: SentimentRequest) -> dict:
+    prompt = (
+        "You predict how a social-media AUDIENCE would likely REACT to a post advertising "
+        "an electric vehicle, before it is published. Consider tone, credibility, and how "
+        "EV-curious readers usually respond. Choose one overall reaction: positive, neutral, "
+        "skeptical, or hostile. Reply ONLY with JSON of shape "
+        '{"reaction": "positive|neutral|skeptical|hostile", "note": "<one short sentence>"}. '
+        'Write the "note" in ' + ("Vietnamese" if req.lang == "vi" else "English") + ". Post:\n" + req.text
+    )
+    body = _json.dumps({"model": REPORT_MODEL, "prompt": prompt, "stream": False, "format": "json"}).encode("utf-8")
+    r = _urlreq.Request("http://localhost:11434/api/generate", data=body, headers={"Content-Type": "application/json"})
+    try:
+        with _urlreq.urlopen(r, timeout=120) as resp:
+            data = _json.loads(_json.loads(resp.read())["response"])
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Sentiment analysis failed: {exc}") from exc
+    reaction = str(data.get("reaction", "neutral")).lower() if isinstance(data, dict) else "neutral"
+    if reaction not in ("positive", "neutral", "skeptical", "hostile"):
+        reaction = "neutral"
+    note = data.get("note", "") if isinstance(data, dict) else ""
+    return {"reaction": reaction, "note": str(note)}
