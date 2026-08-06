@@ -184,7 +184,7 @@ def render_ollama(result: dict, lang: str, model: str) -> str:
     import urllib.request
 
     prompt = PROMPT_TEMPLATES[lang].format(payload=json.dumps(result, ensure_ascii=False, indent=2))
-    body = json.dumps({"model": model, "prompt": prompt, "stream": False, "keep_alive": "1h"}).encode("utf-8")    
+    body = json.dumps({"model": model, "prompt": prompt, "stream": False, "keep_alive": "3h"}).encode("utf-8")    
     req = urllib.request.Request(
         "http://localhost:11434/api/generate", data=body,
         headers={"Content-Type": "application/json"},
