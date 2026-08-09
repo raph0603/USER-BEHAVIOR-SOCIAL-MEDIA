@@ -8,6 +8,7 @@ structured JSON the dashboard parses:
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -25,9 +26,32 @@ from features.topics import TopicFeaturizer
 from preprocess.build_dataset import add_text_features, clean_text
 from train.train_viral import apply_calibrator
 
-MODEL_PATH = ML_ROOT / "models" / "stage1_multisource.joblib"
+DEFAULT_MODEL_PATH = ML_ROOT / "models" / "stage1_multisource.joblib"
+MODEL_PATH_ENV = "AI_MODEL_PATH"
+MODEL_ALIASES = {
+    "legacy": ("AI_MODEL_LEGACY_PATH", DEFAULT_MODEL_PATH),
+    "audience-x90": (
+        "AI_MODEL_X90_PATH",
+        ML_ROOT / "models" / "stage1_multisource_audience_x90.joblib",
+    ),
+}
 DECISION_THRESHOLD = 0.50
 TOP_K = 5
+
+
+def configured_model_path(model_name: str | None = None) -> Path:
+    """Return the configured path for a public model alias."""
+
+    if model_name is not None:
+        try:
+            environment_name, default_path = MODEL_ALIASES[model_name]
+        except KeyError as exc:
+            raise ValueError(f"Unknown model {model_name!r}") from exc
+        configured = os.getenv(environment_name, "").strip()
+        return Path(configured).expanduser() if configured else default_path
+
+    configured = os.getenv(MODEL_PATH_ENV, "").strip()
+    return Path(configured).expanduser() if configured else DEFAULT_MODEL_PATH
 
 # Map raw feature names -> human-readable labels for the explanation.
 FEATURE_LABELS = {
@@ -76,8 +100,10 @@ def _label_for(feature: str) -> str:
 
 
 class ViralExplainer:
-    def __init__(self, model_path: Path = MODEL_PATH):
+    def __init__(self, model_path: Path | None = None):
+        model_path = configured_model_path() if model_path is None else Path(model_path)
         bundle = joblib.load(model_path)
+        self.model_path = model_path
         self.model = bundle["model"]
         self.features = bundle["features"]
         # Both absent in models trained before calibration; 0.5 was the old default.
@@ -197,13 +223,26 @@ class ViralExplainer:
 
 
 _explainer: ViralExplainer | None = None
+_explainers: dict[str, ViralExplainer] = {}
 
 
-def explain_post(text: str, source: str = "", audience: float | None = None) -> dict:
+def explain_post(
+    text: str,
+    source: str = "",
+    audience: float | None = None,
+    model_name: str | None = None,
+) -> dict:
     global _explainer
-    if _explainer is None:
-        _explainer = ViralExplainer()
-    return _explainer.explain(text, source, audience)
+    cache_key = model_name or "default"
+    explainer = _explainers.get(cache_key)
+    if explainer is None:
+        explainer = ViralExplainer(configured_model_path(model_name))
+        _explainers[cache_key] = explainer
+        if model_name is None:
+            _explainer = explainer
+    result = explainer.explain(text, source, audience)
+    result["model"] = model_name or "legacy"
+    return result
 
 
 if __name__ == "__main__":
