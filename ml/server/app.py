@@ -24,7 +24,7 @@ import os
 import secrets
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,6 +45,10 @@ class PredictRequest(BaseModel):
     text: str = Field(..., min_length=1, description="The social-media post text.")
     source: str = Field("", description='One of "youtube", "x", "reddit", or "".')
     audience: float | None = Field(None, description="Optional channel audience size.")
+    model: Literal["legacy", "audience-x90"] = Field(
+        "legacy",
+        description="Prediction model alias. Existing clients default to legacy.",
+    )
 
 
 class BatchRequest(BaseModel):
@@ -56,9 +60,9 @@ class BatchRequest(BaseModel):
 # (e.g. in tests) does not require the heavy ML stack or the model file.
 # Tests override `predict_fn` with a stub.
 # --------------------------------------------------------------------------- #
-def _default_predict(text: str, source: str, audience: float | None) -> dict:
+def _default_predict(text: str, source: str, audience: float | None, model: str) -> dict:
     from serve.explain_viral import explain_post  # noqa: PLC0415 - deliberate lazy import
-    return explain_post(text, source, audience)
+    return explain_post(text, source, audience, model)
 
 
 predict_fn = _default_predict
@@ -84,7 +88,7 @@ def _run(req: PredictRequest) -> dict:
     if req.source not in VALID_SOURCES:
         raise HTTPException(status_code=422, detail=f"source must be one of {sorted(VALID_SOURCES)}")
     try:
-        return predict_fn(req.text, req.source, req.audience)
+        return predict_fn(req.text, req.source, req.audience, req.model)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=f"Model not available: {exc}") from exc
     except Exception as exc:  # noqa: BLE001 - surface a clean 500 to the caller
@@ -111,14 +115,23 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict:
-    """Liveness probe. `model_loaded` reflects whether the singleton is warm."""
-    loaded = False
+    """Liveness probe with availability and cache state for every model alias."""
+    models = {}
     try:
         from serve import explain_viral
-        loaded = explain_viral._explainer is not None
+        for alias in explain_viral.MODEL_ALIASES:
+            path = explain_viral.configured_model_path(alias)
+            models[alias] = {
+                "available": path.is_file(),
+                "loaded": alias in explain_viral._explainers,
+            }
     except Exception:  # noqa: BLE001 - health must never fail
-        loaded = False
-    return {"status": "ok", "model_loaded": loaded}
+        models = {}
+    return {
+        "status": "ok",
+        "model_loaded": any(item["loaded"] for item in models.values()),
+        "models": models,
+    }
 
 
 @app.post("/predict", dependencies=[Depends(require_api_token)])
@@ -150,6 +163,7 @@ class ReportRequest(BaseModel):
     text: str = Field(..., min_length=1, description="The social-media post text.")
     source: str = Field("", description='One of "youtube", "x", "reddit", or "".')
     audience: float | None = Field(None, description="Optional channel audience size.")
+    model: Literal["legacy", "audience-x90"] = Field("legacy")
     lang: str = Field("en", description='Report language: "en" or "vi".')
 
 
@@ -159,7 +173,14 @@ def report(req: ReportRequest) -> dict:
         raise HTTPException(status_code=422, detail=f"source must be one of {sorted(VALID_SOURCES)}")
     if req.lang not in {"en", "vi"}:
         raise HTTPException(status_code=422, detail='lang must be "en" or "vi"')
-    prediction = _run(PredictRequest(text=req.text, source=req.source, audience=req.audience))
+    prediction = _run(
+        PredictRequest(
+            text=req.text,
+            source=req.source,
+            audience=req.audience,
+            model=req.model,
+        )
+    )
     from report_ui.generate_report import generate, render_template  # noqa: PLC0415
 
     # The prediction owes nothing to the LLM, so an unreachable Ollama or a model that was

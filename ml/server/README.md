@@ -9,11 +9,14 @@ schema in `ml/HANDOFF.md` section 2** — consuming services rely on it.
 | Method | Path | Body | Response |
 |---|---|---|---|
 | GET | `/health` | — | `{"status": "ok", "model_loaded": bool}` |
-| POST | `/predict` | `{"text": "...", "source": "youtube"}` | one explain_post JSON |
-| POST | `/predict/batch` | `{"items": [{text, source}, ...]}` | list of explain_post JSON |
+| POST | `/predict` | `{"text": "...", "source": "youtube", "model": "legacy"}` | one explain_post JSON |
+| POST | `/predict/batch` | `{"items": [{text, source, model}, ...]}` | list of explain_post JSON |
 | POST | `/report` | `{"text": "...", "source": "youtube", "lang": "en"}` | prediction plus marketing report |
 
 `source` ∈ `{"youtube", "x", "reddit", ""}`. Optional `audience` (float) is accepted.
+`model` is optional and accepts `legacy` (the backward-compatible default) or
+`audience-x90`. Both artifacts are cached independently, so callers can switch
+models on every request without restarting the container.
 
 Interactive docs once running: <http://localhost:8000/docs>.
 
