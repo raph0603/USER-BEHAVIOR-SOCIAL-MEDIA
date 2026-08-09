@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.26.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.25.0...v1.26.0) (2026-08-09)
+
+
+### Features
+
+* **api:** add per-request model selection ([1b095ec](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/1b095ecfd189fa3860d607b47dad7c538f12946d))
+* **api:** add per-request model selection ([44c62a7](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/44c62a72a848527e7dc2a72f7ba79906bf3938f8))
+
 ## [1.25.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.24.2...v1.25.0) (2026-08-04)
 
 
