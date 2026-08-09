@@ -719,6 +719,8 @@ services:
       - "${AI_SERVER_BIND_ADDRESS:-${HOST_BIND_ADDRESS:-127.0.0.1}}:${AI_SERVER_PORT:-8000}:8000"
     environment:
       AI_SERVER_TOKEN: ${AI_SERVER_TOKEN:-}
+      AI_MODEL_LEGACY_PATH: ${AI_MODEL_LEGACY_PATH:-/app/models/stage1_multisource.joblib}
+      AI_MODEL_X90_PATH: ${AI_MODEL_X90_PATH:-/app/models/stage1_multisource_audience_x90.joblib}
       REPORT_BACKEND: ${REPORT_BACKEND:-template}
       REPORT_MODEL: ${REPORT_MODEL:-qwen2.5:3b}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}

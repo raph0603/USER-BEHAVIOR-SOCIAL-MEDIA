@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import app as app_module  # noqa: E402
 
 
-def _fake_predict(text: str, source: str, audience):
+def _fake_predict(text: str, source: str, audience, model: str):
     return {
         "viral_score": 0.671,
         "label": "viral-likely",
@@ -23,6 +23,7 @@ def _fake_predict(text: str, source: str, audience):
                          "value": 0.74, "contribution": 0.81, "direction": "up"}],
         "explanation_text": f"stub for source={source!r}",
         "suggestions": ["Add a clear call to action (CTA)."],
+        "model": model,
     }
 
 
@@ -43,6 +44,26 @@ def test_predict_ok():
     assert body["label"] == "viral-likely"
     assert 0.0 <= body["viral_score"] <= 1.0
     assert "source='youtube'" in body["explanation_text"]
+    assert body["model"] == "legacy"
+
+
+def test_predict_can_select_audience_x90():
+    response = client.post(
+        "/predict",
+        json={"text": "great EV deal", "source": "x", "model": "audience-x90"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "audience-x90"
+
+
+def test_predict_rejects_unknown_model():
+    response = client.post(
+        "/predict",
+        json={"text": "great EV deal", "source": "x", "model": "unknown"},
+    )
+
+    assert response.status_code == 422
 
 
 def test_prediction_requires_configured_bearer_token(monkeypatch):
@@ -81,10 +102,11 @@ def test_predict_empty_text():
 def test_batch():
     r = client.post("/predict/batch", json={"items": [
         {"text": "a", "source": "x"},
-        {"text": "b", "source": "reddit"},
+        {"text": "b", "source": "reddit", "model": "audience-x90"},
     ]})
     assert r.status_code == 200
     assert len(r.json()) == 2
+    assert [item["model"] for item in r.json()] == ["legacy", "audience-x90"]
 
 
 def test_report_with_template_backend():
