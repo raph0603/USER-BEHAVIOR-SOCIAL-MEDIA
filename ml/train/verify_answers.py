@@ -30,6 +30,7 @@ and a short summary is printed to stdout.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -50,7 +51,14 @@ ML_ROOT = Path(__file__).resolve().parents[1]
 if str(ML_ROOT) not in sys.path:
     sys.path.insert(0, str(ML_ROOT))
 
-from train.train_viral import TARGET, TEXT, apply_calibrator, split_indices  # noqa: E402
+from dataset_lineage import load_dataset_lineage  # noqa: E402
+from train.train_viral import (  # noqa: E402
+    TARGET,
+    TEXT,
+    apply_calibrator,
+    split_indices,
+    validate_dataset_version,
+)
 
 DEFAULT_DATA = ML_ROOT / "data" / "train_dataset.parquet"
 DEFAULT_MODEL = ML_ROOT / "models" / "stage1_multisource.joblib"
@@ -184,7 +192,11 @@ def _fmt_ci(ci):
     return f"[{ci[0]}, {ci[1]}]" if ci else "n/a"
 
 
-def build_markdown(results: dict, threshold: float = 0.5) -> str:
+def build_markdown(
+    results: dict,
+    threshold: float = 0.5,
+    lineage: dict | None = None,
+) -> str:
     lines = [
         "# Model-answer verification report",
         "",
@@ -193,6 +205,26 @@ def build_markdown(results: dict, threshold: float = 0.5) -> str:
         "threshold are sound, and that every number comes with a **95% bootstrap "
         "confidence interval**. Same author-grouped holdout split as training.",
         "",
+    ]
+    if lineage:
+        lines += [
+            "## Reproducibility lineage",
+            "",
+            f"- Dataset version: `{lineage['dataset_version']}`",
+            f"- Dataset fingerprint: `{lineage['dataset_fingerprint']}`",
+            f"- Manifest SHA-256: `{lineage['manifest_sha256']}`",
+            (
+                f"- Training input: `{lineage['training_table']}` at Gold snapshot "
+                f"`{lineage['training_snapshot_id']}`"
+            ),
+            "- Iceberg snapshots: "
+            + ", ".join(
+                f"`{table}` = `{snapshot_id}`"
+                for table, snapshot_id in lineage["iceberg_snapshot_ids"].items()
+            ),
+            "",
+        ]
+    lines += [
         "## 1. Ranking + calibration (per group)",
         "",
         "| group | n | viral_rate | ROC-AUC (95% CI) | PR-AUC (95% CI) | Brier down | ECE down |",
@@ -248,7 +280,7 @@ def build_markdown(results: dict, threshold: float = 0.5) -> str:
     return "\n".join(lines)
 
 
-def make_plot(y, proba, src, out_path: Path):
+def make_plot(y, proba, src, out_path: Path, dataset_version: str | None = None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -267,12 +299,19 @@ def make_plot(y, proba, src, out_path: Path):
         ax.plot(conf[ok], acc[ok], marker="o", label=f"{name} (ECE={ece})")
     ax.set_xlabel("Mean predicted probability")
     ax.set_ylabel("Observed viral fraction")
-    ax.set_title("Reliability diagram")
+    title = "Reliability diagram"
+    if dataset_version:
+        title += f"\n{dataset_version}"
+    ax.set_title(title)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.legend(loc="upper left", fontsize=8)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=120)
+    fig.savefig(
+        out_path,
+        dpi=120,
+        metadata={"Description": f"dataset_version={dataset_version or 'unversioned'}"},
+    )
     plt.close(fig)
 
 
@@ -285,8 +324,18 @@ def main() -> None:
     parser.add_argument("--n-boot", type=int, default=1000)
     parser.add_argument("--out", type=Path, default=DEFAULT_REPORT)
     parser.add_argument("--plot", type=Path, default=DEFAULT_PLOT)
+    parser.add_argument("--dataset-manifest", type=Path)
     args = parser.parse_args()
 
+    bundle = joblib.load(args.model)
+    lineage = bundle.get("dataset_lineage")
+    if args.dataset_manifest:
+        _, expected_lineage = load_dataset_lineage(args.dataset_manifest)
+        if lineage != expected_lineage:
+            raise ValueError("Model artifact lineage does not match --dataset-manifest")
+    elif bundle.get("dataset_version") and not lineage:
+        raise ValueError("Versioned model artifact is missing its dataset lineage")
+    validate_dataset_version(pd.read_parquet(args.data), bundle.get("dataset_version"))
     y, proba, src, threshold = score_test_set(args.data, args.model, args.test_size, args.seed)
 
     results = {"overall": evaluate_group(y, proba, args.n_boot, threshold)}
@@ -295,8 +344,21 @@ def main() -> None:
         results[s] = evaluate_group(y[mask], proba[mask], args.n_boot, threshold)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    make_plot(y, proba, src, args.plot)
-    args.out.write_text(build_markdown(results, threshold), encoding="utf-8")
+    make_plot(y, proba, src, args.plot, bundle.get("dataset_version"))
+    args.out.write_text(build_markdown(results, threshold, lineage), encoding="utf-8")
+    args.out.with_suffix(".json").write_text(
+        json.dumps(
+            {
+                "dataset_lineage": lineage,
+                "decision_threshold": threshold,
+                "results": results,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     o = results["overall"]
     print("=== Answer verification (overall) ===")

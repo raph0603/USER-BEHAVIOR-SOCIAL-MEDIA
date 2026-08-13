@@ -12,6 +12,9 @@ features drive virality — the basis for the explanation layer.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import sys
@@ -40,6 +43,7 @@ if str(ML_ROOT) not in sys.path:
     sys.path.insert(0, str(ML_ROOT))
 
 from features.text_content import build_content_model
+from dataset_lineage import load_dataset_lineage, model_lineage_path
 
 DEFAULT_DATA = ML_ROOT / "data" / "train_dataset.parquet"
 DEFAULT_MODEL = ML_ROOT / "models" / "stage1_multisource.joblib"
@@ -231,9 +235,23 @@ def main() -> None:
         "--dataset-version",
         help="Exact lakehouse dataset version embedded in the model artifact.",
     )
+    parser.add_argument(
+        "--dataset-manifest",
+        type=Path,
+        help="Validated manifest carrying the pinned Iceberg snapshots for an official run.",
+    )
     args = parser.parse_args()
 
     df = pd.read_parquet(args.data)
+    dataset_lineage = None
+    if args.dataset_version and not args.dataset_manifest:
+        raise ValueError("Official model training requires --dataset-manifest")
+    if args.dataset_manifest:
+        _, dataset_lineage = load_dataset_lineage(
+            args.dataset_manifest,
+            expected_dataset_version=args.dataset_version,
+        )
+        args.dataset_version = str(dataset_lineage["dataset_version"])
     validate_dataset_version(df, args.dataset_version)
     features = feature_columns(df)
     train_idx, test_idx = split_indices(df, args.test_size, args.seed)
@@ -270,17 +288,30 @@ def main() -> None:
     print(shap_importance(model, X_test).head(10).round(4))
 
     args.model.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(
-        {
-            "model": model,
-            "calibrator": calibrator,
-            "threshold": threshold,
-            "features": features,
-            "dataset_version": args.dataset_version,
-            **content_bundle,
-        },
-        args.model,
-    )
+    bundle = {
+        "model": model,
+        "calibrator": calibrator,
+        "threshold": threshold,
+        "features": features,
+        "dataset_version": args.dataset_version,
+        "dataset_lineage": dataset_lineage,
+        **content_bundle,
+    }
+    joblib.dump(bundle, args.model)
+    if dataset_lineage:
+        sidecar = {
+            "artifact_type": "stage1_viral_model",
+            "artifact_file": args.model.name,
+            "artifact_sha256": hashlib.sha256(args.model.read_bytes()).hexdigest(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "dataset_lineage": dataset_lineage,
+        }
+        lineage_path = model_lineage_path(args.model)
+        lineage_path.write_text(
+            json.dumps(sidecar, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print(f"Lineage saved -> {lineage_path}")
     print(f"\nSaved -> {args.model}")
 
 

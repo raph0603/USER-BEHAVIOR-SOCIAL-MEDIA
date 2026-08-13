@@ -753,7 +753,7 @@ services:
       - balancing:/workspace/data/lakehouse-ml:ro
     command: >
       python ml/run_pipeline.py
-      --lakehouse-manifest /workspace/data/lakehouse-ml/current.json
+      --lakehouse-manifest /workspace/data/lakehouse-ml/ml/current.json
       --report
 
 volumes:

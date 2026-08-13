@@ -1,17 +1,42 @@
-# Stage-1 results — 2026-07-27
+# Stage-1 results — 2026-08-13
 
-Every figure below comes from `ml/train/verify_answers.py`, which scores **what serving
-actually returns** (calibrated probability, the threshold stored in the bundle) and reports
-a 95% bootstrap confidence interval. Nothing here is quoted without one.
+The authoritative reproducible figures are in section 0. They were generated directly
+from pinned Apache Iceberg snapshots and are linked to the exact dataset and model
+artifacts. Sections 1–5 retain the larger July manual-export experiment for historical
+comparison only; those figures must not be cited as reproducible lakehouse results.
 
 Regenerate the whole file's contents with:
 
 ```powershell
 $env:PYTHONIOENCODING='utf-8'
 & ".\ml\.venv\Scripts\python.exe" ml/run_pipeline.py `
-    --manual-csv-input data/samples/newest_data_enriched.csv --allow-stale-input
-& ".\ml\.venv\Scripts\python.exe" ml/train/verify_answers.py --n-boot 2000
+    --lakehouse-manifest <manifest.json> --report
 ```
+
+---
+
+## 0. Official pinned-snapshot run
+
+- Dataset version: `dataset-v2-52ef5b2d5b113e3a377e`
+- Dataset fingerprint: `52ef5b2d5b113e3a377e2736c979ef9169a95664b07f1b17fa93fe9e92ba3267`
+- Manifest SHA-256: `760398554b2ac9337a4b1433cd62bdc44be5ce6fa747ee52db98303144e038b2`
+- Model SHA-256: `46695d21337652a96e97e640610df53232964633158af9c5dedc9a5a6f76344d`
+- `lakehouse.gold.training_examples` snapshot: `4034905545805767069`
+- `lakehouse.silver.post_features` snapshot: `8259184521274725029`
+- `lakehouse.silver.engagement_snapshots` snapshot: `4006086415507010724`
+
+The pinned dataset contains 197 examples (156 X, 41 YouTube). The author-grouped test
+split contains 41 examples; its small size makes the confidence intervals wide.
+
+| Group | n | ROC-AUC (95% CI) | PR-AUC (95% CI) | Brier | ECE | F1 @ 0.33 |
+|---|---:|---:|---:|---:|---:|---:|
+| **overall** | 41 | **0.623** [0.150, 0.957] | **0.196** [0.029, 0.696] | 0.111 | 0.208 | 0.200 |
+| X | 35 | 0.818 [0.588, 0.992] | 0.250 [0.071, 1.000] | 0.102 | 0.227 | 0.222 |
+| YouTube | 6 | 0.200 [0.000, 0.600] | 0.200 [0.167, 0.600] | 0.165 | 0.093 | 0.000 |
+
+Machine-readable evidence is stored in `ml/results/stage1_evaluation.json` and
+`ml/results/stage1_model_lineage.json`. Both carry the snapshot map and dataset
+fingerprint; the latter also binds the serialized model by SHA-256.
 
 ---
 
@@ -181,9 +206,8 @@ from data correctness, not from modelling.
 
 ## 6. What these numbers do not say
 
-- **They are not "official" by the paper's own rule.** The run above uses the manual CSV
-  path, not a lakehouse dataset with a pinned Iceberg snapshot, manifest and fingerprint.
-  Recompute from a frozen dataset version before putting any of this in a results table.
+- **The July figures in sections 1–5 are historical only.** They use the manual CSV path
+  and are not interchangeable with the official pinned-snapshot figures in section 0.
 - **Audience is not timestamp-valid.** Subscriber counts were read today, not as of each
   post's publication date. A post that went viral has since gained subscribers, so the
   YouTube figures are optimistic. Audience size is a legitimate pre-launch feature; only the
