@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.26.2](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.26.1...v1.26.2) (2026-08-13)
+
+
+### Bug Fixes
+
+* **ml:** consolidate leakage and interpretability safeguards ([7ffa5c6](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/7ffa5c6dc7fc728de9b1057192522f19ad72a5b9))
+* **ml:** frame rhetorical roles as exploratory ([f0510cf](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/f0510cfe51c1560c0dcf894b4394016c3b5dd82f))
+* **pipeline:** exclude temporally unsafe audience features ([b3cff01](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/b3cff012ba0776293c4d9724865f24a11ee8ce48))
+
 ## [1.26.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.26.0...v1.26.1) (2026-08-13)
 
 
