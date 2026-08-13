@@ -50,6 +50,7 @@ POST_FEATURES_TABLE = "lakehouse.silver.post_features"
 ENGAGEMENT_SNAPSHOTS_TABLE = "lakehouse.silver.engagement_snapshots"
 TRAINING_EXAMPLES_TABLE = "lakehouse.gold.training_examples"
 DATASET_MANIFESTS_TABLE = "lakehouse.gold.dataset_manifests"
+DATASET_BUILDER_REVISION = "pinned-snapshot-lineage-v1"
 
 METRICS_BY_SOURCE = {
     "youtube": ("view_count", "like_count", "comment_count"),
@@ -132,6 +133,21 @@ def _parser() -> argparse.ArgumentParser:
         default=int(_env("ML_MIN_TEXT_CHARS", "3")),
     )
     parser.add_argument(
+        "--post-features-snapshot-id",
+        type=int,
+        default=int(_env("ML_POST_FEATURES_SNAPSHOT_ID", "0")),
+        help="Exact post_features Iceberg snapshot; 0 resolves and locks the latest snapshot once.",
+    )
+    parser.add_argument(
+        "--engagement-snapshots-snapshot-id",
+        type=int,
+        default=int(_env("ML_ENGAGEMENT_SNAPSHOTS_SNAPSHOT_ID", "0")),
+        help=(
+            "Exact engagement_snapshots Iceberg snapshot; 0 resolves and locks the latest "
+            "snapshot once."
+        ),
+    )
+    parser.add_argument(
         "--export-root",
         type=Path,
         default=Path(_env("ML_DATASET_EXPORT_ROOT", "/opt/spark/balancing/ml")),
@@ -156,6 +172,16 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--viral-quantile must be between zero and one")
     if args.min_text_chars < 1:
         raise ValueError("--min-text-chars must be greater than zero")
+    requested_snapshots = (
+        args.post_features_snapshot_id,
+        args.engagement_snapshots_snapshot_id,
+    )
+    if any(value < 0 for value in requested_snapshots):
+        raise ValueError("Iceberg snapshot IDs must be zero or positive")
+    if bool(requested_snapshots[0]) != bool(requested_snapshots[1]):
+        raise ValueError("Both source snapshot IDs must be supplied together")
+    if args.dataset_version != "auto" and any(requested_snapshots):
+        raise ValueError("Explicit source snapshots require --dataset-version auto")
 
 
 def _latest_snapshot_id(spark: SparkSession, table: str) -> int:
@@ -618,10 +644,13 @@ def main(argv: list[str] | None = None) -> int:
             )
     else:
         snapshots = {
-            POST_FEATURES_TABLE: _latest_snapshot_id(spark, POST_FEATURES_TABLE),
-            ENGAGEMENT_SNAPSHOTS_TABLE: _latest_snapshot_id(spark, ENGAGEMENT_SNAPSHOTS_TABLE),
+            POST_FEATURES_TABLE: args.post_features_snapshot_id
+            or _latest_snapshot_id(spark, POST_FEATURES_TABLE),
+            ENGAGEMENT_SNAPSHOTS_TABLE: args.engagement_snapshots_snapshot_id
+            or _latest_snapshot_id(spark, ENGAGEMENT_SNAPSHOTS_TABLE),
         }
         filters = {
+            "dataset_builder_revision": DATASET_BUILDER_REVISION,
             "label_horizon_hours": args.label_horizon_hours,
             "label_strategy": "coverage_aware_source_rank_v1",
             "label_tolerance_hours": args.label_tolerance_hours,

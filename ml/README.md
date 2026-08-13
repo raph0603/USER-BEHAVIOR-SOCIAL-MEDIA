@@ -6,7 +6,10 @@ Predicts whether a social-media post (EV domain) is likely to go **viral**, and 
 ## Pipeline
 
 ```
-filtered_events.csv (exported from the Silver lakehouse)
+Iceberg post_features + engagement_snapshots (pinned snapshot IDs)
+        │
+        ▼  maintenance/build_training_dataset.py
+versioned Parquet dataset + validated lineage manifest
         │
         ▼  preprocess/build_dataset.py
   clean text → unified content features + PER-SOURCE viral label + source one-hot
@@ -72,6 +75,11 @@ $env:PYTHONIOENCODING='utf-8'            # Windows: avoid console encoding issue
 & ".\ml\.venv\Scripts\python.exe" ml/serve/score_batch.py --input posts.csv --output out.jsonl
 ```
 
+The model bundle, its `.lineage.json` sidecar, evaluation JSON, and generated report
+all retain the same dataset fingerprint and Iceberg snapshot IDs. See
+[`docs/REPRODUCIBLE_TRAINING.md`](../docs/REPRODUCIBLE_TRAINING.md) for snapshot replay
+and the reporting contract.
+
 Reuse in code: `from serve.explain_viral import explain_post; explain_post(text, source)`.
 
 ## Tests
@@ -127,24 +135,23 @@ on this machine yet.
 > per-feature weights, the decision table, how each figure was reached, and what the numbers
 > do not say.
 
-3798 labelled rows (2928 train / 870 test), 52 features, 2367 rows with a known channel
-audience across all three sources. Every number below comes from
-`train/verify_answers.py`, which scores exactly what serving returns (calibrated
-probability, bundled threshold) and reports a 95% bootstrap CI.
+The current official run contains 197 labelled rows from pinned Iceberg snapshots and
+uses an author-grouped 41-row test split. Every number below comes from
+`train/verify_answers.py`, which scores exactly what serving returns and embeds the
+dataset version in the report and calibration figure.
 
 | group | n | ROC-AUC (95% CI) | PR-AUC (95% CI) | ECE |
 |---|---|---|---|---|
-| overall | 870 | 0.793 [0.759, 0.824] | 0.603 [0.534, 0.666] | 0.016 |
-| youtube | 401 | 0.881 [0.840, 0.918] | 0.751 [0.669, 0.825] | 0.037 |
-| x | 150 | 0.750 [0.663, 0.827] | 0.508 [0.366, 0.658] | 0.060 |
-| reddit | 319 | 0.669 [0.601, 0.731] | 0.429 [0.339, 0.542] | 0.025 |
+| overall | 41 | 0.605 [0.075, 1.000] | 0.254 [0.027, 1.000] | 0.211 |
+| youtube | 6 | 0.200 [0.000, 0.667] | 0.200 [0.167, 0.667] | 0.112 |
+| x | 35 | 0.879 [0.706, 1.000] | 0.361 [0.091, 1.000] | 0.229 |
 
 - Role classifier: **macro-F1 ~0.50** over 12 roles.
 - Content model: **TF-IDF (0.499) > BERT (0.428)** at this data size → keep TF-IDF for now.
-- Every source clears random (Reddit's CI lower bound is 0.601); X's interval is wide
-  because it only has 150 test rows.
-- `chan_log_audience` and `content_score` are the top two SHAP features, close together —
-  the model reads the post, not just the channel.
+- The official sample is too small for strong claims: overall and per-source intervals
+  are wide, and Reddit has no eligible row in this pinned dataset version.
+- Dataset version `dataset-v2-e8cd709ec8600bded321` is bound to the model and figures;
+  full snapshot IDs and artifact digests are in `ml/results/`.
 
 Two earlier numbers in this file were wrong and are worth knowing about, because they
 still circulate: an overall PR-AUC of **0.773** and a YouTube ROC-AUC of **0.931**. Both

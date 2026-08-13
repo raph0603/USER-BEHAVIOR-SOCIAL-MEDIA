@@ -1,0 +1,32 @@
+{
+  "artifact_file": "stage1_multisource.joblib",
+  "artifact_sha256": "009894c5b0dac69d22507210ab5d13692dbac43e6c9fdb23a31000bbee2510d9",
+  "artifact_type": "stage1_viral_model",
+  "created_at": "2026-08-13T03:38:03.309794+00:00",
+  "dataset_lineage": {
+    "dataset_fingerprint": "e8cd709ec8600bded321b6d1dcc1107c4c059ab241d495a933e45bcf7f9e8f67",
+    "dataset_version": "dataset-v2-e8cd709ec8600bded321",
+    "example_count": 197,
+    "filters": {
+      "dataset_builder_revision": "pinned-snapshot-lineage-v1",
+      "label_horizon_hours": 24,
+      "label_strategy": "coverage_aware_source_rank_v1",
+      "label_tolerance_hours": 24,
+      "min_text_chars": 3,
+      "required_observed_metrics": 1,
+      "viral_quantile": 0.75
+    },
+    "iceberg_snapshot_ids": {
+      "lakehouse.silver.engagement_snapshots": 4006086415507010724,
+      "lakehouse.silver.post_features": 8259184521274725029
+    },
+    "manifest_sha256": "3946af67b8446290ccd2add7105b1b01200452cf3467c3d09e64986dfe227051",
+    "period_end": "2026-08-03 14:28:47",
+    "period_start": "2026-07-29 02:06:32",
+    "schema_version": "v2",
+    "source_tables": [
+      "lakehouse.silver.engagement_snapshots",
+      "lakehouse.silver.post_features"
+    ]
+  }
+}
