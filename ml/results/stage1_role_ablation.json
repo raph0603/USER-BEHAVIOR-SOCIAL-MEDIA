@@ -28,41 +28,61 @@
     "training_snapshot_id": 6550655688150864602,
     "training_table": "lakehouse.gold.training_examples"
   },
-  "evaluation": {
-    "overall": {
-      "decision_threshold": 0.26,
-      "f1": 0.154,
-      "n": 41,
-      "pr_auc": 0.193,
-      "roc_auc": 0.623,
-      "viral_rate": 0.073
-    },
-    "per_source": {
-      "x": {
-        "decision_threshold": 0.26,
-        "f1": 0.19,
-        "n": 35,
-        "pr_auc": 0.244,
-        "roc_auc": 0.803,
-        "viral_rate": 0.057
-      },
-      "youtube": {
-        "decision_threshold": 0.26,
-        "f1": 0.0,
-        "n": 6,
-        "pr_auc": 0.2,
-        "roc_auc": 0.2,
-        "viral_rate": 0.167
-      }
-    },
+  "delta": {
+    "brier": 0.001893,
+    "brier_ci95": [
+      -0.003489,
+      0.006896
+    ],
+    "definition": "without_roles_minus_with_roles",
+    "pr_auc": 0.078775,
+    "pr_auc_ci95": [
+      -0.010689,
+      0.368355
+    ],
+    "roc_auc": 0.035088,
+    "roc_auc_ci95": [
+      -0.15,
+      0.25
+    ]
+  },
+  "methodology": {
+    "controlled_difference": "presence of role_* features only",
+    "paired_bootstrap_iterations": 2000,
     "seed": 42,
     "split": "GroupShuffleSplit by author_hash",
     "test_size": 0.2
   },
-  "generated_at": "2026-08-13T04:24:59.962568+00:00",
-  "model_artifact": {
-    "audience_features_included": false,
+  "reference_model": {
     "file": "stage1_multisource.joblib",
     "sha256": "f3f0b029aad54933d8dbcea192de35d9689c79e78149cb5235387ec943064093"
+  },
+  "role_feature_contract": {
+    "human_gold_validated": false,
+    "intended_use": "qualitative_feature_level_interpretability",
+    "label_provenance": "automated_heuristic_silver",
+    "linguistic_claims_permitted": false,
+    "metric_interpretation": "agreement_with_held_out_silver_labels",
+    "status": "exploratory"
+  },
+  "with_roles": {
+    "brier": 0.110053,
+    "decision_threshold": 0.26,
+    "f1": 0.153846,
+    "feature_count": 47,
+    "n": 41,
+    "pr_auc": 0.192696,
+    "roc_auc": 0.622807,
+    "role_feature_count": 26
+  },
+  "without_roles": {
+    "brier": 0.111946,
+    "decision_threshold": 0.31,
+    "f1": 0.25,
+    "feature_count": 21,
+    "n": 41,
+    "pr_auc": 0.271471,
+    "roc_auc": 0.657895,
+    "role_feature_count": 0
   }
 }

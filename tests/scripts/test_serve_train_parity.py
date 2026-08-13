@@ -1,9 +1,8 @@
-"""Serving must build the feature row the way training built it.
+"""Serving must preserve the official pre-publication feature contract.
 
-The two drifted apart once already: training switched an unknown audience to NaN while
-`explain_viral` kept substituting 0, so every request that did not carry an audience was
-scored as an author with no followers. The model had never seen a 0 and read it as a real,
-tiny audience -- one sample dropped from 0.545 to 0.045 while reporting 91% confidence.
+Official models exclude audience because the collected value is not guaranteed to predate
+publication. The compatibility API can still accept the field, but it must not affect the
+feature row or prediction until timestamped reputation history is available.
 
 These tests need the trained artifacts, which are gitignored, so they skip when the model
 is absent (CI) and guard the developer loop, which is where the drift happened.
@@ -13,7 +12,7 @@ import sys
 import unittest
 from pathlib import Path
 
-import numpy as np
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 ML_ROOT = ROOT / "ml"
@@ -23,7 +22,7 @@ if str(ML_ROOT) not in sys.path:
 
 
 @unittest.skipUnless(MODEL_PATH.exists(), f"trained model not available at {MODEL_PATH}")
-class AudienceParityTests(unittest.TestCase):
+class TemporalLeakageGuardTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from serve.explain_viral import ViralExplainer
@@ -34,33 +33,24 @@ class AudienceParityTests(unittest.TestCase):
     def _row(self, audience):
         return self.explainer._feature_row(self.text, "x", audience)
 
-    def test_an_unknown_audience_is_missing_not_zero(self):
-        row = self._row(None)
+    def test_official_model_contains_no_audience_feature(self):
+        self.assertFalse(any(name.startswith("chan_") for name in self.explainer.features))
 
-        self.assertTrue(np.isnan(row.loc[0, "chan_log_audience"]))
-        self.assertEqual(row.loc[0, "chan_has_audience"], 0.0)
-        self.assertEqual(row.loc[0, "chan_audience_is_zero"], 0.0)
+    def test_compatibility_audience_argument_cannot_change_official_features(self):
+        without_audience = self._row(None)
+        observed_zero = self._row(0)
+        later_audience = self._row(1000)
 
-    def test_an_observed_zero_is_a_real_audience_of_zero(self):
-        row = self._row(0)
+        pd.testing.assert_frame_equal(without_audience, observed_zero)
+        pd.testing.assert_frame_equal(without_audience, later_audience)
 
-        self.assertEqual(row.loc[0, "chan_log_audience"], 0.0)
-        self.assertEqual(row.loc[0, "chan_has_audience"], 1.0)
-        self.assertEqual(row.loc[0, "chan_audience_is_zero"], 1.0)
+    def test_compatibility_audience_argument_cannot_change_official_score(self):
+        scores = {
+            self.explainer.explain(self.text, "x", audience)["viral_score"]
+            for audience in (None, 0, 1000)
+        }
 
-    def test_a_known_audience_is_log_scaled_like_training(self):
-        row = self._row(1000)
-
-        self.assertAlmostEqual(row.loc[0, "chan_log_audience"], float(np.log1p(1000)))
-        self.assertEqual(row.loc[0, "chan_audience_is_zero"], 0.0)
-
-    def test_reddit_ignores_community_size_as_author_audience(self):
-        row = self.explainer._feature_row(self.text, "reddit", 100_000)
-
-        self.assertTrue(np.isnan(row.loc[0, "chan_log_audience"]))
-        self.assertEqual(row.loc[0, "chan_has_audience"], 0.0)
-        self.assertEqual(row.loc[0, "chan_audience_available"], 0.0)
-        self.assertEqual(row.loc[0, "chan_audience_is_zero"], 0.0)
+        self.assertEqual(len(scores), 1)
 
     def test_every_training_feature_is_produced(self):
         row = self._row(None)

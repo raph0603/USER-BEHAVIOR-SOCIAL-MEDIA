@@ -95,7 +95,7 @@ def _label_for(feature: str) -> str:
             role = feature[len(prefix):]
             name = _ROLE_LABELS.get(role, role)
             kind = "Count of" if prefix == "role_n_" else "Ratio of"
-            return f"{kind} {name}"
+            return f"Exploratory role cue: {kind.lower()} {name}"
     return feature
 
 
@@ -159,12 +159,8 @@ class ViralExplainer:
     def _suggestions(self, X: pd.DataFrame, is_viral: int) -> list[str]:
         row = X.iloc[0]
         tips = []
-        if row.get("role_n_cta", 0) == 0:
-            tips.append("Add a clear call to action (CTA).")
-        if row.get("role_n_hook", 0) == 0:
-            tips.append("Open with an attention-grabbing hook.")
-        if row.get("role_n_proof", 0) == 0:
-            tips.append("Add concrete numbers or proof.")
+        # Role assignments are exploratory heuristic signals. Keep them visible in
+        # TreeSHAP factors, but do not turn an unvalidated absence into prescriptive advice.
         if row.get("cognitive_friction_score", 0) >= 0.5:
             tips.append("Lower reading difficulty: shorter sentences, less jargon.")
         return tips[:3]

@@ -213,6 +213,7 @@ def build_markdown(
             f"- Dataset version: `{lineage['dataset_version']}`",
             f"- Dataset fingerprint: `{lineage['dataset_fingerprint']}`",
             f"- Manifest SHA-256: `{lineage['manifest_sha256']}`",
+            f"- Audience policy: `{lineage['filters']['audience_feature_policy']}`",
             (
                 f"- Training input: `{lineage['training_table']}` at Gold snapshot "
                 f"`{lineage['training_snapshot_id']}`"

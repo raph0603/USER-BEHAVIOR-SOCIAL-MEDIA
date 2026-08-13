@@ -50,7 +50,8 @@ POST_FEATURES_TABLE = "lakehouse.silver.post_features"
 ENGAGEMENT_SNAPSHOTS_TABLE = "lakehouse.silver.engagement_snapshots"
 TRAINING_EXAMPLES_TABLE = "lakehouse.gold.training_examples"
 DATASET_MANIFESTS_TABLE = "lakehouse.gold.dataset_manifests"
-DATASET_BUILDER_REVISION = "gold-pinned-snapshot-lineage-v2"
+DATASET_BUILDER_REVISION = "prepublication-feature-contract-v3"
+AUDIENCE_FEATURE_POLICY = "excluded_no_prepublication_history"
 
 METRICS_BY_SOURCE = {
     "youtube": ("view_count", "like_count", "comment_count"),
@@ -432,7 +433,13 @@ def build_training_examples(
         ),
     )
     observed, score_total, expected = _metric_expressions(selected)
-    audience_count, audience_available = _audience_expressions(selected)
+    # The collected audience values are not guaranteed to predate publication.
+    # A viral post may already have increased them by collection time, so exposing
+    # them to an official model would leak future outcome information. Keep the Gold
+    # contract nullable until a timestamped reputation history can satisfy
+    # audience_observed_at <= event_ts.
+    audience_count = lit(None).cast("bigint")
+    audience_available = lit(False)
     label_horizon = VALID_HORIZONS[label_horizon_hours]
     scored = (
         selected.withColumn("engagement_observed_metrics", observed.cast("int"))
@@ -677,6 +684,7 @@ def main(argv: list[str] | None = None) -> int:
             or _latest_snapshot_id(spark, ENGAGEMENT_SNAPSHOTS_TABLE),
         }
         filters = {
+            "audience_feature_policy": AUDIENCE_FEATURE_POLICY,
             "dataset_builder_revision": DATASET_BUILDER_REVISION,
             "label_horizon_hours": args.label_horizon_hours,
             "label_strategy": "coverage_aware_source_rank_v1",
