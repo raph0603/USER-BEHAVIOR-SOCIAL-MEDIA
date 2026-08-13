@@ -1,10 +1,11 @@
 {
   "dataset_lineage": {
-    "dataset_fingerprint": "52ef5b2d5b113e3a377e2736c979ef9169a95664b07f1b17fa93fe9e92ba3267",
-    "dataset_version": "dataset-v2-52ef5b2d5b113e3a377e",
+    "dataset_fingerprint": "dd7ce6e598d3ebae6cd774e9c52c47d68f33e640c589b23d15afd1fc958bad5a",
+    "dataset_version": "dataset-v2-dd7ce6e598d3ebae6cd7",
     "example_count": 197,
     "filters": {
-      "dataset_builder_revision": "gold-pinned-snapshot-lineage-v2",
+      "audience_feature_policy": "excluded_no_prepublication_history",
+      "dataset_builder_revision": "prepublication-feature-contract-v3",
       "label_horizon_hours": 24,
       "label_strategy": "coverage_aware_source_rank_v1",
       "label_tolerance_hours": 24,
@@ -16,7 +17,7 @@
       "lakehouse.silver.engagement_snapshots": 4006086415507010724,
       "lakehouse.silver.post_features": 8259184521274725029
     },
-    "manifest_sha256": "760398554b2ac9337a4b1433cd62bdc44be5ce6fa747ee52db98303144e038b2",
+    "manifest_sha256": "c7ba10aaf98f4fb2b06394d1b337e4e0d69feacc1505b6c6c167b9e345afbfea",
     "period_end": "2026-08-03 14:28:47",
     "period_start": "2026-07-29 02:06:32",
     "schema_version": "v2",
@@ -24,29 +25,29 @@
       "lakehouse.silver.engagement_snapshots",
       "lakehouse.silver.post_features"
     ],
-    "training_snapshot_id": 4034905545805767069,
+    "training_snapshot_id": 6550655688150864602,
     "training_table": "lakehouse.gold.training_examples"
   },
   "evaluation": {
     "overall": {
-      "decision_threshold": 0.33,
-      "f1": 0.2,
+      "decision_threshold": 0.26,
+      "f1": 0.154,
       "n": 41,
-      "pr_auc": 0.196,
+      "pr_auc": 0.193,
       "roc_auc": 0.623,
       "viral_rate": 0.073
     },
     "per_source": {
       "x": {
-        "decision_threshold": 0.33,
-        "f1": 0.222,
+        "decision_threshold": 0.26,
+        "f1": 0.19,
         "n": 35,
-        "pr_auc": 0.25,
-        "roc_auc": 0.818,
+        "pr_auc": 0.244,
+        "roc_auc": 0.803,
         "viral_rate": 0.057
       },
       "youtube": {
-        "decision_threshold": 0.33,
+        "decision_threshold": 0.26,
         "f1": 0.0,
         "n": 6,
         "pr_auc": 0.2,
@@ -58,9 +59,10 @@
     "split": "GroupShuffleSplit by author_hash",
     "test_size": 0.2
   },
-  "generated_at": "2026-08-13T04:04:10.920399+00:00",
+  "generated_at": "2026-08-13T04:24:59.962568+00:00",
   "model_artifact": {
+    "audience_features_included": false,
     "file": "stage1_multisource.joblib",
-    "sha256": "46695d21337652a96e97e640610df53232964633158af9c5dedc9a5a6f76344d"
+    "sha256": "f3f0b029aad54933d8dbcea192de35d9689c79e78149cb5235387ec943064093"
   }
 }

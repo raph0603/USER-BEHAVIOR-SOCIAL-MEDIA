@@ -109,6 +109,9 @@ def main() -> None:
         "model_artifact": {
             "file": args.model.name,
             "sha256": hashlib.sha256(args.model.read_bytes()).hexdigest(),
+            "audience_features_included": bool(
+                bundle.get("audience_features_included", True)
+            ),
         },
         "evaluation": {
             "split": "GroupShuffleSplit by author_hash",

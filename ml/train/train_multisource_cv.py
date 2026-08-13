@@ -328,7 +328,7 @@ def main() -> None:
     groups = author_groups(df)
     strata = source_class_strata(df)
     folds = stratified_source_folds(df, n_splits=args.folds, seed=args.seed)
-    base_features = feature_columns(df)
+    base_features = feature_columns(df, include_audience=dataset_lineage is None)
     numeric = df[base_features].astype(float)
     text = df[TEXT].astype(str)
 
@@ -479,6 +479,7 @@ def main() -> None:
             "features": [*base_features, "content_score"],
             "dataset_version": args.dataset_version,
             "dataset_lineage": dataset_lineage,
+            "audience_features_included": dataset_lineage is None,
             "validation": "StratifiedGroupKFold(source × viral)",
             "validation_folds": args.folds,
             "source_balance": (
@@ -503,6 +504,7 @@ def main() -> None:
                     "artifact_sha256": hashlib.sha256(args.model.read_bytes()).hexdigest(),
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "dataset_lineage": dataset_lineage,
+                    "audience_features_included": False,
                 },
                 indent=2,
                 sort_keys=True,
@@ -516,6 +518,7 @@ def main() -> None:
         "balanced_dataset": str(args.balanced_data),
         "dataset_version": args.dataset_version,
         "dataset_lineage": dataset_lineage,
+        "audience_features_included": dataset_lineage is None,
         "model_artifact": {
             "file": args.model.name,
             "sha256": hashlib.sha256(args.model.read_bytes()).hexdigest(),

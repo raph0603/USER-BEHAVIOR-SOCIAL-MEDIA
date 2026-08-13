@@ -11,6 +11,7 @@ from typing import Any
 
 DATASET_VERSION_PATTERN = re.compile(r"^dataset-(?P<schema>v\d+)-(?P<prefix>[a-f0-9]{20})$")
 TRAINING_EXAMPLES_TABLE = "lakehouse.gold.training_examples"
+AUDIENCE_FEATURE_POLICY = "excluded_no_prepublication_history"
 
 
 def _json_object(manifest: dict[str, Any], field: str) -> dict[str, Any]:
@@ -70,6 +71,11 @@ def load_dataset_lineage(
 
     snapshots = _json_object(manifest, "iceberg_snapshots_json")
     filters = _json_object(manifest, "filters_json")
+    if filters.get("audience_feature_policy") != AUDIENCE_FEATURE_POLICY:
+        raise ValueError(
+            "Official manifests must exclude audience features until timestamped "
+            "pre-publication reputation history is available"
+        )
     source_tables = _json_object(manifest, "source_tables_json")
     normalized_snapshots: dict[str, int] = {}
     for table, snapshot_id in snapshots.items():
