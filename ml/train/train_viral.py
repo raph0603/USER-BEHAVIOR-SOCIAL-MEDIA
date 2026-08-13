@@ -44,6 +44,7 @@ if str(ML_ROOT) not in sys.path:
 
 from features.text_content import build_content_model
 from dataset_lineage import load_dataset_lineage, model_lineage_path
+from role_contract import role_feature_contract
 
 DEFAULT_DATA = ML_ROOT / "data" / "train_dataset.parquet"
 DEFAULT_MODEL = ML_ROOT / "models" / "stage1_multisource.joblib"
@@ -78,13 +79,19 @@ def validate_dataset_version(df: pd.DataFrame, expected: str | None) -> None:
         raise ValueError(f"Expected exactly dataset version {expected}, received {versions}")
 
 
-def feature_columns(df: pd.DataFrame, *, include_audience: bool = True) -> list[str]:
-    prefixes = ("src_", "role_", "topic_", "chan_") if include_audience else (
-        "src_",
-        "role_",
-        "topic_",
-    )
-    extra = sorted(c for c in df.columns if c.startswith(prefixes))
+def feature_columns(
+    df: pd.DataFrame,
+    *,
+    include_audience: bool = True,
+    include_roles: bool = True,
+) -> list[str]:
+    prefixes = ["src_", "topic_"]
+    if include_roles:
+        prefixes.append("role_")
+    if include_audience:
+        prefixes.append("chan_")
+    prefixes_tuple = tuple(prefixes)
+    extra = sorted(c for c in df.columns if c.startswith(prefixes_tuple))
     return CONTENT_FEATURES + extra
 
 
@@ -301,6 +308,7 @@ def main() -> None:
         "dataset_version": args.dataset_version,
         "dataset_lineage": dataset_lineage,
         "audience_features_included": dataset_lineage is None,
+        "role_feature_contract": role_feature_contract(),
         **content_bundle,
     }
     joblib.dump(bundle, args.model)
@@ -312,6 +320,7 @@ def main() -> None:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "dataset_lineage": dataset_lineage,
             "audience_features_included": False,
+            "role_feature_contract": role_feature_contract(),
         }
         lineage_path = model_lineage_path(args.model)
         lineage_path.write_text(

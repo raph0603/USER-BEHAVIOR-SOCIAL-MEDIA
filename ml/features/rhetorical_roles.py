@@ -1,9 +1,14 @@
-"""Per-post rhetorical-role features for the viral model.
+"""Exploratory per-post rhetorical-role features for the viral model.
 
 Segments a post, classifies each segment's marketing role with the trained
 rhetorical_role model, then aggregates to post-level features: count and ratio
-per role, number of segments, and role diversity. Pure function of the text, so
-it is safe to use at both train and serve time (no engagement leakage).
+per role, number of segments, and role diversity. These human-readable signals
+support qualitative feature-level interpretation through TreeSHAP. They are not
+validated linguistic classifications: the source labels are automated heuristic
+silver labels with no independently human-verified gold set.
+
+The features are a pure function of the text, so they are safe to use at both
+train and serve time (no engagement leakage).
 
 If the role model is missing the features are skipped with a warning, so the
 pipeline still runs without the annotation artifact.

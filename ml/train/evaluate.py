@@ -112,6 +112,7 @@ def main() -> None:
             "audience_features_included": bool(
                 bundle.get("audience_features_included", True)
             ),
+            "role_feature_contract": bundle.get("role_feature_contract"),
         },
         "evaluation": {
             "split": "GroupShuffleSplit by author_hash",

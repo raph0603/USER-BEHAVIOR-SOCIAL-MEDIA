@@ -91,7 +91,11 @@ def section_roles(df: pd.DataFrame) -> str:
     total_seg = float(df["role_n_segments"].sum()) or 1.0
     rows = sorted(((c.replace("role_n_", ""), int(df[c].sum())) for c in role_cols),
                   key=lambda x: -x[1])
-    lines = ["## 2. Marketing-role distribution (over all segments)",
+    lines = [
+             "## 2. Exploratory marketing-role distribution (over all segments)",
+             "Automated heuristic silver labels; no independently human-validated gold set. "
+             "Use these dimensions only as qualitative TreeSHAP interpretation cues.",
+             "",
              "| role | segments | % |", "|---|---|---|",
              *[f"| {role} | {n} | {n / total_seg:.1%} |" for role, n in rows]]
     return "\n".join(lines)
