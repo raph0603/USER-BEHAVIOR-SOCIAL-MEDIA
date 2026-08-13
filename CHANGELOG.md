@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.26.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.26.0...v1.26.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* **pipeline:** bind artifacts to iceberg snapshots ([6be62ac](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/6be62aca344a0e5afdd66fd2b500188a39b2ca11))
+* **pipeline:** bind training artifacts to pinned iceberg snapshots ([38bbe71](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/38bbe712023e7d8fdec1521014f52f6020fee15b))
+* **pipeline:** train from pinned gold snapshot ([32630f4](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/32630f44664108d1a5f0d89cc498f128f786a9eb))
+
 ## [1.26.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.25.0...v1.26.0) (2026-08-09)
 
 
