@@ -198,6 +198,41 @@ class AudienceFeatureTests(unittest.TestCase):
 
 
 class OfficialTrainingInputTests(unittest.TestCase):
+    def _write_manifest(self, root: Path, *, relative_path: str | None = None):
+        identity = dataset_manifest.DatasetIdentity(
+            schema_version="v2",
+            source_snapshots={
+                "lakehouse.silver.post_features": 123,
+                "lakehouse.silver.engagement_snapshots": 456,
+            },
+            filters={"label_horizon_hours": 24, "viral_quantile": 0.75},
+        )
+        dataset_path = root / "datasets" / identity.dataset_version
+        dataset_path.mkdir(parents=True)
+        manifest_path = root / "runs" / "run.json"
+        manifest_path.parent.mkdir()
+        payload = {
+            "dataset_version": identity.dataset_version,
+            "schema_version": identity.schema_version,
+            "dataset_fingerprint": identity.fingerprint,
+            "source_tables_json": dataset_manifest.canonical_json(
+                {"tables": sorted(identity.source_snapshots)}
+            ),
+            "iceberg_snapshots_json": dataset_manifest.canonical_json(
+                dict(identity.source_snapshots)
+            ),
+            "filters_json": dataset_manifest.canonical_json(dict(identity.filters)),
+            "dataset_relative_path": relative_path
+            or f"../datasets/{identity.dataset_version}",
+            "format": "parquet",
+            "official_input": True,
+            "training_table": "lakehouse.gold.training_examples",
+            "training_snapshot_id": 789,
+            "example_count": 1,
+        }
+        manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+        return manifest_path, dataset_path, identity, payload
+
     def test_builder_accepts_lossless_silver_column_names(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "silver.csv"
@@ -219,27 +254,12 @@ class OfficialTrainingInputTests(unittest.TestCase):
     def test_manifest_resolves_one_exact_relative_parquet_dataset(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            dataset_path = root / "datasets" / "dataset-v2-1234567890abcdef1234"
-            dataset_path.mkdir(parents=True)
-            manifest_path = root / "runs" / "run.json"
-            manifest_path.parent.mkdir()
-            manifest_path.write_text(
-                json.dumps(
-                    {
-                        "dataset_version": "dataset-v2-1234567890abcdef1234",
-                        "dataset_fingerprint": "1234567890abcdef1234" + "a" * 44,
-                        "dataset_relative_path": "../datasets/dataset-v2-1234567890abcdef1234",
-                        "format": "parquet",
-                        "official_input": True,
-                    }
-                ),
-                encoding="utf-8",
-            )
+            manifest_path, dataset_path, identity, _ = self._write_manifest(root)
 
             resolved, version = RUN_PIPELINE.load_lakehouse_manifest(manifest_path)
 
             self.assertEqual(resolved, dataset_path.resolve())
-            self.assertEqual(version, "dataset-v2-1234567890abcdef1234")
+            self.assertEqual(version, identity.dataset_version)
 
     def test_manifest_rejects_invalid_fingerprint_and_path_escape(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -247,15 +267,8 @@ class OfficialTrainingInputTests(unittest.TestCase):
             root = temporary_root / "export"
             outside = temporary_root / "outside-dataset"
             outside.mkdir(parents=True)
-            manifest_path = root / "runs" / "run.json"
-            manifest_path.parent.mkdir(parents=True)
-            payload = {
-                "dataset_version": "dataset-v2-1234567890abcdef1234",
-                "dataset_fingerprint": "not-a-sha256",
-                "dataset_relative_path": str(outside),
-                "format": "parquet",
-                "official_input": True,
-            }
+            manifest_path, _, identity, payload = self._write_manifest(root)
+            payload["dataset_fingerprint"] = "not-a-sha256"
             manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "SHA-256"):
@@ -266,7 +279,7 @@ class OfficialTrainingInputTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not match"):
                 RUN_PIPELINE.load_lakehouse_manifest(manifest_path)
 
-            payload["dataset_fingerprint"] = "1234567890abcdef1234" + "a" * 44
+            payload["dataset_fingerprint"] = identity.fingerprint
             payload["dataset_relative_path"] = "../../outside-dataset"
             manifest_path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "escapes the export root"):
@@ -308,6 +321,15 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn("dataset_relative_path", source)
         self.assertIn("_feature_rank", source)
         self.assertIn("_snapshot_tiebreaker", source)
+        self.assertIn("DATASET_BUILDER_REVISION", source)
+        self.assertIn('"dataset_builder_revision"', source)
+        self.assertIn('"training_snapshot_id": training_snapshot_id', source)
+        self.assertIn("_read_snapshot(\n            spark,\n            TRAINING_EXAMPLES_TABLE", source)
+        self.assertIn('examples.orderBy("example_id")', source)
+        self.assertIn(
+            "Exporting an existing dataset version requires --training-examples-snapshot-id",
+            source,
+        )
         self.assertIn("actual_count != expected_count", source)
         self.assertIn("DATASET_VERSION_PATTERN", source)
         self.assertNotIn("read.csv", source.lower())
@@ -321,12 +343,28 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn("build_training_dataset.py", source)
         self.assertIn("--dataset-version", source)
         self.assertIn("--lakehouse-manifest", source)
+        self.assertIn("--post-features-snapshot-id", source)
+        self.assertIn("--engagement-snapshots-snapshot-id", source)
+        self.assertIn("/workspace/data/lakehouse-ml/ml/runs/", source)
         self.assertIn("initialize_services >> build_lakehouse_dataset >> train_stage1", source)
         run_pipeline = (ROOT / "ml" / "run_pipeline.py").read_text(encoding="utf-8")
         self.assertLess(
             run_pipeline.index("Build dataset"), run_pipeline.index("Train role classifier")
         )
         self.assertNotIn("filtered_events.csv", source)
+
+    def test_model_metrics_and_reports_preserve_the_snapshot_lineage(self):
+        train = (ROOT / "ml" / "train" / "train_viral.py").read_text(encoding="utf-8")
+        evaluation = (ROOT / "ml" / "train" / "evaluate.py").read_text(encoding="utf-8")
+        report = (ROOT / "ml" / "report.py").read_text(encoding="utf-8")
+        lineage = (ROOT / "ml" / "dataset_lineage.py").read_text(encoding="utf-8")
+
+        self.assertIn('"dataset_lineage": dataset_lineage', train)
+        self.assertIn("model_lineage_path", train)
+        self.assertIn('"iceberg_snapshot_ids"', lineage)
+        self.assertIn('"training_snapshot_id"', lineage)
+        self.assertIn("dataset_lineage", evaluation)
+        self.assertIn("pinned snapshot ID", report)
 
     def test_balancing_preserves_unknown_and_known_zero_bands(self):
         source = (ROOT / "spark" / "jobs" / "maintenance" / "build_balanced_dataset.py").read_text(

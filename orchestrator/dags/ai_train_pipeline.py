@@ -45,6 +45,18 @@ with DAG(
             minimum=0,
             title="Maximum wait after the target horizon",
         ),
+        "post_features_snapshot_id": Param(
+            0,
+            type="integer",
+            minimum=0,
+            title="Pinned post_features snapshot ID (0 resolves latest once)",
+        ),
+        "engagement_snapshots_snapshot_id": Param(
+            0,
+            type="integer",
+            minimum=0,
+            title="Pinned engagement_snapshots snapshot ID (0 resolves latest once)",
+        ),
     },
     tags=["ai", "stage1", "lakehouse"],
 ) as dag:
@@ -70,6 +82,8 @@ with DAG(
           --dataset-version "{{ params.dataset_version }}" \
           --label-horizon-hours {{ params.label_horizon_hours }} \
           --label-tolerance-hours {{ params.label_tolerance_hours }} \
+          --post-features-snapshot-id {{ params.post_features_snapshot_id }} \
+          --engagement-snapshots-snapshot-id {{ params.engagement_snapshots_snapshot_id }} \
           --export-root /opt/spark/balancing/ml \
           --manifest-output "/opt/spark/balancing/ml/runs/{{ ts_nodash }}.json"
         """,
@@ -81,7 +95,7 @@ with DAG(
         bash_command=docker_compose(
             "run --rm ai-trainer python ml/run_pipeline.py "
             "--lakehouse-manifest "
-            '"/workspace/data/lakehouse-ml/runs/{{ ts_nodash }}.json" '
+            '"/workspace/data/lakehouse-ml/ml/runs/{{ ts_nodash }}.json" '
             "--report"
         ),
     )

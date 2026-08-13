@@ -16,12 +16,13 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+from dataset_lineage import load_dataset_lineage
 
 ML_ROOT = Path(__file__).resolve().parents[0]
 PY = sys.executable
@@ -31,6 +32,7 @@ STEPS = [
     ("Train role classifier", ML_ROOT / "train" / "train_roles.py"),
     ("Train viral model", ML_ROOT / "train" / "train_viral.py"),
     ("Evaluate per source", ML_ROOT / "train" / "evaluate.py"),
+    ("Verify performance figures", ML_ROOT / "train" / "verify_answers.py"),
 ]
 
 ENV = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
@@ -103,44 +105,12 @@ def load_lakehouse_manifest(
     *,
     expected_dataset_version: str | None = None,
 ) -> tuple[Path, str]:
-    if not path.is_file():
-        raise FileNotFoundError(f"Lakehouse dataset manifest is missing: {path}")
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(manifest, dict):
-        raise ValueError("Lakehouse dataset manifest must be a JSON object")
-    version = str(manifest.get("dataset_version") or "").strip()
-    fingerprint = str(manifest.get("dataset_fingerprint") or "").strip()
-    relative_path = str(manifest.get("dataset_relative_path") or "").strip()
-    if manifest.get("official_input") is not True:
-        raise ValueError("Manifest is not marked as an official lakehouse input")
-    if not version or not relative_path:
-        raise ValueError("Manifest must contain dataset_version and dataset_relative_path")
-    if not re.fullmatch(r"dataset-v2-[a-f0-9]{20}", version):
-        raise ValueError("Manifest dataset_version has an invalid format")
-    if not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
-        raise ValueError("Manifest dataset_fingerprint must be a SHA-256 hex digest")
-    if version != f"dataset-v2-{fingerprint[:20]}":
-        raise ValueError("Manifest dataset_version does not match dataset_fingerprint")
-    if expected_dataset_version and version != expected_dataset_version:
-        raise ValueError(
-            f"Expected lakehouse dataset {expected_dataset_version}, received {version}"
-        )
-    relative_dataset_path = Path(relative_path)
-    if relative_dataset_path.is_absolute():
-        raise ValueError("Manifest dataset_relative_path must be relative")
-    export_root = (path.parent.parent if path.parent.name == "runs" else path.parent).resolve()
-    dataset_path = (path.parent / relative_dataset_path).resolve()
-    if not dataset_path.is_relative_to(export_root):
-        raise ValueError("Manifest dataset_relative_path escapes the export root")
-    if dataset_path.name != version:
-        raise ValueError("Manifest dataset path does not match dataset_version")
-    if not dataset_path.exists():
-        raise FileNotFoundError(
-            f"Versioned lakehouse dataset is missing for {version}: {dataset_path}"
-        )
-    if str(manifest.get("format") or "").lower() != "parquet":
-        raise ValueError("Official lakehouse training input must use Parquet")
-    return dataset_path, version
+    dataset_path, lineage = load_dataset_lineage(
+        path,
+        expected_dataset_version=expected_dataset_version,
+    )
+    assert dataset_path is not None
+    return dataset_path, str(lineage["dataset_version"])
 
 
 def main() -> None:
@@ -193,14 +163,18 @@ def main() -> None:
         export_from_lakehouse(args.export_out)
         args.manual_csv_input = args.export_out
     if args.lakehouse_manifest:
-        training_input, dataset_version = load_lakehouse_manifest(
+        training_input, dataset_lineage = load_dataset_lineage(
             args.lakehouse_manifest,
             expected_dataset_version=args.dataset_version,
         )
+        assert training_input is not None
+        dataset_version = str(dataset_lineage["dataset_version"])
+        dataset_manifest = args.lakehouse_manifest.resolve()
         official_input = True
     elif args.manual_csv_input:
         training_input = args.manual_csv_input
         dataset_version = None
+        dataset_manifest = None
         official_input = False
         validate_training_input(
             training_input,
@@ -224,10 +198,20 @@ def main() -> None:
             if dataset_version:
                 arguments += ("--dataset-version", dataset_version)
         elif script.name == "train_viral.py" and dataset_version:
-            arguments = ("--dataset-version", dataset_version)
+            arguments = (
+                "--dataset-version",
+                dataset_version,
+                "--dataset-manifest",
+                str(dataset_manifest),
+            )
+        elif script.name in {"evaluate.py", "verify_answers.py"} and dataset_manifest:
+            arguments = ("--dataset-manifest", str(dataset_manifest))
         run(title, script, *arguments)
     if args.report:
-        run("Build report", ML_ROOT / "report.py")
+        report_arguments = (
+            ("--dataset-manifest", str(dataset_manifest)) if dataset_manifest else ()
+        )
+        run("Build report", ML_ROOT / "report.py", *report_arguments)
 
     print(
         "\nPipeline finished. "
