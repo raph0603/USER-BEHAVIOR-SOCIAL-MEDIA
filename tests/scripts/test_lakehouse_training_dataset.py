@@ -48,6 +48,31 @@ def _load_train_version_validator():
 VALIDATE_DATASET_VERSION = _load_train_version_validator()
 
 
+def _load_feature_columns():
+    path = ROOT / "ml" / "train" / "train_viral.py"
+    module = ast.parse(path.read_text(encoding="utf-8"))
+    content_features = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "CONTENT_FEATURES" for target in node.targets)
+    )
+    function = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "feature_columns"
+    )
+    namespace = {"pd": pd}
+    exec(
+        compile(ast.Module(body=[content_features, function], type_ignores=[]), str(path), "exec"),
+        namespace,
+    )
+    return namespace["feature_columns"]
+
+
+FEATURE_COLUMNS = _load_feature_columns()
+
+
 class DatasetManifestTests(unittest.TestCase):
     def _identity(self, snapshots=None, filters=None):
         return dataset_manifest.DatasetIdentity(
@@ -205,7 +230,11 @@ class OfficialTrainingInputTests(unittest.TestCase):
                 "lakehouse.silver.post_features": 123,
                 "lakehouse.silver.engagement_snapshots": 456,
             },
-            filters={"label_horizon_hours": 24, "viral_quantile": 0.75},
+            filters={
+                "audience_feature_policy": "excluded_no_prepublication_history",
+                "label_horizon_hours": 24,
+                "viral_quantile": 0.75,
+            },
         )
         dataset_path = root / "datasets" / identity.dataset_version
         dataset_path.mkdir(parents=True)
@@ -323,6 +352,9 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn("_snapshot_tiebreaker", source)
         self.assertIn("DATASET_BUILDER_REVISION", source)
         self.assertIn('"dataset_builder_revision"', source)
+        self.assertIn('"audience_feature_policy": AUDIENCE_FEATURE_POLICY', source)
+        self.assertIn('audience_count = lit(None).cast("bigint")', source)
+        self.assertIn("audience_available = lit(False)", source)
         self.assertIn('"training_snapshot_id": training_snapshot_id', source)
         self.assertIn("_read_snapshot(\n            spark,\n            TRAINING_EXAMPLES_TABLE", source)
         self.assertIn('examples.orderBy("example_id")', source)
@@ -365,6 +397,32 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn('"training_snapshot_id"', lineage)
         self.assertIn("dataset_lineage", evaluation)
         self.assertIn("pinned snapshot ID", report)
+
+    def test_official_model_excludes_unfrozen_audience_features(self):
+        frame = pd.DataFrame(
+            {
+                "char_count": [10],
+                "word_count": [2],
+                "has_question": [0],
+                "is_vietnamese": [0],
+                "f_word": [0.1],
+                "f_sent": [0.1],
+                "f_clause": [0.1],
+                "f_info": [0.1],
+                "f_visual": [0.1],
+                "cognitive_friction_score": [0.1],
+                "src_x": [1],
+                "topic_0": [0.5],
+                "chan_log_audience": [9.0],
+                "chan_has_audience": [1],
+            }
+        )
+
+        features = FEATURE_COLUMNS(frame, include_audience=False)
+
+        self.assertIn("src_x", features)
+        self.assertIn("topic_0", features)
+        self.assertFalse(any(name.startswith("chan_") for name in features))
 
     def test_balancing_preserves_unknown_and_known_zero_bands(self):
         source = (ROOT / "spark" / "jobs" / "maintenance" / "build_balanced_dataset.py").read_text(

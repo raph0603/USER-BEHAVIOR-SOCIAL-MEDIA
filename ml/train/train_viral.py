@@ -78,8 +78,13 @@ def validate_dataset_version(df: pd.DataFrame, expected: str | None) -> None:
         raise ValueError(f"Expected exactly dataset version {expected}, received {versions}")
 
 
-def feature_columns(df: pd.DataFrame) -> list[str]:
-    extra = sorted(c for c in df.columns if c.startswith(("src_", "role_", "topic_", "chan_")))
+def feature_columns(df: pd.DataFrame, *, include_audience: bool = True) -> list[str]:
+    prefixes = ("src_", "role_", "topic_", "chan_") if include_audience else (
+        "src_",
+        "role_",
+        "topic_",
+    )
+    extra = sorted(c for c in df.columns if c.startswith(prefixes))
     return CONTENT_FEATURES + extra
 
 
@@ -253,7 +258,7 @@ def main() -> None:
         )
         args.dataset_version = str(dataset_lineage["dataset_version"])
     validate_dataset_version(df, args.dataset_version)
-    features = feature_columns(df)
+    features = feature_columns(df, include_audience=dataset_lineage is None)
     train_idx, test_idx = split_indices(df, args.test_size, args.seed)
     y = df[TARGET].astype(int)
 
@@ -295,6 +300,7 @@ def main() -> None:
         "features": features,
         "dataset_version": args.dataset_version,
         "dataset_lineage": dataset_lineage,
+        "audience_features_included": dataset_lineage is None,
         **content_bundle,
     }
     joblib.dump(bundle, args.model)
@@ -305,6 +311,7 @@ def main() -> None:
             "artifact_sha256": hashlib.sha256(args.model.read_bytes()).hexdigest(),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "dataset_lineage": dataset_lineage,
+            "audience_features_included": False,
         }
         lineage_path = model_lineage_path(args.model)
         lineage_path.write_text(
