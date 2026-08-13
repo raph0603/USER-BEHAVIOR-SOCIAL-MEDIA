@@ -33,6 +33,7 @@ STEPS = [
     ("Train viral model", ML_ROOT / "train" / "train_viral.py"),
     ("Evaluate per source", ML_ROOT / "train" / "evaluate.py"),
     ("Verify performance figures", ML_ROOT / "train" / "verify_answers.py"),
+    ("Evaluate exploratory role-feature ablation", ML_ROOT / "train" / "evaluate_role_ablation.py"),
 ]
 
 ENV = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
@@ -204,7 +205,11 @@ def main() -> None:
                 "--dataset-manifest",
                 str(dataset_manifest),
             )
-        elif script.name in {"evaluate.py", "verify_answers.py"} and dataset_manifest:
+        elif script.name in {
+            "evaluate.py",
+            "verify_answers.py",
+            "evaluate_role_ablation.py",
+        } and dataset_manifest:
             arguments = ("--dataset-manifest", str(dataset_manifest))
         run(title, script, *arguments)
     if args.report:

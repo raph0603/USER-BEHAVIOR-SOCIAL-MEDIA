@@ -17,7 +17,9 @@ text, source ──► clean text ──► features (content TF-IDF · marketin
 ```
 
 - **content** = how the wording/topic itself predicts virality (TF-IDF + Logistic Regression score).
-- **marketing roles** = share of hook / cta / proof / pain_point … in the post (from a role classifier).
+- **marketing-role cues** = exploratory shares of hook / cta / proof / pain_point …
+  inferred by a classifier trained on automated heuristic silver labels. They support
+  qualitative TreeSHAP interpretation and are not validated linguistic conclusions.
 - **topics** = which EV topic the post is about (NMF topic distribution).
 - **SHAP** = a standard method that attributes the prediction to each feature, so we can say *why*.
 
@@ -60,6 +62,10 @@ It returns a JSON-serializable `dict` with exactly this schema:
 | `explanation_text` | string | one-paragraph human-readable explanation |
 | `suggestions` | list[string] | concrete tips to improve the post |
 
+Any factor whose raw name starts with `role_` is an exploratory heuristic cue. Its label
+is prefixed with `Exploratory role cue`, and clients must not present it as a definitive
+linguistic diagnosis. Role assignments no longer generate prescriptive suggestions.
+
 > ⚠️ **`viral_score` below 0.5 can still be `viral-likely`.** Only ~25% of posts are viral,
 > so an honest probability rarely passes 0.5. The threshold is picked out-of-fold during
 > training and stored in the model bundle (currently **0.26**); `explanation_text` always
@@ -74,10 +80,10 @@ It returns a JSON-serializable `dict` with exactly this schema:
   "confidence": 0.077,
   "top_factors": [
     {"feature": "topic_4",             "label": "Topic #4",                 "value": 0.6174, "contribution": -0.2564, "direction": "down"},
-    {"feature": "role_ratio_urgency",  "label": "Ratio of urgency",         "value": 0.3333, "contribution":  0.2039, "direction": "up"}
+    {"feature": "role_ratio_urgency",  "label": "Exploratory role cue: ratio of urgency", "value": 0.3333, "contribution": 0.2039, "direction": "up"}
   ],
-  "explanation_text": "Prediction: likely viral. Factors increasing it: Ratio of urgency and post content/topic. Factors decreasing it: Topic #4.",
-  "suggestions": ["Add a clear call to action (CTA).", "Open with an attention-grabbing hook."]
+  "explanation_text": "Prediction: likely viral. Factors increasing it: Exploratory role cue: ratio of urgency and post content/topic. Factors decreasing it: Topic #4.",
+  "suggestions": []
 }
 ```
 
@@ -100,6 +106,8 @@ python ml/run_pipeline.py --manual-csv-input <events.csv>               # compat
 python ml/run_pipeline.py --export                                      # export a CSV first
 # check the answers, not just the ranking (calibration, decisions, bootstrap CIs):
 python ml/train/verify_answers.py --n-boot 2000
+# compare the downstream model with and without exploratory role features:
+python ml/train/evaluate_role_ablation.py --n-boot 2000
 ```
 - Trained model: `ml/models/stage1_multisource.joblib` — a dict
   `{model, calibrator, threshold, content_model, features}`. `calibrator` and `threshold`

@@ -47,14 +47,19 @@ snapshot table has no column for, without which train and test could share an au
 - **Unified content features** across all 3 sources (pure functions of the text): `cognitive_friction` + `char/word/has_question/is_vietnamese`.
 - **Per-source viral label**: within each source, z-score `log1p` of that platform's engagement metrics → the top `--quantile` (default 0.75) is labelled viral. Engagement columns build the label only — never features (avoids leakage).
 - **`content_score`** = TF-IDF + LogReg over the text, fused as a single feature (built out-of-fold to avoid leakage). Interface `.predict_proba(list[str])` → swapping in BERT later needs no other change.
-- **`role_*`** = rhetorical marketing roles (cta/hook/proof/…) from the `feature/annotation-roles-marketing` branch; mainly aid explainability.
+- **`role_*` are exploratory interpretation cues**, not validated linguistic labels.
+  They aggregate automated heuristic silver annotations (cta/hook/proof/…) into
+  human-readable dimensions that can be inspected through TreeSHAP. Their classifier
+  score measures agreement with held-out silver labels because no independently
+  human-validated gold set exists. Role-derived absences do not generate prescriptive tips.
 - **`topic_*`** = NMF topic distribution over TF-IDF (fills the "topic" component of the design; BERTopic is the heavier upgrade).
 - **Audience features are excluded from official models.** The available follower and
   subscriber counts were captured during scraping, not from a state proven to precede
   publication. They can therefore contain growth caused by the outcome itself. Manual
   compatibility runs may still construct `chan_*`, but official manifests reject that
   policy and official model bundles contain no `chan_*` feature.
-- **Explanation** = SHAP (XGBoost `pred_contribs`) → maps features to readable reasons + suggestions.
+- **Explanation** = TreeSHAP (XGBoost `pred_contribs`) → maps features to readable
+  reasons. Any `role_*` factor is explicitly labelled exploratory.
 - **Calibrated probability**: `scale_pos_weight` sharpens ranking but inflates the scores, so a Platt scaler fitted on author-grouped out-of-fold predictions maps them back to honest probabilities. It is monotonic, so ranking metrics and the SHAP ordering are untouched. Calibrating also moves the decision boundary — with a 0.25 base rate, few honest scores pass 0.5 — so the threshold is re-picked out-of-fold (currently **0.26**) and stored in the model bundle.
 
 ## Run (use the `ml/.venv` Python)
@@ -153,7 +158,11 @@ dataset version in the report and calibration figure.
 | youtube | 6 | 0.200 [0.000, 0.600] | 0.200 [0.167, 0.600] | 0.093 |
 | x | 35 | 0.803 [0.545, 0.992] | 0.244 [0.067, 1.000] | 0.226 |
 
-- Role classifier: **macro-F1 ~0.50** over 12 roles.
+- Exploratory role classifier: **macro-F1 0.495** over 12 roles. This is agreement with
+  held-out automated silver labels, not accuracy against human-validated gold labels.
+- Paired ablation on the same 41-row holdout found no demonstrated predictive benefit:
+  without `role_*`, PR-AUC was 0.271 versus 0.193 with roles (paired-delta 95% CI
+  [-0.011, 0.368]); ROC-AUC was 0.658 versus 0.623 (CI [-0.150, 0.250]).
 - Content model: **TF-IDF (0.499) > BERT (0.428)** at this data size → keep TF-IDF for now.
 - The official sample is too small for strong claims: overall and per-source intervals
   are wide, and Reddit has no eligible row in this pinned dataset version.
@@ -175,7 +184,9 @@ stand-in for "is this YouTube?" rather than a virality signal. Unknown audiences
 ## Limitations & next steps
 
 - Content model is **TF-IDF** → Vietnamese is still weak; upgrade to **multilingual BERT** (train on Kaggle GPU, same interface).
-- Roles use heuristic labels; no human-verified gold set for a clean evaluation.
+- Roles remain exploratory until an independently human-verified gold set exists. Do not
+  interpret individual assignments as validated linguistic conclusions. The reproducible
+  comparison is stored in `results/stage1_role_ablation.json`.
 - The next audience implementation must use historically frozen reputation observations:
   the last subscriber/follower count or Reddit author karma with
   `reputation_observed_at <= post_published_at`. Rows without such an observation remain

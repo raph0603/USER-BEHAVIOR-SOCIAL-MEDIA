@@ -424,6 +424,50 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn("topic_0", features)
         self.assertFalse(any(name.startswith("chan_") for name in features))
 
+    def test_role_feature_ablation_changes_only_the_exploratory_family(self):
+        frame = pd.DataFrame(
+            {
+                "char_count": [10],
+                "word_count": [2],
+                "has_question": [0],
+                "is_vietnamese": [0],
+                "f_word": [0.1],
+                "f_sent": [0.1],
+                "f_clause": [0.1],
+                "f_info": [0.1],
+                "f_visual": [0.1],
+                "cognitive_friction_score": [0.1],
+                "src_x": [1],
+                "topic_0": [0.5],
+                "role_ratio_hook": [0.5],
+                "role_n_hook": [1],
+                "chan_log_audience": [9.0],
+            }
+        )
+
+        with_roles = FEATURE_COLUMNS(frame, include_audience=False, include_roles=True)
+        without_roles = FEATURE_COLUMNS(frame, include_audience=False, include_roles=False)
+
+        self.assertEqual(
+            set(with_roles) - set(without_roles),
+            {"role_ratio_hook", "role_n_hook"},
+        )
+        self.assertFalse(any(name.startswith("role_") for name in without_roles))
+        self.assertFalse(any(name.startswith("chan_") for name in without_roles))
+
+    def test_role_component_is_encoded_as_exploratory_in_artifacts(self):
+        contract = (ROOT / "ml" / "role_contract.py").read_text(encoding="utf-8")
+        training = (ROOT / "ml" / "train" / "train_viral.py").read_text(encoding="utf-8")
+        evaluation = (ROOT / "ml" / "train" / "evaluate.py").read_text(encoding="utf-8")
+        serving = (ROOT / "ml" / "serve" / "explain_viral.py").read_text(encoding="utf-8")
+
+        self.assertIn('ROLE_COMPONENT_STATUS = "exploratory"', contract)
+        self.assertIn('"human_gold_validated": False', contract)
+        self.assertIn('"role_feature_contract": role_feature_contract()', training)
+        self.assertIn('"role_feature_contract": bundle.get', evaluation)
+        self.assertIn("Exploratory role cue", serving)
+        self.assertNotIn("Add a clear call to action", serving)
+
     def test_balancing_preserves_unknown_and_known_zero_bands(self):
         source = (ROOT / "spark" / "jobs" / "maintenance" / "build_balanced_dataset.py").read_text(
             encoding="utf-8"

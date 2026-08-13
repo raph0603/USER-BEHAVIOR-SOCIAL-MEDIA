@@ -13,6 +13,7 @@ cannot predict them until the annotation set improves.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import joblib
@@ -24,6 +25,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
 ML_ROOT = Path(__file__).resolve().parents[1]
+if str(ML_ROOT) not in sys.path:
+    sys.path.insert(0, str(ML_ROOT))
+
+from role_contract import role_feature_contract
+
 # Official annotation dataset committed at repo root (merged from main); reproducible for everyone.
 DEFAULT_SILVER = ML_ROOT.parent / "annotation_marketing" / "silver_dataset.jsonl"
 DEFAULT_MODEL = ML_ROOT / "models" / "rhetorical_role.joblib"
@@ -71,12 +77,31 @@ def main() -> None:
     model = build_role_model()
     model.fit(X_train, y_train)
     pred = model.predict(X_test)
-    print(f"Macro-F1: {f1_score(y_test, pred, average='macro', zero_division=0):.3f}")
+    macro_f1 = float(f1_score(y_test, pred, average="macro", zero_division=0))
+    print(f"Macro-F1: {macro_f1:.3f}")
     print(classification_report(y_test, pred, digits=3, zero_division=0))
+    print(
+        "Exploratory component: this score measures agreement with held-out "
+        "heuristic silver labels, not accuracy against human-validated gold labels."
+    )
 
     model.fit(X, y)  # refit on all silver for the final artifact
     args.model.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"model": model, "roles": sorted(y.unique())}, args.model)
+    joblib.dump(
+        {
+            "model": model,
+            "roles": sorted(y.unique()),
+            "role_feature_contract": role_feature_contract(),
+            "evaluation": {
+                "macro_f1": macro_f1,
+                "reference_labels": "held_out_automated_heuristic_silver",
+                "human_gold_validated": False,
+                "test_size": args.test_size,
+                "seed": args.seed,
+            },
+        },
+        args.model,
+    )
     print(f"Saved -> {args.model}")
 
 

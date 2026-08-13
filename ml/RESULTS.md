@@ -117,12 +117,36 @@ precision: the model catches 84% of viral posts and is wrong about 6 in 10 of th
 flags. That trade is a product decision, not a fixed property — raising the threshold moves
 it back. Do not tune it on the table above; that is the test set.
 
-### Role classifier
+### Exploratory role classifier
 
 Macro-F1 **0.495** over 12 roles, 3122 silver segments. Strong on `cta` (F1 0.91) and
 `proof` (0.70), weak on `objection_handling` (0.25) and `social_proof` (0.31). The labels are
-LLM/heuristic silver with no human-verified gold set, so this is the least trustworthy
-component and one of the clearest improvement targets.
+automated heuristic silver with no independently human-verified gold set. The score
+therefore measures agreement with held-out silver labels, not linguistic accuracy against
+ground truth. Individual assignments must not be presented as validated linguistic
+conclusions.
+
+This component is retained as an **exploratory feature family**: it converts segment-level
+heuristics into human-readable `role_*` dimensions that can be inspected qualitatively in
+TreeSHAP. Role-derived absences are not used for prescriptive suggestions.
+
+#### Paired role-feature ablation
+
+The two variants below use the same pinned dataset, author-grouped split, content scores,
+seed, XGBoost parameters and calibration procedure. The only controlled difference is the
+presence of the 26 `role_*` columns.
+
+| Variant | Features | PR-AUC | ROC-AUC | Brier | F1 |
+|---|---:|---:|---:|---:|---:|
+| With exploratory roles | 47 | 0.193 | 0.623 | 0.110 | 0.154 |
+| Without roles | 21 | 0.271 | 0.658 | 0.112 | 0.250 |
+
+For `without - with`, the paired-bootstrap PR-AUC delta is **+0.079** with 95% CI
+**[-0.011, 0.368]**, and the ROC-AUC delta is **+0.035** with CI
+**[-0.150, 0.250]**. Both intervals include zero: this small holdout demonstrates no
+reliable predictive benefit from the role features. The point estimates favor removing
+them, but are not precise enough to establish superiority. Full machine-readable evidence:
+`results/stage1_role_ablation.json`.
 
 ---
 
@@ -147,7 +171,9 @@ The historical model assigned 29.6% of measured SHAP influence to audience. This
 value is a leakage warning, not evidence that audience has overwhelming pre-publication
 predictive power: the collected count may already incorporate growth caused by the post.
 
-The 26 role features carry 11.3% between them, the weakest return per column in the set.
+In this historical SHAP analysis, the 26 role features carry 11.3% between them, the
+weakest return per column in the set. SHAP measures how the model used these heuristic
+signals; it does not validate the linguistic correctness of a role assignment.
 
 ### Top 20 individual features
 
