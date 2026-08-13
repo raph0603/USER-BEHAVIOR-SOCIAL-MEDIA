@@ -50,7 +50,7 @@ POST_FEATURES_TABLE = "lakehouse.silver.post_features"
 ENGAGEMENT_SNAPSHOTS_TABLE = "lakehouse.silver.engagement_snapshots"
 TRAINING_EXAMPLES_TABLE = "lakehouse.gold.training_examples"
 DATASET_MANIFESTS_TABLE = "lakehouse.gold.dataset_manifests"
-DATASET_BUILDER_REVISION = "pinned-snapshot-lineage-v1"
+DATASET_BUILDER_REVISION = "gold-pinned-snapshot-lineage-v2"
 
 METRICS_BY_SOURCE = {
     "youtube": ("view_count", "like_count", "comment_count"),
@@ -148,6 +148,15 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--training-examples-snapshot-id",
+        type=int,
+        default=int(_env("ML_TRAINING_EXAMPLES_SNAPSHOT_ID", "0")),
+        help=(
+            "Exact Gold training_examples Iceberg snapshot used when exporting an existing "
+            "dataset version. Auto builds capture the post-merge Gold snapshot themselves."
+        ),
+    )
+    parser.add_argument(
         "--export-root",
         type=Path,
         default=Path(_env("ML_DATASET_EXPORT_ROOT", "/opt/spark/balancing/ml")),
@@ -182,6 +191,14 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("Both source snapshot IDs must be supplied together")
     if args.dataset_version != "auto" and any(requested_snapshots):
         raise ValueError("Explicit source snapshots require --dataset-version auto")
+    if args.training_examples_snapshot_id < 0:
+        raise ValueError("The Gold training snapshot ID must be zero or positive")
+    if args.dataset_version == "auto" and args.training_examples_snapshot_id:
+        raise ValueError("An explicit Gold snapshot requires an exact --dataset-version")
+    if args.dataset_version != "auto" and not args.training_examples_snapshot_id:
+        raise ValueError(
+            "Exporting an existing dataset version requires --training-examples-snapshot-id"
+        )
 
 
 def _latest_snapshot_id(spark: SparkSession, table: str) -> int:
@@ -597,6 +614,7 @@ def _export_dataset(
     examples: DataFrame,
     manifest: dict,
     *,
+    training_snapshot_id: int,
     export_root: Path,
     manifest_output: Path,
 ) -> None:
@@ -608,7 +626,9 @@ def _export_dataset(
             f"Dataset {version} contains {actual_count} rows; manifest expects {expected_count}"
         )
     dataset_path = export_root / "datasets" / version
-    examples.coalesce(1).write.mode("overwrite").parquet(str(dataset_path))
+    examples.orderBy("example_id").coalesce(1).write.mode("overwrite").parquet(
+        str(dataset_path)
+    )
     manifest_output.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         **manifest,
@@ -618,6 +638,8 @@ def _export_dataset(
         "dataset_relative_path": os.path.relpath(dataset_path, manifest_output.parent),
         "format": "parquet",
         "official_input": True,
+        "training_table": TRAINING_EXAMPLES_TABLE,
+        "training_snapshot_id": training_snapshot_id,
     }
     manifest_output.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n",
@@ -635,7 +657,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dataset_version != "auto":
         manifest = _existing_manifest(spark, args.dataset_version)
-        examples = spark.table(TRAINING_EXAMPLES_TABLE).filter(
+        training_snapshot_id = args.training_examples_snapshot_id
+        examples = _read_snapshot(
+            spark,
+            TRAINING_EXAMPLES_TABLE,
+            training_snapshot_id,
+        ).filter(
             col("dataset_version") == args.dataset_version
         )
         if examples.limit(1).count() == 0:
@@ -679,17 +706,23 @@ def main(argv: list[str] | None = None) -> int:
         try:
             manifest = _manifest_for(examples, identity)
             _merge_examples(examples)
+            training_snapshot_id = _latest_snapshot_id(spark, TRAINING_EXAMPLES_TABLE)
             _merge_manifest(spark, manifest)
             manifest = _existing_manifest(spark, identity.dataset_version)
         finally:
             examples.unpersist()
-        examples = spark.table(TRAINING_EXAMPLES_TABLE).filter(
+        examples = _read_snapshot(
+            spark,
+            TRAINING_EXAMPLES_TABLE,
+            training_snapshot_id,
+        ).filter(
             col("dataset_version") == identity.dataset_version
         )
 
     _export_dataset(
         examples,
         manifest,
+        training_snapshot_id=training_snapshot_id,
         export_root=args.export_root,
         manifest_output=manifest_output,
     )
@@ -698,6 +731,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "dataset_version": manifest["dataset_version"],
                 "example_count": int(manifest["example_count"]),
+                "training_snapshot_id": training_snapshot_id,
                 "manifest_output": str(manifest_output),
             },
             sort_keys=True,

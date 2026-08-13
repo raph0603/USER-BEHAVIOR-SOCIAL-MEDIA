@@ -10,6 +10,7 @@ from typing import Any
 
 
 DATASET_VERSION_PATTERN = re.compile(r"^dataset-(?P<schema>v\d+)-(?P<prefix>[a-f0-9]{20})$")
+TRAINING_EXAMPLES_TABLE = "lakehouse.gold.training_examples"
 
 
 def _json_object(manifest: dict[str, Any], field: str) -> dict[str, Any]:
@@ -116,12 +117,26 @@ def load_dataset_lineage(
     if str(manifest.get("format") or "").lower() != "parquet":
         raise ValueError("Official lakehouse training input must use Parquet")
 
+    training_table = str(manifest.get("training_table") or "").strip()
+    if training_table != TRAINING_EXAMPLES_TABLE:
+        raise ValueError(
+            f"Manifest training_table must be the official Gold table {TRAINING_EXAMPLES_TABLE}"
+        )
+    try:
+        training_snapshot_id = int(manifest.get("training_snapshot_id"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Manifest training_snapshot_id must be an integer") from exc
+    if training_snapshot_id <= 0:
+        raise ValueError("Manifest training_snapshot_id must be greater than zero")
+
     lineage = {
         "dataset_version": version,
         "schema_version": schema_version,
         "dataset_fingerprint": fingerprint,
         "source_tables": sorted(normalized_snapshots),
         "iceberg_snapshot_ids": dict(sorted(normalized_snapshots.items())),
+        "training_table": training_table,
+        "training_snapshot_id": training_snapshot_id,
         "filters": dict(sorted(filters.items())),
         "example_count": int(manifest.get("example_count") or 0),
         "period_start": str(manifest.get("period_start") or ""),

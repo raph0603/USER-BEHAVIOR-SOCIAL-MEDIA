@@ -17,21 +17,22 @@ $env:PYTHONIOENCODING='utf-8'
 
 ## 0. Official pinned-snapshot run
 
-- Dataset version: `dataset-v2-e8cd709ec8600bded321`
-- Dataset fingerprint: `e8cd709ec8600bded321b6d1dcc1107c4c059ab241d495a933e45bcf7f9e8f67`
-- Manifest SHA-256: `3946af67b8446290ccd2add7105b1b01200452cf3467c3d09e64986dfe227051`
-- Model SHA-256: `009894c5b0dac69d22507210ab5d13692dbac43e6c9fdb23a31000bbee2510d9`
+- Dataset version: `dataset-v2-52ef5b2d5b113e3a377e`
+- Dataset fingerprint: `52ef5b2d5b113e3a377e2736c979ef9169a95664b07f1b17fa93fe9e92ba3267`
+- Manifest SHA-256: `760398554b2ac9337a4b1433cd62bdc44be5ce6fa747ee52db98303144e038b2`
+- Model SHA-256: `46695d21337652a96e97e640610df53232964633158af9c5dedc9a5a6f76344d`
+- `lakehouse.gold.training_examples` snapshot: `4034905545805767069`
 - `lakehouse.silver.post_features` snapshot: `8259184521274725029`
 - `lakehouse.silver.engagement_snapshots` snapshot: `4006086415507010724`
 
 The pinned dataset contains 197 examples (156 X, 41 YouTube). The author-grouped test
 split contains 41 examples; its small size makes the confidence intervals wide.
 
-| Group | n | ROC-AUC (95% CI) | PR-AUC (95% CI) | Brier | ECE | F1 @ 0.29 |
+| Group | n | ROC-AUC (95% CI) | PR-AUC (95% CI) | Brier | ECE | F1 @ 0.33 |
 |---|---:|---:|---:|---:|---:|---:|
-| **overall** | 41 | **0.605** [0.075, 1.000] | **0.254** [0.027, 1.000] | 0.112 | 0.211 | 0.267 |
-| X | 35 | 0.879 [0.706, 1.000] | 0.361 [0.091, 1.000] | 0.102 | 0.229 | 0.333 |
-| YouTube | 6 | 0.200 [0.000, 0.667] | 0.200 [0.167, 0.667] | 0.170 | 0.112 | 0.000 |
+| **overall** | 41 | **0.623** [0.150, 0.957] | **0.196** [0.029, 0.696] | 0.111 | 0.208 | 0.200 |
+| X | 35 | 0.818 [0.588, 0.992] | 0.250 [0.071, 1.000] | 0.102 | 0.227 | 0.222 |
+| YouTube | 6 | 0.200 [0.000, 0.600] | 0.200 [0.167, 0.600] | 0.165 | 0.093 | 0.000 |
 
 Machine-readable evidence is stored in `ml/results/stage1_evaluation.json` and
 `ml/results/stage1_model_lineage.json`. Both carry the snapshot map and dataset

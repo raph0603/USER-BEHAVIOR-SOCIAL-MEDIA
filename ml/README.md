@@ -6,10 +6,12 @@ Predicts whether a social-media post (EV domain) is likely to go **viral**, and 
 ## Pipeline
 
 ```
-Iceberg post_features + engagement_snapshots (pinned snapshot IDs)
+Silver post_features + engagement_snapshots (pinned snapshot IDs)
         │
         ▼  maintenance/build_training_dataset.py
-versioned Parquet dataset + validated lineage manifest
+Gold training_examples write → pinned Gold snapshot read
+        │
+        ▼  versioned Parquet export + validated lineage manifest
         │
         ▼  preprocess/build_dataset.py
   clean text → unified content features + PER-SOURCE viral label + source one-hot
@@ -49,7 +51,7 @@ snapshot table has no column for, without which train and test could share an au
 - **`topic_*`** = NMF topic distribution over TF-IDF (fills the "topic" component of the design; BERTopic is the heavier upgrade).
 - **`chan_*`** = channel/author audience size (`follower/subscriber/subreddit_member` unified via log1p) — a *pre-launch* author property (not engagement), so it's a valid feature, not leakage. Best-effort: only added when the export carries those columns. An **unknown audience is `NaN`, never `0`** — `0` means an author with no followers, and collapsing the two lets the feature stand in for the platform instead of the signal. A positive value is trusted even when the export's `*_available` flag disagrees, because that flag describes one observation while the value may come from another collector.
 - **Explanation** = SHAP (XGBoost `pred_contribs`) → maps features to readable reasons + suggestions.
-- **Calibrated probability**: `scale_pos_weight` sharpens ranking but inflates the scores, so a Platt scaler fitted on author-grouped out-of-fold predictions maps them back to honest probabilities (ECE 0.123 → 0.016). It is monotonic, so ranking metrics and the SHAP ordering are untouched. Calibrating also moves the decision boundary — with a 0.25 base rate, few honest scores pass 0.5 — so the threshold is re-picked out-of-fold (currently **0.29**) and stored in the model bundle.
+- **Calibrated probability**: `scale_pos_weight` sharpens ranking but inflates the scores, so a Platt scaler fitted on author-grouped out-of-fold predictions maps them back to honest probabilities. It is monotonic, so ranking metrics and the SHAP ordering are untouched. Calibrating also moves the decision boundary — with a 0.25 base rate, few honest scores pass 0.5 — so the threshold is re-picked out-of-fold (currently **0.33**) and stored in the model bundle.
 
 ## Run (use the `ml/.venv` Python)
 
@@ -76,7 +78,8 @@ $env:PYTHONIOENCODING='utf-8'            # Windows: avoid console encoding issue
 ```
 
 The model bundle, its `.lineage.json` sidecar, evaluation JSON, and generated report
-all retain the same dataset fingerprint and Iceberg snapshot IDs. See
+all retain the same dataset fingerprint, Silver source snapshots, and pinned Gold
+training snapshot. See
 [`docs/REPRODUCIBLE_TRAINING.md`](../docs/REPRODUCIBLE_TRAINING.md) for snapshot replay
 and the reporting contract.
 
@@ -142,15 +145,16 @@ dataset version in the report and calibration figure.
 
 | group | n | ROC-AUC (95% CI) | PR-AUC (95% CI) | ECE |
 |---|---|---|---|---|
-| overall | 41 | 0.605 [0.075, 1.000] | 0.254 [0.027, 1.000] | 0.211 |
-| youtube | 6 | 0.200 [0.000, 0.667] | 0.200 [0.167, 0.667] | 0.112 |
-| x | 35 | 0.879 [0.706, 1.000] | 0.361 [0.091, 1.000] | 0.229 |
+| overall | 41 | 0.623 [0.150, 0.957] | 0.196 [0.029, 0.696] | 0.208 |
+| youtube | 6 | 0.200 [0.000, 0.600] | 0.200 [0.167, 0.600] | 0.093 |
+| x | 35 | 0.818 [0.588, 0.992] | 0.250 [0.071, 1.000] | 0.227 |
 
 - Role classifier: **macro-F1 ~0.50** over 12 roles.
 - Content model: **TF-IDF (0.499) > BERT (0.428)** at this data size → keep TF-IDF for now.
 - The official sample is too small for strong claims: overall and per-source intervals
   are wide, and Reddit has no eligible row in this pinned dataset version.
-- Dataset version `dataset-v2-e8cd709ec8600bded321` is bound to the model and figures;
+- Dataset version `dataset-v2-52ef5b2d5b113e3a377e` and Gold snapshot
+  `4034905545805767069` are bound to the model and figures;
   full snapshot IDs and artifact digests are in `ml/results/`.
 
 Two earlier numbers in this file were wrong and are worth knowing about, because they

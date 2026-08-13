@@ -226,6 +226,8 @@ class OfficialTrainingInputTests(unittest.TestCase):
             or f"../datasets/{identity.dataset_version}",
             "format": "parquet",
             "official_input": True,
+            "training_table": "lakehouse.gold.training_examples",
+            "training_snapshot_id": 789,
             "example_count": 1,
         }
         manifest_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -321,6 +323,13 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn("_snapshot_tiebreaker", source)
         self.assertIn("DATASET_BUILDER_REVISION", source)
         self.assertIn('"dataset_builder_revision"', source)
+        self.assertIn('"training_snapshot_id": training_snapshot_id', source)
+        self.assertIn("_read_snapshot(\n            spark,\n            TRAINING_EXAMPLES_TABLE", source)
+        self.assertIn('examples.orderBy("example_id")', source)
+        self.assertIn(
+            "Exporting an existing dataset version requires --training-examples-snapshot-id",
+            source,
+        )
         self.assertIn("actual_count != expected_count", source)
         self.assertIn("DATASET_VERSION_PATTERN", source)
         self.assertNotIn("read.csv", source.lower())
@@ -353,6 +362,7 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn('"dataset_lineage": dataset_lineage', train)
         self.assertIn("model_lineage_path", train)
         self.assertIn('"iceberg_snapshot_ids"', lineage)
+        self.assertIn('"training_snapshot_id"', lineage)
         self.assertIn("dataset_lineage", evaluation)
         self.assertIn("pinned snapshot ID", report)
 

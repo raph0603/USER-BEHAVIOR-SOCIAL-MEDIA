@@ -213,6 +213,10 @@ def build_markdown(
             f"- Dataset version: `{lineage['dataset_version']}`",
             f"- Dataset fingerprint: `{lineage['dataset_fingerprint']}`",
             f"- Manifest SHA-256: `{lineage['manifest_sha256']}`",
+            (
+                f"- Training input: `{lineage['training_table']}` at Gold snapshot "
+                f"`{lineage['training_snapshot_id']}`"
+            ),
             "- Iceberg snapshots: "
             + ", ".join(
                 f"`{table}` = `{snapshot_id}`"

@@ -71,8 +71,12 @@ def section_lineage(lineage: dict | None) -> str:
         f"- Dataset version: `{lineage['dataset_version']}`",
         f"- Dataset fingerprint: `{lineage['dataset_fingerprint']}`",
         f"- Manifest SHA-256: `{lineage['manifest_sha256']}`",
+        (
+            f"- Training input: `{lineage['training_table']}` pinned at Gold snapshot "
+            f"`{lineage['training_snapshot_id']}`"
+        ),
         "",
-        "| Iceberg table | pinned snapshot ID |",
+        "| Source Iceberg table | pinned snapshot ID |",
         "|---|---:|",
         *[f"| `{table}` | `{snapshot_id}` |" for table, snapshot_id in snapshots.items()],
     ]
