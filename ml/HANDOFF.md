@@ -17,13 +17,15 @@ text, source ──► clean text ──► features (content TF-IDF · marketin
 ```
 
 - **content** = how the wording/topic itself predicts virality (TF-IDF + Logistic Regression score).
-- **marketing roles** = share of hook / cta / proof / pain_point … in the post (from a role classifier).
+- **marketing-role cues** = exploratory shares of hook / cta / proof / pain_point …
+  inferred by a classifier trained on automated heuristic silver labels. They support
+  qualitative TreeSHAP interpretation and are not validated linguistic conclusions.
 - **topics** = which EV topic the post is about (NMF topic distribution).
 - **SHAP** = a standard method that attributes the prediction to each feature, so we can say *why*.
 
-Current quality on the 870-row test set: **PR-AUC 0.603 · ROC-AUC 0.793**, and the returned
-probability is calibrated (ECE 0.016). Best on YouTube (ROC 0.881), weakest on Reddit
-(0.669); X sits at 0.750 but on only 150 rows, so treat it as indicative.
+Current official quality on the 41-row author-grouped test set is **PR-AUC 0.193 ·
+ROC-AUC 0.623**, with ECE 0.207. These figures come from the pinned Gold dataset and
+exclude audience features; the intervals are wide, so treat them as preliminary.
 Full per-source table with confidence intervals: run `python ml/train/verify_answers.py`.
 Architecture diagram: `ml/ARCHITECTURE.md`. (A detailed engineering log is kept locally and is not required to use this guide.)
 
@@ -38,12 +40,11 @@ Everything you build consumes this one function:
 from serve.explain_viral import explain_post
 
 result = explain_post(text="...", source="youtube")   # source ∈ {"youtube", "x", "reddit", ""}
-result = explain_post(text="...", source="youtube", audience=120_000)   # if you know it
 ```
 
-`audience` is the author's follower/subscriber count. **Leave it out when you do not know
-it** — the model was trained with unknown audiences as missing, and passing `0` instead
-tells it the author has no followers at all, which drags the score toward zero.
+The legacy `audience` argument remains accepted for API compatibility, but the official
+model ignores it. Current follower/subscriber counts are not guaranteed to predate the
+post and are therefore excluded to prevent look-ahead bias.
 
 It returns a JSON-serializable `dict` with exactly this schema:
 
@@ -61,13 +62,17 @@ It returns a JSON-serializable `dict` with exactly this schema:
 | `explanation_text` | string | one-paragraph human-readable explanation |
 | `suggestions` | list[string] | concrete tips to improve the post |
 
+Any factor whose raw name starts with `role_` is an exploratory heuristic cue. Its label
+is prefixed with `Exploratory role cue`, and clients must not present it as a definitive
+linguistic diagnosis. Role assignments no longer generate prescriptive suggestions.
+
 > ⚠️ **`viral_score` below 0.5 can still be `viral-likely`.** Only ~25% of posts are viral,
 > so an honest probability rarely passes 0.5. The threshold is picked out-of-fold during
-> training and stored in the model bundle (currently **0.29**); `explanation_text` always
+> training and stored in the model bundle (currently **0.26**); `explanation_text` always
 > states it. Do not hard-code 0.5 in your UI — read `label`, or pass your own
 > `threshold=` to `explain_post` if your use case wants to trade recall for precision.
 
-**Real example output** (`source="x"`, no `audience` passed, `top_factors` trimmed to 3):
+**Illustrative output schema** (`source="x"`, `top_factors` trimmed):
 ```json
 {
   "viral_score": 0.345,
@@ -75,16 +80,14 @@ It returns a JSON-serializable `dict` with exactly this schema:
   "confidence": 0.077,
   "top_factors": [
     {"feature": "topic_4",             "label": "Topic #4",                 "value": 0.6174, "contribution": -0.2564, "direction": "down"},
-    {"feature": "role_ratio_urgency",  "label": "Ratio of urgency",         "value": 0.3333, "contribution":  0.2039, "direction": "up"},
-    {"feature": "chan_log_audience",   "label": "Channel audience size",    "value": null,   "contribution": -0.1836, "direction": "down"}
+    {"feature": "role_ratio_urgency",  "label": "Exploratory role cue: ratio of urgency", "value": 0.3333, "contribution": 0.2039, "direction": "up"}
   ],
-  "explanation_text": "Prediction: likely viral (probability 34%, decision threshold 29%). Factors increasing it: Ratio of urgency, Post content/topic, Overall reading difficulty. Factors decreasing it: Topic #4, Channel audience size (followers/subscribers).",
-  "suggestions": ["Add a clear call to action (CTA).", "Open with an attention-grabbing hook."]
+  "explanation_text": "Prediction: likely viral. Factors increasing it: Exploratory role cue: ratio of urgency and post content/topic. Factors decreasing it: Topic #4.",
+  "suggestions": []
 }
 ```
 
-A `top_factors[].value` of `null` means the feature is unknown for this post — above, no
-`audience` was passed. The model handles it as missing rather than as zero.
+A `top_factors[].value` of `null` means the feature is unknown for this post.
 
 Batch scoring (a CSV of many posts → one JSON object per line):
 ```
@@ -103,6 +106,8 @@ python ml/run_pipeline.py --manual-csv-input <events.csv>               # compat
 python ml/run_pipeline.py --export                                      # export a CSV first
 # check the answers, not just the ranking (calibration, decisions, bootstrap CIs):
 python ml/train/verify_answers.py --n-boot 2000
+# compare the downstream model with and without exploratory role features:
+python ml/train/evaluate_role_ablation.py --n-boot 2000
 ```
 - Trained model: `ml/models/stage1_multisource.joblib` — a dict
   `{model, calibrator, threshold, content_model, features}`. `calibrator` and `threshold`
@@ -155,7 +160,7 @@ Section 2 automatically.
 | POST | `/predict/batch` | `{"items": [{text, source, audience}, ...]}` | list of JSON objects |
 | GET | `/health` | — | `{"status": "ok"}` |
 
-- `audience` is optional on every endpoint; omit it rather than sending `0` (see Section 2).
+- `audience` is retained as an optional compatibility field but is ignored by the official model.
 - The model loads **at startup** (it is heavy).
 - Note: if a BERT content backend is used later, the server also needs `transformers` + `torch` (the current TF-IDF backend does **not**).
 
@@ -164,11 +169,11 @@ Section 2 automatically.
 ## 6. Limitations & data dependencies
 
 - **Stage 2** is written but untrained on real data — see Section 6.1. Nothing in Task A/B depends on it; `explain_post` stays the Stage-1 entry point.
-- **Channel/author features** are live on all three sources, but only 2367 of 4357 rows
-  carry a value, and the counts are read *today* rather than at post time — a post that
-  went viral has since gained subscribers, so the YouTube figures are optimistic.
-- **Reddit is the weakest source** (ROC 0.669) and **X rests on 150 test rows**, so its
-  0.750 has a CI of [0.663, 0.827]. Collect more X/Reddit data before trusting either.
+- **Audience is disabled in the official model.** It can return only after timestamped
+  reputation history supports `reputation_observed_at <= post_published_at`; see
+  `docs/PREPUBLICATION_REPUTATION.md`.
+- The official test set has only 41 rows and no eligible Reddit row. Collect more data
+  before drawing platform-specific conclusions.
 - Host vs container results differ slightly due to un-pinned transitive deps
   (scipy/BLAS); functionality is unaffected.
 

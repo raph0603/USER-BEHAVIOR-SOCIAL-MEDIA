@@ -17,22 +17,24 @@ $env:PYTHONIOENCODING='utf-8'
 
 ## 0. Official pinned-snapshot run
 
-- Dataset version: `dataset-v2-52ef5b2d5b113e3a377e`
-- Dataset fingerprint: `52ef5b2d5b113e3a377e2736c979ef9169a95664b07f1b17fa93fe9e92ba3267`
-- Manifest SHA-256: `760398554b2ac9337a4b1433cd62bdc44be5ce6fa747ee52db98303144e038b2`
-- Model SHA-256: `46695d21337652a96e97e640610df53232964633158af9c5dedc9a5a6f76344d`
-- `lakehouse.gold.training_examples` snapshot: `4034905545805767069`
+- Dataset version: `dataset-v2-dd7ce6e598d3ebae6cd7`
+- Dataset fingerprint: `dd7ce6e598d3ebae6cd774e9c52c47d68f33e640c589b23d15afd1fc958bad5a`
+- Manifest SHA-256: `c7ba10aaf98f4fb2b06394d1b337e4e0d69feacc1505b6c6c167b9e345afbfea`
+- Model SHA-256: `f3f0b029aad54933d8dbcea192de35d9689c79e78149cb5235387ec943064093`
+- `lakehouse.gold.training_examples` snapshot: `6550655688150864602`
 - `lakehouse.silver.post_features` snapshot: `8259184521274725029`
 - `lakehouse.silver.engagement_snapshots` snapshot: `4006086415507010724`
 
-The pinned dataset contains 197 examples (156 X, 41 YouTube). The author-grouped test
+The pinned dataset contains 197 examples (156 X, 41 YouTube). Audience is deliberately
+absent: the manifest records `excluded_no_prepublication_history`, Gold reports 100%
+missing audience, and the model contains no `chan_*` feature. The author-grouped test
 split contains 41 examples; its small size makes the confidence intervals wide.
 
-| Group | n | ROC-AUC (95% CI) | PR-AUC (95% CI) | Brier | ECE | F1 @ 0.33 |
+| Group | n | ROC-AUC (95% CI) | PR-AUC (95% CI) | Brier | ECE | F1 @ 0.26 |
 |---|---:|---:|---:|---:|---:|---:|
-| **overall** | 41 | **0.623** [0.150, 0.957] | **0.196** [0.029, 0.696] | 0.111 | 0.208 | 0.200 |
-| X | 35 | 0.818 [0.588, 0.992] | 0.250 [0.071, 1.000] | 0.102 | 0.227 | 0.222 |
-| YouTube | 6 | 0.200 [0.000, 0.600] | 0.200 [0.167, 0.600] | 0.165 | 0.093 | 0.000 |
+| **overall** | 41 | **0.623** [0.154, 0.950] | **0.193** [0.030, 0.697] | 0.110 | 0.207 | 0.154 |
+| X | 35 | 0.803 [0.545, 0.992] | 0.244 [0.067, 1.000] | 0.101 | 0.226 | 0.190 |
+| YouTube | 6 | 0.200 [0.000, 0.600] | 0.200 [0.167, 0.600] | 0.161 | 0.092 | 0.000 |
 
 Machine-readable evidence is stored in `ml/results/stage1_evaluation.json` and
 `ml/results/stage1_model_lineage.json`. Both carry the snapshot map and dataset
@@ -40,7 +42,14 @@ fingerprint; the latter also binds the serialized model by SHA-256.
 
 ---
 
-## 1. Artifacts
+## 1. Historical audience-enabled artifacts — non-citable
+
+Sections 1–5 describe the July manual-export experiment. Its audience values were
+observed during scraping and were not proven to precede publication. A viral post may
+have increased the measured subscriber or follower count before collection. The feature
+importance and performance below are therefore exposed to look-ahead bias, must not be
+interpreted causally, and must not be used as evidence of deployable pre-publication
+performance.
 
 `ml/models/` is gitignored — these files exist only on a machine that has trained.
 
@@ -108,12 +117,36 @@ precision: the model catches 84% of viral posts and is wrong about 6 in 10 of th
 flags. That trade is a product decision, not a fixed property — raising the threshold moves
 it back. Do not tune it on the table above; that is the test set.
 
-### Role classifier
+### Exploratory role classifier
 
 Macro-F1 **0.495** over 12 roles, 3122 silver segments. Strong on `cta` (F1 0.91) and
 `proof` (0.70), weak on `objection_handling` (0.25) and `social_proof` (0.31). The labels are
-LLM/heuristic silver with no human-verified gold set, so this is the least trustworthy
-component and one of the clearest improvement targets.
+automated heuristic silver with no independently human-verified gold set. The score
+therefore measures agreement with held-out silver labels, not linguistic accuracy against
+ground truth. Individual assignments must not be presented as validated linguistic
+conclusions.
+
+This component is retained as an **exploratory feature family**: it converts segment-level
+heuristics into human-readable `role_*` dimensions that can be inspected qualitatively in
+TreeSHAP. Role-derived absences are not used for prescriptive suggestions.
+
+#### Paired role-feature ablation
+
+The two variants below use the same pinned dataset, author-grouped split, content scores,
+seed, XGBoost parameters and calibration procedure. The only controlled difference is the
+presence of the 26 `role_*` columns.
+
+| Variant | Features | PR-AUC | ROC-AUC | Brier | F1 |
+|---|---:|---:|---:|---:|---:|
+| With exploratory roles | 47 | 0.193 | 0.623 | 0.110 | 0.154 |
+| Without roles | 21 | 0.271 | 0.658 | 0.112 | 0.250 |
+
+For `without - with`, the paired-bootstrap PR-AUC delta is **+0.079** with 95% CI
+**[-0.011, 0.368]**, and the ROC-AUC delta is **+0.035** with CI
+**[-0.150, 0.250]**. Both intervals include zero: this small holdout demonstrates no
+reliable predictive benefit from the role features. The point estimates favor removing
+them, but are not precise enough to establish superiority. Full machine-readable evidence:
+`results/stage1_role_ablation.json`.
 
 ---
 
@@ -134,11 +167,13 @@ contribution over the test set (`pred_contribs`), which is exactly what drives t
 | `role_*` — marketing roles | 26 | 11.3% |
 | `src_*` — platform one-hot | 3 | 2.9% |
 
-Audience and content are now close (29.6% vs 21.1%). Before the audience contract was fixed,
-`chan_log_audience` outweighed `content_score` **5.5×** — the model was reading the channel
-and barely reading the post. It now does both.
+The historical model assigned 29.6% of measured SHAP influence to audience. This large
+value is a leakage warning, not evidence that audience has overwhelming pre-publication
+predictive power: the collected count may already incorporate growth caused by the post.
 
-The 26 role features carry 11.3% between them, the weakest return per column in the set.
+In this historical SHAP analysis, the 26 role features carry 11.3% between them, the
+weakest return per column in the set. SHAP measures how the model used these heuristic
+signals; it does not validate the linguistic correctness of a role assignment.
 
 ### Top 20 individual features
 
@@ -199,8 +234,9 @@ Each step measured in isolation, on the same rows:
 Per source, over the whole sequence: Reddit **0.476 → 0.661** (it used to predict *backwards*),
 X **0.571 → 0.749**, calibration error **0.123 → 0.017**.
 
-Hyperparameter tuning contributed almost nothing (+0.004, well inside the CI). The gains came
-from data correctness, not from modelling.
+Hyperparameter tuning contributed almost nothing (+0.004, well inside the CI). Most of the
+historical lift coincided with adding temporally invalid audience measurements and cannot
+be credited to a leakage-free feature improvement.
 
 ---
 
@@ -208,10 +244,14 @@ from data correctness, not from modelling.
 
 - **The July figures in sections 1–5 are historical only.** They use the manual CSV path
   and are not interchangeable with the official pinned-snapshot figures in section 0.
-- **Audience is not timestamp-valid.** Subscriber counts were read today, not as of each
-  post's publication date. A post that went viral has since gained subscribers, so the
-  YouTube figures are optimistic. Audience size is a legitimate pre-launch feature; only the
-  measurement is inflated. The honest fix is a historical snapshot at post time.
+- **Audience is not timestamp-valid in sections 1–5.** Subscriber/follower counts were
+  collected after publication and may partly be consequences of virality. Those figures
+  are optimistic and the apparent feature power must not be generalized.
+- **The official model excludes audience.** Reintroduction requires a frozen history and
+  the invariant `reputation_observed_at <= post_published_at`. The intended inputs are
+  timestamped subscriber/follower counts and author-level Reddit karma; the join selects
+  only the last observation available before publication. See
+  `docs/PREPUBLICATION_REPUTATION.md`.
 - **Reddit's audience feature is degenerate.** `subreddit_member_count` takes 3 distinct
   values across the whole dataset, because the corpus covers 2 subreddits. Filling the
   remaining 782 Reddit rows with it would raise coverage without adding information — it

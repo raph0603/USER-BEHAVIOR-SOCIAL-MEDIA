@@ -240,31 +240,26 @@ def _validate_analytics_and_ml(spark: SparkSession) -> dict[str, Any]:
     _require(
         _count(
             examples.filter(
-                (col("audience_available") == True)  # noqa: E712
-                & (col("audience_count") == 0)
-            )
-        )
-        == 1,
-        "known zero audience was not preserved",
-    )
-    _require(
-        _count(
-            examples.filter(
                 (col("audience_available") == False)  # noqa: E712
                 & col("audience_count").isNull()
             )
         )
-        == 1,
-        "unknown audience was coerced to zero",
+        == 2,
+        "official Gold exposed audience without pre-publication history",
     )
     _require(_count(manifests) == 1, "dataset manifest is not deterministic")
-    manifest = manifests.select("dataset_version", "example_count").first()
+    manifest = manifests.select("dataset_version", "example_count", "filters_json").first()
     dataset_row = examples.select("dataset_version").first()
     if manifest is None or dataset_row is None:
         raise AssertionError("dataset manifest or examples unexpectedly empty")
     dataset_version = dataset_row["dataset_version"]
     _require(manifest["dataset_version"] == dataset_version, "manifest version mismatch")
     _require(int(manifest["example_count"]) == 2, "manifest example count mismatch")
+    filters = json.loads(str(manifest["filters_json"]))
+    _require(
+        filters.get("audience_feature_policy") == "excluded_no_prepublication_history",
+        "manifest did not record the official audience exclusion policy",
+    )
 
     return {
         "contents": _count(contents),

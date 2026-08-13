@@ -62,6 +62,8 @@ An official manifest is accepted only when all of these checks pass:
 - the fingerprint recomputed from the pinned snapshots and filters is identical;
 - `source_tables_json` and `iceberg_snapshots_json` describe the same tables;
 - every snapshot ID is a positive integer;
+- `audience_feature_policy` is `excluded_no_prepublication_history`; official Gold rows
+  expose no audience value and official model bundles contain no `chan_*` feature;
 - `training_table` is exactly `lakehouse.gold.training_examples` and
   `training_snapshot_id` is a positive Gold Iceberg snapshot ID;
 - the versioned Parquet path is relative, contained by the export root, and named
@@ -84,3 +86,7 @@ artifact bundle must retain the full `dataset_fingerprint`, `manifest_sha256`, a
 evaluation JSON. Results without these fields are
 historical, non-versioned measurements and must not be presented as reproducible
 Iceberg results.
+
+Audience can be reintroduced only after the historical contract in
+[`PREPUBLICATION_REPUTATION.md`](PREPUBLICATION_REPUTATION.md) is implemented and the
+dataset identity is revised again.
