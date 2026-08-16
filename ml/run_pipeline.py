@@ -1,6 +1,6 @@
 """Run the full Stage-1 AI pipeline end-to-end.
 
-Order: validate/build dataset -> train role classifier -> train viral model -> evaluate.
+Order: validate input -> train role classifier -> build features -> train viral model -> evaluate.
 Each step runs as a subprocess with the current Python, so it mirrors running the
 scripts by hand and stops on the first error.
 
@@ -25,11 +25,32 @@ from pathlib import Path
 from dataset_lineage import load_dataset_lineage
 
 ML_ROOT = Path(__file__).resolve().parents[0]
+PROJECT_ROOT = ML_ROOT.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from common.reproducibility import (
+    capture_environment_manifest,
+    capture_git_identity,
+    fingerprint,
+    load_json,
+    manifest_sha256,
+    require_official_git,
+    write_json,
+)
+
 PY = sys.executable
 
+ENVIRONMENT_MANIFEST = ML_ROOT / "results" / "environment_manifest.json"
+TRAINING_CONFIG = ML_ROOT / "results" / "training_config.json"
+SPLIT_MANIFEST = ML_ROOT / "results" / "split_manifest.json"
+EXPERIMENT_LINEAGE = ML_ROOT / "results" / "experiment_lineage.json"
+EVALUATION_ARTIFACT = ML_ROOT / "results" / "evaluation.json"
+MODEL_ARTIFACT = ML_ROOT / "models" / "stage1_multisource.joblib"
+
 STEPS = [
-    ("Build dataset", ML_ROOT / "preprocess" / "build_dataset.py"),
     ("Train role classifier", ML_ROOT / "train" / "train_roles.py"),
+    ("Build dataset", ML_ROOT / "preprocess" / "build_dataset.py"),
     ("Train viral model", ML_ROOT / "train" / "train_viral.py"),
     ("Evaluate per source", ML_ROOT / "train" / "evaluate.py"),
     ("Verify performance figures", ML_ROOT / "train" / "verify_answers.py"),
@@ -114,6 +135,46 @@ def load_lakehouse_manifest(
     return dataset_path, str(lineage["dataset_version"])
 
 
+def validate_official_manifest(manifest: dict) -> list[str]:
+    """Return missing immutable identities required by the current official schema."""
+
+    missing = []
+    for field in (
+        "manifest_sha256",
+        "gold_snapshot_id",
+        "gold_table",
+        "build_environment",
+        "build_environment_fingerprint",
+    ):
+        if not manifest.get(field):
+            missing.append(field)
+    snapshots = manifest.get("iceberg_snapshots_json", manifest.get("source_snapshots"))
+    if not snapshots:
+        missing.append("iceberg_snapshots_json")
+    return missing
+
+
+def validate_dataset_build_environment(manifest: dict, git_commit: str) -> None:
+    build_environment = manifest.get("build_environment")
+    if not isinstance(build_environment, dict):
+        raise ValueError("Dataset manifest has no build environment")
+    expected = str(build_environment.get("environment_fingerprint") or "")
+    identity = {
+        key: value for key, value in build_environment.items() if key != "environment_fingerprint"
+    }
+    if (
+        expected != fingerprint(identity)
+        or manifest.get("build_environment_fingerprint") != expected
+    ):
+        raise ValueError("Dataset build-environment fingerprint is invalid")
+    code = build_environment.get("code", {})
+    if code.get("git_commit") != git_commit or code.get("git_dirty") is not False:
+        raise ValueError("Dataset was not built from the clean Git revision used for training")
+    container = build_environment.get("container", {})
+    if not container.get("digest") or not container.get("executor_digest"):
+        raise ValueError("Official dataset build has no immutable Spark driver/executor digest")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Stage-1 AI pipeline end-to-end.")
     parser.add_argument(
@@ -152,6 +213,21 @@ def main() -> None:
         action="store_true",
         help="Permit an older export for deliberate reproducibility runs.",
     )
+    parser.add_argument(
+        "--allow-dirty-nonofficial",
+        action="store_true",
+        help="Allow a dirty tree while explicitly marking the experiment non-official.",
+    )
+    parser.add_argument(
+        "--allow-legacy-manifest-nonofficial",
+        action="store_true",
+        help="Accept a legacy dataset manifest without complete immutable lineage as non-official.",
+    )
+    parser.add_argument(
+        "--expected-lineage",
+        type=Path,
+        help="Replay preflight: require dataset, code, environment, config, and split identities to match.",
+    )
     args = parser.parse_args()
 
     if args.dataset_version and not args.lakehouse_manifest:
@@ -170,12 +246,21 @@ def main() -> None:
         )
         assert training_input is not None
         dataset_version = str(dataset_lineage["dataset_version"])
-        dataset_manifest = args.lakehouse_manifest.resolve()
-        official_input = True
+        dataset_manifest_path = args.lakehouse_manifest.resolve()
+        dataset_manifest_payload = load_json(dataset_manifest_path)
+        missing_manifest_fields = validate_official_manifest(dataset_manifest_payload)
+        if missing_manifest_fields and not args.allow_legacy_manifest_nonofficial:
+            raise ValueError(
+                "Official dataset manifest lacks immutable lineage fields: "
+                + ", ".join(missing_manifest_fields)
+                + ". Re-export it or pass --allow-legacy-manifest-nonofficial."
+            )
+        official_input = not missing_manifest_fields
     elif args.manual_csv_input:
         training_input = args.manual_csv_input
         dataset_version = None
-        dataset_manifest = None
+        dataset_manifest_path = None
+        dataset_manifest_payload = {}
         official_input = False
         validate_training_input(
             training_input,
@@ -192,29 +277,89 @@ def main() -> None:
             "Use --manual-csv-input only for deliberate compatibility runs."
         )
 
+    git_identity = capture_git_identity(PROJECT_ROOT)
+    clean_for_official = (
+        require_official_git(
+            git_identity,
+            allow_dirty_nonofficial=args.allow_dirty_nonofficial,
+        )
+        if official_input
+        else False
+    )
+    official_run = bool(official_input and clean_for_official)
+    if official_run:
+        validate_dataset_build_environment(dataset_manifest_payload, git_identity.git_commit)
+    environment_manifest = capture_environment_manifest(
+        PROJECT_ROOT,
+        git_identity,
+        dependency_lock=ML_ROOT / "requirements-train.txt",
+        distributions=(
+            "pandas",
+            "numpy",
+            "scikit-learn",
+            "scipy",
+            "xgboost",
+            "pyarrow",
+            "joblib",
+        ),
+        require_container_digest=official_run,
+        components=(
+            {"dataset_build": dataset_manifest_payload["build_environment"]}
+            if dataset_manifest_payload.get("build_environment")
+            else None
+        ),
+    )
+    write_json(ENVIRONMENT_MANIFEST, environment_manifest)
+
     for title, script in STEPS:
         arguments: tuple[str, ...] = ()
         if script.name == "build_dataset.py":
-            arguments = ("--input", str(training_input))
+            arguments = ("--input", str(training_input), "--seed", "42")
             if dataset_version:
                 arguments += ("--dataset-version", dataset_version)
-        elif script.name == "train_viral.py" and dataset_version:
+        elif script.name == "train_roles.py":
+            arguments = ("--seed", "42")
+        elif script.name == "train_viral.py":
             arguments = (
-                "--dataset-version",
-                dataset_version,
-                "--dataset-manifest",
-                str(dataset_manifest),
+                "--environment-manifest",
+                str(ENVIRONMENT_MANIFEST),
+                "--training-config-output",
+                str(TRAINING_CONFIG),
+                "--split-output",
+                str(SPLIT_MANIFEST),
+                "--lineage-output",
+                str(EXPERIMENT_LINEAGE),
             )
-        elif script.name in {
-            "evaluate.py",
-            "verify_answers.py",
-            "evaluate_role_ablation.py",
-        } and dataset_manifest:
-            arguments = ("--dataset-manifest", str(dataset_manifest))
+            if dataset_version:
+                arguments += ("--dataset-version", dataset_version)
+            if args.lakehouse_manifest:
+                arguments += ("--dataset-manifest", str(args.lakehouse_manifest))
+            if args.expected_lineage:
+                arguments += ("--expected-lineage", str(args.expected_lineage))
+            if official_run:
+                arguments += ("--official-run",)
+        elif script.name == "evaluate.py":
+            arguments = (
+                "--model",
+                str(MODEL_ARTIFACT),
+                "--lineage",
+                str(EXPERIMENT_LINEAGE),
+                "--split-manifest",
+                str(SPLIT_MANIFEST),
+                "--environment-manifest",
+                str(ENVIRONMENT_MANIFEST),
+                "--output",
+                str(EVALUATION_ARTIFACT),
+            )
+            if args.lakehouse_manifest:
+                arguments += ("--dataset-manifest", str(args.lakehouse_manifest))
+        elif script.name in {"verify_answers.py", "evaluate_role_ablation.py"}:
+            if dataset_manifest_path:
+                arguments = ("--dataset-manifest", str(dataset_manifest_path))
         run(title, script, *arguments)
     if args.report:
         report_arguments = (
-            ("--dataset-manifest", str(dataset_manifest)) if dataset_manifest else ()
+            ("--dataset-manifest", str(dataset_manifest_path)) if dataset_manifest_path else ()
         )
         run("Build report", ML_ROOT / "report.py", *report_arguments)
 
@@ -222,8 +367,8 @@ def main() -> None:
         "\nPipeline finished. "
         + (
             f"Official dataset: {dataset_version}."
-            if official_input
-            else "Manual compatibility input; no official dataset version."
+            if official_run
+            else "Non-official run; inspect experiment_lineage.json for the recorded identities."
         )
     )
 

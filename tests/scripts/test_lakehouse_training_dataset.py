@@ -16,6 +16,7 @@ sys.path.insert(0, str(PIPELINE_DIR))
 
 import dataset_manifest
 import gold_schemas
+from common.reproducibility import manifest_sha256
 
 
 def _load_module(name: str, path: Path):
@@ -55,7 +56,10 @@ def _load_feature_columns():
         node
         for node in module.body
         if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "CONTENT_FEATURES" for target in node.targets)
+        and any(
+            isinstance(target, ast.Name) and target.id == "CONTENT_FEATURES"
+            for target in node.targets
+        )
     )
     function = next(
         node
@@ -251,14 +255,14 @@ class OfficialTrainingInputTests(unittest.TestCase):
                 dict(identity.source_snapshots)
             ),
             "filters_json": dataset_manifest.canonical_json(dict(identity.filters)),
-            "dataset_relative_path": relative_path
-            or f"../datasets/{identity.dataset_version}",
+            "dataset_relative_path": relative_path or f"../datasets/{identity.dataset_version}",
             "format": "parquet",
             "official_input": True,
             "training_table": "lakehouse.gold.training_examples",
             "training_snapshot_id": 789,
             "example_count": 1,
         }
+        payload["manifest_sha256"] = manifest_sha256(payload)
         manifest_path.write_text(json.dumps(payload), encoding="utf-8")
         return manifest_path, dataset_path, identity, payload
 
@@ -310,6 +314,7 @@ class OfficialTrainingInputTests(unittest.TestCase):
 
             payload["dataset_fingerprint"] = identity.fingerprint
             payload["dataset_relative_path"] = "../../outside-dataset"
+            payload["manifest_sha256"] = manifest_sha256(payload)
             manifest_path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "escapes the export root"):
                 RUN_PIPELINE.load_lakehouse_manifest(manifest_path)
@@ -356,7 +361,9 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn('audience_count = lit(None).cast("bigint")', source)
         self.assertIn("audience_available = lit(False)", source)
         self.assertIn('"training_snapshot_id": training_snapshot_id', source)
-        self.assertIn("_read_snapshot(\n            spark,\n            TRAINING_EXAMPLES_TABLE", source)
+        self.assertIn(
+            "_read_snapshot(\n            spark,\n            TRAINING_EXAMPLES_TABLE", source
+        )
         self.assertIn('examples.orderBy("example_id")', source)
         self.assertIn(
             "Exporting an existing dataset version requires --training-examples-snapshot-id",
@@ -364,7 +371,32 @@ class OfficialTrainingInputTests(unittest.TestCase):
         )
         self.assertIn("actual_count != expected_count", source)
         self.assertIn("DATASET_VERSION_PATTERN", source)
+        self.assertIn("gold_snapshot_id", source)
+        self.assertIn("manifest_sha256", source)
         self.assertNotIn("read.csv", source.lower())
+
+    def test_current_official_manifest_requires_gold_and_manifest_identities(self):
+        complete = {
+            "manifest_sha256": "a" * 64,
+            "gold_snapshot_id": 123,
+            "gold_table": "lakehouse.gold.training_examples",
+            "build_environment": {"schema_version": "dataset-build-environment-v1"},
+            "build_environment_fingerprint": "b" * 64,
+            "iceberg_snapshots_json": '{"lakehouse.silver.post_features":1}',
+        }
+
+        self.assertEqual(RUN_PIPELINE.validate_official_manifest(complete), [])
+        self.assertEqual(
+            RUN_PIPELINE.validate_official_manifest({}),
+            [
+                "manifest_sha256",
+                "gold_snapshot_id",
+                "gold_table",
+                "build_environment",
+                "build_environment_fingerprint",
+                "iceberg_snapshots_json",
+            ],
+        )
 
     def test_training_dag_builds_then_consumes_the_run_manifest(self):
         source = (ROOT / "orchestrator" / "dags" / "ai_train_pipeline.py").read_text(
@@ -381,7 +413,7 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn("initialize_services >> build_lakehouse_dataset >> train_stage1", source)
         run_pipeline = (ROOT / "ml" / "run_pipeline.py").read_text(encoding="utf-8")
         self.assertLess(
-            run_pipeline.index("Build dataset"), run_pipeline.index("Train role classifier")
+            run_pipeline.index("Train role classifier"), run_pipeline.index("Build dataset")
         )
         self.assertNotIn("filtered_events.csv", source)
 

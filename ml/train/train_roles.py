@@ -10,6 +10,7 @@ Coverage caveat: silver only contains the roles that passed the 0.75 confidence
 bar, so solution/benefit/educational/scarcity are absent here — the classifier
 cannot predict them until the annotation set improves.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,21 +30,37 @@ if str(ML_ROOT) not in sys.path:
     sys.path.insert(0, str(ML_ROOT))
 
 from role_contract import role_feature_contract
+from experiment_config import DEFAULT_RANDOM_SEED, ROLE_MODEL
 
 # Official annotation dataset committed at repo root (merged from main); reproducible for everyone.
 DEFAULT_SILVER = ML_ROOT.parent / "annotation_marketing" / "silver_dataset.jsonl"
 DEFAULT_MODEL = ML_ROOT / "models" / "rhetorical_role.joblib"
-MIN_CLASS = 10
+MIN_CLASS = int(ROLE_MODEL["minimum_class_size"])
 
 
-def build_role_model() -> Pipeline:
+def build_role_model(seed: int = DEFAULT_RANDOM_SEED) -> Pipeline:
+    tfidf = ROLE_MODEL["tfidf"]
+    logistic = ROLE_MODEL["logistic_regression"]
     return Pipeline(
         [
             (
                 "tfidf",
-                TfidfVectorizer(ngram_range=(1, 2), min_df=2, sublinear_tf=True, max_features=20000),
+                TfidfVectorizer(
+                    ngram_range=tuple(tfidf["ngram_range"]),
+                    min_df=tfidf["min_df"],
+                    sublinear_tf=tfidf["sublinear_tf"],
+                    max_features=tfidf["max_features"],
+                ),
             ),
-            ("clf", LogisticRegression(max_iter=1000, class_weight="balanced")),
+            (
+                "clf",
+                LogisticRegression(
+                    max_iter=logistic["max_iter"],
+                    class_weight=logistic["class_weight"],
+                    solver=logistic["solver"],
+                    random_state=seed,
+                ),
+            ),
         ]
     )
 
@@ -59,12 +76,14 @@ def load_silver(path: Path, min_class: int) -> pd.DataFrame:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train the rhetorical-role classifier from silver.")
+    parser = argparse.ArgumentParser(
+        description="Train the rhetorical-role classifier from silver."
+    )
     parser.add_argument("--silver", type=Path, default=DEFAULT_SILVER)
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--min-class", type=int, default=MIN_CLASS)
     parser.add_argument("--test-size", type=float, default=0.2)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=DEFAULT_RANDOM_SEED)
     args = parser.parse_args()
 
     df = load_silver(args.silver, args.min_class)
@@ -74,7 +93,7 @@ def main() -> None:
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=args.test_size, stratify=y, random_state=args.seed
     )
-    model = build_role_model()
+    model = build_role_model(args.seed)
     model.fit(X_train, y_train)
     pred = model.predict(X_test)
     macro_f1 = float(f1_score(y_test, pred, average="macro", zero_division=0))

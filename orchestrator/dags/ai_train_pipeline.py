@@ -10,13 +10,17 @@ from airflow.operators.bash import BashOperator
 PROJECT_DIR = "/workspace"
 
 
-def docker_compose(command: str) -> str:
+def project_command(command: str) -> str:
     return (
         f"cd {PROJECT_DIR} && "
         'HOST_PROJECT_DIR="${DOCKER_HOST_PROJECT_DIR:-.}" && '
         "export HOST_PROJECT_DIR && "
-        f"docker compose {command}"
+        f"{command}"
     )
+
+
+def docker_compose(command: str) -> str:
+    return project_command(f"docker compose {command}")
 
 
 with DAG(
@@ -62,8 +66,20 @@ with DAG(
 ) as dag:
     initialize_services = BashOperator(
         task_id="initialize_training_services",
-        bash_command=docker_compose(
-            "up -d --scale spark-worker=${SPARK_WORKER_COUNT:-4} minio spark-master spark-worker"
+        bash_command=project_command(
+            r"""
+            set -euo pipefail
+            SOURCE_GIT_COMMIT="$(git rev-parse --verify HEAD)"
+            if [ -n "$(git status --porcelain=v1 --untracked-files=normal)" ]; then
+              echo "Official training requires a clean Git working tree" >&2
+              exit 1
+            fi
+            docker compose build \
+              --build-arg SOURCE_GIT_COMMIT="$SOURCE_GIT_COMMIT" \
+              --build-arg SOURCE_GIT_DIRTY=false \
+              spark-master spark-worker
+            docker compose up -d --scale spark-worker=${SPARK_WORKER_COUNT:-4} minio spark-master spark-worker
+            """
         ),
     )
 
@@ -72,7 +88,21 @@ with DAG(
         execution_timeout=timedelta(hours=1),
         bash_command=r"""
         set -euo pipefail
-        docker exec spark-master /opt/spark/bin/spark-submit \
+        SPARK_IMAGE_NAME="$(docker inspect spark-master | python -c \
+          'import json,sys; print(json.load(sys.stdin)[0]["Config"]["Image"])')"
+        SPARK_IMAGE_DIGEST="$(docker inspect spark-master | python -c \
+          'import json,sys; print(json.load(sys.stdin)[0]["Image"])')"
+        SPARK_WORKER_ID="$(docker compose ps -q spark-worker | head -n 1)"
+        SPARK_WORKER_IMAGE_NAME="$(docker inspect "$SPARK_WORKER_ID" | python -c \
+          'import json,sys; print(json.load(sys.stdin)[0]["Config"]["Image"])')"
+        SPARK_WORKER_IMAGE_DIGEST="$(docker inspect "$SPARK_WORKER_ID" | python -c \
+          'import json,sys; print(json.load(sys.stdin)[0]["Image"])')"
+        docker exec \
+          -e ML_CONTAINER_IMAGE="$SPARK_IMAGE_NAME" \
+          -e ML_CONTAINER_IMAGE_DIGEST="$SPARK_IMAGE_DIGEST" \
+          -e SPARK_WORKER_IMAGE="$SPARK_WORKER_IMAGE_NAME" \
+          -e SPARK_WORKER_IMAGE_DIGEST="$SPARK_WORKER_IMAGE_DIGEST" \
+          spark-master /opt/spark/bin/spark-submit \
           --master spark://spark-master:7077 \
           --driver-memory 512m \
           --executor-memory 512m \
@@ -92,8 +122,9 @@ with DAG(
     train_stage1 = BashOperator(
         task_id="train_stage1",
         execution_timeout=timedelta(hours=4),
-        bash_command=docker_compose(
-            "run --rm ai-trainer python ml/run_pipeline.py "
+        bash_command=project_command(
+            "python ml/run_official_container.py --service ai-trainer --build -- "
+            "python ml/run_pipeline.py "
             "--lakehouse-manifest "
             '"/workspace/data/lakehouse-ml/ml/runs/{{ ts_nodash }}.json" '
             "--report"
