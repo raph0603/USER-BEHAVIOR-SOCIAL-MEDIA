@@ -33,6 +33,7 @@ def test_validation_suite_separates_all_required_gates():
     assert "python -m unittest discover" in source
     assert "tests/scripts/test_engagement_snapshots.py" in source
     assert "tests/scripts/test_silver_post_features.py" in source
+    assert "tests/scripts/test_experiment_reproducibility.py" in source
     assert "--ignore=tests/scripts/test_engagement_snapshots.py" not in source
     assert "--ignore=tests/scripts/test_silver_post_features.py" not in source
 
