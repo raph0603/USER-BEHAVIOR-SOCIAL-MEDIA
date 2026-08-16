@@ -1,0 +1,27 @@
+{
+  "schema_version": "pipeline-benchmark-config-v1",
+  "name": "baseline_system_configuration",
+  "sizes": [10000, 25000, 50000, 100000],
+  "repetitions": 3,
+  "warmup_runs": 1,
+  "isolation_mode": "isolated",
+  "stages": ["kafka", "clean", "bronze", "silver", "gold"],
+  "topology": "single-host Docker Desktop",
+  "spark": {
+    "master": "spark://spark-master:7077",
+    "driver_memory": "512m",
+    "executor_memory": "1024m",
+    "max_cores": 2,
+    "executor_cores": 1,
+    "shuffle_partitions": 4,
+    "trigger_mode": "available_now"
+  },
+  "kafka": {
+    "partitions": 1,
+    "replication_factor": 1,
+    "producer_acks": "all",
+    "producer_idempotence": true
+  },
+  "stage_timeout_seconds": 1800,
+  "notes": "System runs must retain the measured Spark/Kafka configuration and identify single-host versus multi-node infrastructure."
+}

@@ -65,6 +65,8 @@ logs/
 *.log
 *.pid
 orchestrator/logs/
+benchmarks/runs/*
+!benchmarks/runs/.gitkeep
 tmp/
 temp/
 *.tmp
