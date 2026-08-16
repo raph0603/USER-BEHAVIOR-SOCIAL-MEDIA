@@ -28,6 +28,7 @@ if str(ML_ROOT) not in sys.path:
 from features.cognitive_friction import cognitive_friction
 from features.rhetorical_roles import add_role_features
 from features.topics import add_topic_features
+from experiment_config import DEFAULT_RANDOM_SEED
 
 DEFAULT_INPUT = ML_ROOT.parent / "data" / "samples" / "filtered_events.csv"
 DEFAULT_OUTPUT = ML_ROOT / "data" / "train_dataset.parquet"
@@ -272,12 +273,13 @@ def build(
     quantile: float = VIRAL_QUANTILE,
     *,
     expected_dataset_version: str | None = None,
+    seed: int = DEFAULT_RANDOM_SEED,
 ) -> pd.DataFrame:
     df = load_events(input_path)
     df = filter_rows(df)
     df = add_text_features(df)
     df = add_role_features(df)
-    df = add_topic_features(df)
+    df = add_topic_features(df, seed=seed)
     df = add_channel_features(df)
     if "label_value" in df.columns:
         versions = sorted(df["dataset_version"].dropna().astype(str).unique())
@@ -329,6 +331,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--quantile", type=float, default=VIRAL_QUANTILE)
     parser.add_argument("--dataset-version")
+    parser.add_argument("--seed", type=int, default=DEFAULT_RANDOM_SEED)
     args = parser.parse_args()
 
     df = build(
@@ -336,6 +339,7 @@ def main() -> None:
         args.output,
         args.quantile,
         expected_dataset_version=args.dataset_version,
+        seed=args.seed,
     )
     _report(df)
     print(f"Saved -> {args.output}")

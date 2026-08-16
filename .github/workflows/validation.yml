@@ -76,6 +76,7 @@ jobs:
         run: >-
           python -m pytest
           tests/scripts/test_event_contract_provenance.py
+          tests/scripts/test_experiment_reproducibility.py
           tests/scripts/test_pipeline_reliability.py
           tests/scripts/test_transcript_lifecycle.py
           tests/e2e/test_pipeline_fixture.py

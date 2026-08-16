@@ -56,6 +56,11 @@ flowchart TB
   BUNDLE --> EVAL["evaluate.py<br/>PR-AUC per source"]
 ```
 
+Official runs additionally persist the dataset manifest, environment manifest, resolved
+training configuration, exact split membership, experiment lineage, serialized-model
+SHA-256, and evaluation artifact. See
+[`docs/EXPERIMENT_REPRODUCIBILITY.md`](../docs/EXPERIMENT_REPRODUCIBILITY.md).
+
 ## 2. Features fed into XGBoost (and their role)
 
 ```mermaid

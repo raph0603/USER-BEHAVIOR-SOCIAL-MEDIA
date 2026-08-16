@@ -1,5 +1,5 @@
-pyspark==3.5.1
-pandas
-numpy
-pyarrow
+pyspark==3.5.2
+pandas==2.2.3
+numpy==2.2.6
+pyarrow==20.0.0
 youtube-transcript-api==1.2.4

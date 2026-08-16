@@ -5,6 +5,7 @@ as a soft topic-membership distribution for the fusion model. This fills the
 "topic" component of the Stage-1 design; BERTopic (embeddings + UMAP + HDBSCAN) is
 the heavier upgrade for when data grows, behind this same feature interface.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,16 +17,35 @@ from sklearn.decomposition import NMF
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.pipeline import Pipeline
 
+from experiment_config import DEFAULT_RANDOM_SEED, TOPIC_MODEL
+
 ML_ROOT = Path(__file__).resolve().parents[1]
 TOPIC_MODEL_PATH = ML_ROOT / "models" / "topic_model.joblib"
-N_TOPICS = 8
+N_TOPICS = int(TOPIC_MODEL["n_topics"])
 
 
-def build_topic_model(n_topics: int = N_TOPICS, seed: int = 42) -> Pipeline:
+def build_topic_model(n_topics: int = N_TOPICS, seed: int = DEFAULT_RANDOM_SEED) -> Pipeline:
+    tfidf = TOPIC_MODEL["tfidf"]
+    nmf = TOPIC_MODEL["nmf"]
     return Pipeline(
         [
-            ("tfidf", TfidfVectorizer(min_df=3, max_features=20000, sublinear_tf=True)),
-            ("nmf", NMF(n_components=n_topics, init="nndsvda", random_state=seed, max_iter=400)),
+            (
+                "tfidf",
+                TfidfVectorizer(
+                    min_df=tfidf["min_df"],
+                    max_features=tfidf["max_features"],
+                    sublinear_tf=tfidf["sublinear_tf"],
+                ),
+            ),
+            (
+                "nmf",
+                NMF(
+                    n_components=n_topics,
+                    init=nmf["init"],
+                    random_state=seed,
+                    max_iter=nmf["max_iter"],
+                ),
+            ),
         ]
     )
 
@@ -38,8 +58,13 @@ def _to_frame(matrix) -> pd.DataFrame:
     return pd.DataFrame(matrix, columns=[f"topic_{i}" for i in range(matrix.shape[1])])
 
 
-def fit_topic_features(texts, n_topics: int = N_TOPICS, model_path: Path = TOPIC_MODEL_PATH) -> pd.DataFrame:
-    model = build_topic_model(n_topics)
+def fit_topic_features(
+    texts,
+    n_topics: int = N_TOPICS,
+    model_path: Path = TOPIC_MODEL_PATH,
+    seed: int = DEFAULT_RANDOM_SEED,
+) -> pd.DataFrame:
+    model = build_topic_model(n_topics, seed)
     matrix = model.fit_transform(pd.Series(texts).fillna("").astype(str))
     model_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, model_path)
@@ -55,9 +80,14 @@ class TopicFeaturizer:
         return _to_frame(matrix)
 
 
-def add_topic_features(df: pd.DataFrame, text_col: str = "clean_text",
-                       n_topics: int = N_TOPICS, model_path: Path = TOPIC_MODEL_PATH) -> pd.DataFrame:
-    feats = fit_topic_features(df[text_col], n_topics, model_path)
+def add_topic_features(
+    df: pd.DataFrame,
+    text_col: str = "clean_text",
+    n_topics: int = N_TOPICS,
+    model_path: Path = TOPIC_MODEL_PATH,
+    seed: int = DEFAULT_RANDOM_SEED,
+) -> pd.DataFrame:
+    feats = fit_topic_features(df[text_col], n_topics, model_path, seed)
     return pd.concat([df.reset_index(drop=True), feats.reset_index(drop=True)], axis=1)
 
 

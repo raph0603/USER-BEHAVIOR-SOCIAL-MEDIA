@@ -96,6 +96,9 @@ Reuse in code: `from serve.explain_viral import explain_post; explain_post(text,
 
 ## Tests
 
+The complete experiment-identity, official-run, and replay procedure is documented in
+[`docs/EXPERIMENT_REPRODUCIBILITY.md`](../docs/EXPERIMENT_REPRODUCIBILITY.md).
+
 `requirements-train.txt` carries only what training and serving need, so install the dev
 extras once before running the suite:
 
@@ -139,6 +142,8 @@ on this machine yet.
 | `serve/explain_viral.py` | predict + SHAP → explanation JSON |
 | `serve/score_batch.py` | batch scoring CSV → JSONL |
 | `run_pipeline.py` | run the whole chain end-to-end |
+| `reproducibility_cli.py` | verify artifact identity and compare replay outputs |
+| `run_official_container.py` | inject the resolved immutable container identity |
 | `models/*.parquet`, `data/*` | artifacts (gitignored) |
 
 ## Current results

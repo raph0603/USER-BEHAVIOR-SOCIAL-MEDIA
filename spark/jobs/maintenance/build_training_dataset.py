@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+from importlib import metadata
 import json
 import math
 import os
+import platform
 import re
 import sys
 from datetime import datetime, timezone
@@ -36,7 +38,17 @@ from pyspark.sql.functions import (
     when,
 )
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+JOBS_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+for import_root in (JOBS_ROOT, REPOSITORY_ROOT):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
+from common.reproducibility import (
+    file_sha256,
+    fingerprint,
+    manifest_sha256,
+    normalize_container_digest,
+)
 from pipeline.dataset_manifest import DatasetIdentity, canonical_json, missing_rate
 from pipeline.gold_schemas import (
     DATASET_MANIFESTS_COLUMNS,
@@ -275,6 +287,53 @@ def _read_snapshot(spark: SparkSession, table: str, snapshot_id: int) -> DataFra
     return spark.read.format("iceberg").option("snapshot-id", str(snapshot_id)).load(table)
 
 
+def _distribution_version(name: str) -> str | None:
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _build_environment(spark: SparkSession) -> dict:
+    """Capture the runtime that materialized and exported the Gold dataset."""
+
+    lock_path = Path(os.getenv("SPARK_DEPENDENCY_LOCK", "/tmp/requirements.txt"))
+    if not lock_path.is_file():
+        raise FileNotFoundError(f"Spark dependency lock is missing: {lock_path}")
+    digest = normalize_container_digest(os.getenv("ML_CONTAINER_IMAGE_DIGEST"))
+    environment = {
+        "schema_version": "dataset-build-environment-v1",
+        "code": {
+            "git_commit": os.getenv("SOURCE_GIT_COMMIT") or None,
+            "git_dirty": (os.getenv("SOURCE_GIT_DIRTY", "").strip().lower() == "true"),
+        },
+        "runtime": {
+            "python": platform.python_version(),
+            "java": spark.sparkContext._jvm.java.lang.System.getProperty("java.version"),
+            "spark": spark.version,
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+        },
+        "dependencies": {
+            name.replace("-", "_"): _distribution_version(name)
+            for name in ("pyspark", "pandas", "numpy", "pyarrow")
+        },
+        "dependency_lock": {
+            "path": "spark/requirements.txt",
+            "sha256": file_sha256(lock_path),
+        },
+        "container": {
+            "image": os.getenv("ML_CONTAINER_IMAGE") or None,
+            "digest": digest,
+            "digest_available": digest is not None,
+            "executor_image": os.getenv("SPARK_WORKER_IMAGE") or None,
+            "executor_digest": normalize_container_digest(os.getenv("SPARK_WORKER_IMAGE_DIGEST")),
+        },
+    }
+    environment["environment_fingerprint"] = fingerprint(environment)
+    return environment
+
+
 def _with_optional_columns(
     dataframe: DataFrame,
     columns: dict[str, str],
@@ -368,6 +427,7 @@ def build_scored_examples(
         & col("text_for_model").isNotNull()
         & (length(trim(col("text_for_model"))) >= min_text_chars)
     )
+
     feature_order = Window.partitionBy("source", "platform_event_id").orderBy(
         col("event_ts").asc(),
         sha2(
@@ -738,6 +798,7 @@ def _export_dataset(
     training_snapshot_id: int,
     export_root: Path,
     manifest_output: Path,
+    build_environment: dict,
 ) -> None:
     version = str(manifest["dataset_version"])
     expected_count = int(manifest["example_count"])
@@ -751,6 +812,7 @@ def _export_dataset(
     manifest_output.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         **manifest,
+        "manifest_schema_version": "dataset-manifest-v2",
         "created_at": str(manifest.get("created_at")),
         "period_start": str(manifest.get("period_start")),
         "period_end": str(manifest.get("period_end")),
@@ -759,12 +821,17 @@ def _export_dataset(
         "official_input": True,
         "training_table": TRAINING_EXAMPLES_TABLE,
         "training_snapshot_id": training_snapshot_id,
+        "gold_table": TRAINING_EXAMPLES_TABLE,
+        "gold_snapshot_id": int(training_snapshot_id),
+        "build_environment": build_environment,
+        "build_environment_fingerprint": build_environment["environment_fingerprint"],
     }
     payload["labeling"] = json.loads(str(manifest["labeling_json"]))
     payload["labeling"]["contract_relative_path"] = os.path.relpath(
         export_root / "virality-contracts" / f"{manifest['virality_contract_fingerprint']}.json",
         manifest_output.parent,
     )
+    payload["manifest_sha256"] = manifest_sha256(payload)
     manifest_output.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n",
         encoding="utf-8",
@@ -939,6 +1006,7 @@ def main(argv: list[str] | None = None) -> int:
         training_snapshot_id=training_snapshot_id,
         export_root=args.export_root,
         manifest_output=manifest_output,
+        build_environment=_build_environment(spark),
     )
     if resolved_contract is not None:
         _print_contract_summary(resolved_contract, examples)
