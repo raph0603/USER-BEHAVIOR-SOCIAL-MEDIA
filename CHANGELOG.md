@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.27.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.26.2...v1.27.0) (2026-08-16)
+
+
+### Features
+
+* **reproducibility:** capture complete experiment lineage ([852d4e8](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/852d4e8f8657e37f3dfcc61615283e4f3a323a77))
+* **reproducibility:** version and verify complete experiment lineage ([c0a092a](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/c0a092a17731a4b3345662a9e7a50d663bb4ad8b))
+* **runtime:** verify container and spark identities ([1fbae5d](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/1fbae5da08e2353e298704c638cd7396812457a0))
+
+
+### Bug Fixes
+
+* **reproducibility:** preserve current lineage contracts ([0d3be51](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/0d3be5112023f025bb52d0a2711302baeba094f2))
+
 ## [1.26.2](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.26.1...v1.26.2) (2026-08-13)
 
 
