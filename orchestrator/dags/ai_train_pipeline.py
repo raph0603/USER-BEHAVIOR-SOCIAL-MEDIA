@@ -62,6 +62,18 @@ with DAG(
             minimum=1,
             title="Explicit operational floor; set deliberately for each run",
         ),
+        "post_features_snapshot_id": Param(
+            0,
+            type="integer",
+            minimum=0,
+            title="Pinned post_features snapshot ID (0 resolves latest once)",
+        ),
+        "engagement_snapshots_snapshot_id": Param(
+            0,
+            type="integer",
+            minimum=0,
+            title="Pinned engagement_snapshots snapshot ID (0 resolves latest once)",
+        ),
     },
     tags=["ai", "stage1", "lakehouse"],
 ) as dag:
@@ -92,6 +104,8 @@ with DAG(
           {% if params.virality_contract %}
           --virality-contract "{{ params.virality_contract }}" \
           {% endif %}
+          --post-features-snapshot-id {{ params.post_features_snapshot_id }} \
+          --engagement-snapshots-snapshot-id {{ params.engagement_snapshots_snapshot_id }} \
           --export-root /opt/spark/balancing/ml \
           --manifest-output "/opt/spark/balancing/ml/runs/{{ ts_nodash }}.json"
         """,

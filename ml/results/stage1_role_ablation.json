@@ -1,0 +1,88 @@
+{
+  "dataset_lineage": {
+    "dataset_fingerprint": "dd7ce6e598d3ebae6cd774e9c52c47d68f33e640c589b23d15afd1fc958bad5a",
+    "dataset_version": "dataset-v2-dd7ce6e598d3ebae6cd7",
+    "example_count": 197,
+    "filters": {
+      "audience_feature_policy": "excluded_no_prepublication_history",
+      "dataset_builder_revision": "prepublication-feature-contract-v3",
+      "label_horizon_hours": 24,
+      "label_strategy": "coverage_aware_source_rank_v1",
+      "label_tolerance_hours": 24,
+      "min_text_chars": 3,
+      "required_observed_metrics": 1,
+      "viral_quantile": 0.75
+    },
+    "iceberg_snapshot_ids": {
+      "lakehouse.silver.engagement_snapshots": 4006086415507010724,
+      "lakehouse.silver.post_features": 8259184521274725029
+    },
+    "manifest_sha256": "c7ba10aaf98f4fb2b06394d1b337e4e0d69feacc1505b6c6c167b9e345afbfea",
+    "period_end": "2026-08-03 14:28:47",
+    "period_start": "2026-07-29 02:06:32",
+    "schema_version": "v2",
+    "source_tables": [
+      "lakehouse.silver.engagement_snapshots",
+      "lakehouse.silver.post_features"
+    ],
+    "training_snapshot_id": 6550655688150864602,
+    "training_table": "lakehouse.gold.training_examples"
+  },
+  "delta": {
+    "brier": 0.001893,
+    "brier_ci95": [
+      -0.003489,
+      0.006896
+    ],
+    "definition": "without_roles_minus_with_roles",
+    "pr_auc": 0.078775,
+    "pr_auc_ci95": [
+      -0.010689,
+      0.368355
+    ],
+    "roc_auc": 0.035088,
+    "roc_auc_ci95": [
+      -0.15,
+      0.25
+    ]
+  },
+  "methodology": {
+    "controlled_difference": "presence of role_* features only",
+    "paired_bootstrap_iterations": 2000,
+    "seed": 42,
+    "split": "GroupShuffleSplit by author_hash",
+    "test_size": 0.2
+  },
+  "reference_model": {
+    "file": "stage1_multisource.joblib",
+    "sha256": "f3f0b029aad54933d8dbcea192de35d9689c79e78149cb5235387ec943064093"
+  },
+  "role_feature_contract": {
+    "human_gold_validated": false,
+    "intended_use": "qualitative_feature_level_interpretability",
+    "label_provenance": "automated_heuristic_silver",
+    "linguistic_claims_permitted": false,
+    "metric_interpretation": "agreement_with_held_out_silver_labels",
+    "status": "exploratory"
+  },
+  "with_roles": {
+    "brier": 0.110053,
+    "decision_threshold": 0.26,
+    "f1": 0.153846,
+    "feature_count": 47,
+    "n": 41,
+    "pr_auc": 0.192696,
+    "roc_auc": 0.622807,
+    "role_feature_count": 26
+  },
+  "without_roles": {
+    "brier": 0.111946,
+    "decision_threshold": 0.31,
+    "f1": 0.25,
+    "feature_count": 21,
+    "n": 41,
+    "pr_auc": 0.271471,
+    "roc_auc": 0.657895,
+    "role_feature_count": 0
+  }
+}

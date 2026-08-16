@@ -1,0 +1,68 @@
+{
+  "dataset_lineage": {
+    "dataset_fingerprint": "dd7ce6e598d3ebae6cd774e9c52c47d68f33e640c589b23d15afd1fc958bad5a",
+    "dataset_version": "dataset-v2-dd7ce6e598d3ebae6cd7",
+    "example_count": 197,
+    "filters": {
+      "audience_feature_policy": "excluded_no_prepublication_history",
+      "dataset_builder_revision": "prepublication-feature-contract-v3",
+      "label_horizon_hours": 24,
+      "label_strategy": "coverage_aware_source_rank_v1",
+      "label_tolerance_hours": 24,
+      "min_text_chars": 3,
+      "required_observed_metrics": 1,
+      "viral_quantile": 0.75
+    },
+    "iceberg_snapshot_ids": {
+      "lakehouse.silver.engagement_snapshots": 4006086415507010724,
+      "lakehouse.silver.post_features": 8259184521274725029
+    },
+    "manifest_sha256": "c7ba10aaf98f4fb2b06394d1b337e4e0d69feacc1505b6c6c167b9e345afbfea",
+    "period_end": "2026-08-03 14:28:47",
+    "period_start": "2026-07-29 02:06:32",
+    "schema_version": "v2",
+    "source_tables": [
+      "lakehouse.silver.engagement_snapshots",
+      "lakehouse.silver.post_features"
+    ],
+    "training_snapshot_id": 6550655688150864602,
+    "training_table": "lakehouse.gold.training_examples"
+  },
+  "evaluation": {
+    "overall": {
+      "decision_threshold": 0.26,
+      "f1": 0.154,
+      "n": 41,
+      "pr_auc": 0.193,
+      "roc_auc": 0.623,
+      "viral_rate": 0.073
+    },
+    "per_source": {
+      "x": {
+        "decision_threshold": 0.26,
+        "f1": 0.19,
+        "n": 35,
+        "pr_auc": 0.244,
+        "roc_auc": 0.803,
+        "viral_rate": 0.057
+      },
+      "youtube": {
+        "decision_threshold": 0.26,
+        "f1": 0.0,
+        "n": 6,
+        "pr_auc": 0.2,
+        "roc_auc": 0.2,
+        "viral_rate": 0.167
+      }
+    },
+    "seed": 42,
+    "split": "GroupShuffleSplit by author_hash",
+    "test_size": 0.2
+  },
+  "generated_at": "2026-08-13T04:24:59.962568+00:00",
+  "model_artifact": {
+    "audience_features_included": false,
+    "file": "stage1_multisource.joblib",
+    "sha256": "f3f0b029aad54933d8dbcea192de35d9689c79e78149cb5235387ec943064093"
+  }
+}

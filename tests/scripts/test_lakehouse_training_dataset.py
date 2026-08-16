@@ -65,6 +65,34 @@ def _write_contract(root: Path):
     return contract, path
 
 
+def _load_feature_columns():
+    path = ROOT / "ml" / "train" / "train_viral.py"
+    module = ast.parse(path.read_text(encoding="utf-8"))
+    content_features = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "CONTENT_FEATURES"
+            for target in node.targets
+        )
+    )
+    function = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "feature_columns"
+    )
+    namespace = {"pd": pd}
+    exec(
+        compile(ast.Module(body=[content_features, function], type_ignores=[]), str(path), "exec"),
+        namespace,
+    )
+    return namespace["feature_columns"]
+
+
+FEATURE_COLUMNS = _load_feature_columns()
+
+
 class DatasetManifestTests(unittest.TestCase):
     def _identity(self, snapshots=None, filters=None):
         return dataset_manifest.DatasetIdentity(
@@ -221,6 +249,50 @@ class AudienceFeatureTests(unittest.TestCase):
 
 
 class OfficialTrainingInputTests(unittest.TestCase):
+    def _write_manifest(self, root: Path, *, relative_path: str | None = None):
+        identity = dataset_manifest.DatasetIdentity(
+            schema_version="v3",
+            source_snapshots={
+                "lakehouse.silver.post_features": 123,
+                "lakehouse.silver.engagement_snapshots": 456,
+            },
+            filters={
+                "audience_feature_policy": "excluded_no_prepublication_history",
+                "label_horizon_hours": 24,
+                "viral_quantile": 0.75,
+            },
+        )
+        dataset_path = root / "datasets" / identity.dataset_version
+        dataset_path.mkdir(parents=True)
+        manifest_path = root / "runs" / "run.json"
+        manifest_path.parent.mkdir()
+        contract, contract_path = _write_contract(root)
+        payload = {
+            "dataset_version": identity.dataset_version,
+            "schema_version": identity.schema_version,
+            "dataset_fingerprint": identity.fingerprint,
+            "source_tables_json": dataset_manifest.canonical_json(
+                {"tables": sorted(identity.source_snapshots)}
+            ),
+            "iceberg_snapshots_json": dataset_manifest.canonical_json(
+                dict(identity.source_snapshots)
+            ),
+            "filters_json": dataset_manifest.canonical_json(dict(identity.filters)),
+            "dataset_relative_path": relative_path or f"../datasets/{identity.dataset_version}",
+            "format": "parquet",
+            "official_input": True,
+            "training_table": "lakehouse.gold.training_examples",
+            "training_snapshot_id": 789,
+            "example_count": 1,
+            "labeling": {
+                "policy": contract.policy,
+                "virality_contract_fingerprint": contract.fingerprint,
+                "contract_relative_path": "../" + contract_path.relative_to(root).as_posix(),
+            },
+        }
+        manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+        return manifest_path, dataset_path, identity, payload
+
     def test_builder_accepts_lossless_silver_column_names(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "silver.csv"
@@ -242,34 +314,12 @@ class OfficialTrainingInputTests(unittest.TestCase):
     def test_manifest_resolves_one_exact_relative_parquet_dataset(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            dataset_path = root / "datasets" / "dataset-v3-1234567890abcdef1234"
-            dataset_path.mkdir(parents=True)
-            manifest_path = root / "runs" / "run.json"
-            manifest_path.parent.mkdir()
-            contract, contract_path = _write_contract(root)
-            manifest_path.write_text(
-                json.dumps(
-                    {
-                        "dataset_version": "dataset-v3-1234567890abcdef1234",
-                        "dataset_fingerprint": "1234567890abcdef1234" + "a" * 44,
-                        "dataset_relative_path": "../datasets/dataset-v3-1234567890abcdef1234",
-                        "format": "parquet",
-                        "official_input": True,
-                        "labeling": {
-                            "policy": "training_reference_quantile",
-                            "virality_contract_fingerprint": contract.fingerprint,
-                            "contract_relative_path": "../"
-                            + contract_path.relative_to(root).as_posix(),
-                        },
-                    }
-                ),
-                encoding="utf-8",
-            )
+            manifest_path, dataset_path, identity, _ = self._write_manifest(root)
 
             resolved, version = RUN_PIPELINE.load_lakehouse_manifest(manifest_path)
 
             self.assertEqual(resolved, dataset_path.resolve())
-            self.assertEqual(version, "dataset-v3-1234567890abcdef1234")
+            self.assertEqual(version, identity.dataset_version)
 
     def test_manifest_rejects_invalid_fingerprint_and_path_escape(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -277,21 +327,8 @@ class OfficialTrainingInputTests(unittest.TestCase):
             root = temporary_root / "export"
             outside = temporary_root / "outside-dataset"
             outside.mkdir(parents=True)
-            manifest_path = root / "runs" / "run.json"
-            manifest_path.parent.mkdir(parents=True)
-            contract, contract_path = _write_contract(root)
-            payload = {
-                "dataset_version": "dataset-v3-1234567890abcdef1234",
-                "dataset_fingerprint": "not-a-sha256",
-                "dataset_relative_path": str(outside),
-                "format": "parquet",
-                "official_input": True,
-                "labeling": {
-                    "policy": "training_reference_quantile",
-                    "virality_contract_fingerprint": contract.fingerprint,
-                    "contract_relative_path": "../" + contract_path.relative_to(root).as_posix(),
-                },
-            }
+            manifest_path, _, identity, payload = self._write_manifest(root)
+            payload["dataset_fingerprint"] = "not-a-sha256"
             manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "SHA-256"):
@@ -302,7 +339,7 @@ class OfficialTrainingInputTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not match"):
                 RUN_PIPELINE.load_lakehouse_manifest(manifest_path)
 
-            payload["dataset_fingerprint"] = "1234567890abcdef1234" + "a" * 44
+            payload["dataset_fingerprint"] = identity.fingerprint
             payload["dataset_relative_path"] = "../../outside-dataset"
             manifest_path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "escapes the export root"):
@@ -347,6 +384,20 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn("apply_virality_contract", source)
         self.assertNotIn("_viral_target", source)
         self.assertNotIn("_label_rank", source)
+        self.assertIn("DATASET_BUILDER_REVISION", source)
+        self.assertIn('"dataset_builder_revision"', source)
+        self.assertIn('"audience_feature_policy": AUDIENCE_FEATURE_POLICY', source)
+        self.assertIn('audience_count = lit(None).cast("bigint")', source)
+        self.assertIn("audience_available = lit(False)", source)
+        self.assertIn('"training_snapshot_id": training_snapshot_id', source)
+        self.assertIn(
+            "_read_snapshot(\n            spark,\n            TRAINING_EXAMPLES_TABLE", source
+        )
+        self.assertIn('examples.orderBy("example_id")', source)
+        self.assertIn(
+            "Exporting an existing dataset version requires --training-examples-snapshot-id",
+            source,
+        )
         self.assertIn("actual_count != expected_count", source)
         self.assertIn("DATASET_VERSION_PATTERN", source)
         self.assertNotIn("read.csv", source.lower())
@@ -360,6 +411,8 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn("build_training_dataset.py", source)
         self.assertIn("--dataset-version", source)
         self.assertIn("--lakehouse-manifest", source)
+        self.assertIn("--post-features-snapshot-id", source)
+        self.assertIn("--engagement-snapshots-snapshot-id", source)
         self.assertIn("/workspace/data/lakehouse-ml/ml/runs/", source)
         self.assertIn("initialize_services >> build_lakehouse_dataset >> train_stage1", source)
         run_pipeline = (ROOT / "ml" / "run_pipeline.py").read_text(encoding="utf-8")
@@ -367,6 +420,89 @@ class OfficialTrainingInputTests(unittest.TestCase):
             run_pipeline.index("Build dataset"), run_pipeline.index("Train role classifier")
         )
         self.assertNotIn("filtered_events.csv", source)
+
+    def test_model_metrics_and_reports_preserve_the_snapshot_lineage(self):
+        train = (ROOT / "ml" / "train" / "train_viral.py").read_text(encoding="utf-8")
+        evaluation = (ROOT / "ml" / "train" / "evaluate.py").read_text(encoding="utf-8")
+        report = (ROOT / "ml" / "report.py").read_text(encoding="utf-8")
+        lineage = (ROOT / "ml" / "dataset_lineage.py").read_text(encoding="utf-8")
+
+        self.assertIn('"dataset_lineage": dataset_lineage', train)
+        self.assertIn("model_lineage_path", train)
+        self.assertIn('"iceberg_snapshot_ids"', lineage)
+        self.assertIn('"training_snapshot_id"', lineage)
+        self.assertIn("dataset_lineage", evaluation)
+        self.assertIn("pinned snapshot ID", report)
+
+    def test_official_model_excludes_unfrozen_audience_features(self):
+        frame = pd.DataFrame(
+            {
+                "char_count": [10],
+                "word_count": [2],
+                "has_question": [0],
+                "is_vietnamese": [0],
+                "f_word": [0.1],
+                "f_sent": [0.1],
+                "f_clause": [0.1],
+                "f_info": [0.1],
+                "f_visual": [0.1],
+                "cognitive_friction_score": [0.1],
+                "src_x": [1],
+                "topic_0": [0.5],
+                "chan_log_audience": [9.0],
+                "chan_has_audience": [1],
+            }
+        )
+
+        features = FEATURE_COLUMNS(frame, include_audience=False)
+
+        self.assertIn("src_x", features)
+        self.assertIn("topic_0", features)
+        self.assertFalse(any(name.startswith("chan_") for name in features))
+
+    def test_role_feature_ablation_changes_only_the_exploratory_family(self):
+        frame = pd.DataFrame(
+            {
+                "char_count": [10],
+                "word_count": [2],
+                "has_question": [0],
+                "is_vietnamese": [0],
+                "f_word": [0.1],
+                "f_sent": [0.1],
+                "f_clause": [0.1],
+                "f_info": [0.1],
+                "f_visual": [0.1],
+                "cognitive_friction_score": [0.1],
+                "src_x": [1],
+                "topic_0": [0.5],
+                "role_ratio_hook": [0.5],
+                "role_n_hook": [1],
+                "chan_log_audience": [9.0],
+            }
+        )
+
+        with_roles = FEATURE_COLUMNS(frame, include_audience=False, include_roles=True)
+        without_roles = FEATURE_COLUMNS(frame, include_audience=False, include_roles=False)
+
+        self.assertEqual(
+            set(with_roles) - set(without_roles),
+            {"role_ratio_hook", "role_n_hook"},
+        )
+        self.assertFalse(any(name.startswith("role_") for name in without_roles))
+        self.assertFalse(any(name.startswith("chan_") for name in without_roles))
+
+    def test_role_component_is_encoded_as_exploratory_in_artifacts(self):
+        contract = (ROOT / "ml" / "role_contract.py").read_text(encoding="utf-8")
+        training = (ROOT / "ml" / "train" / "train_viral.py").read_text(encoding="utf-8")
+        evaluation = (ROOT / "ml" / "train" / "evaluate.py").read_text(encoding="utf-8")
+        serving = (ROOT / "ml" / "serve" / "explain_viral.py").read_text(encoding="utf-8")
+
+        self.assertIn('ROLE_COMPONENT_STATUS = "exploratory"', contract)
+        self.assertIn('"human_gold_validated": False', contract)
+        self.assertIn('"role_feature_contract": role_feature_contract()', training)
+        self.assertIn('"role_feature_contract": bundle.get', evaluation)
+        self.assertIn("Exploratory role cue", serving)
+        self.assertNotIn("Add a clear call to action", serving)
 
     def test_balancing_preserves_unknown_and_known_zero_bands(self):
         source = (ROOT / "spark" / "jobs" / "maintenance" / "build_balanced_dataset.py").read_text(

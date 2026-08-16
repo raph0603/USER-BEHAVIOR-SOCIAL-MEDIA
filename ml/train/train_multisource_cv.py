@@ -9,8 +9,10 @@ distribution and keeps every author in exactly one fold.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
@@ -277,6 +279,7 @@ def main() -> None:
     # Heavy ML imports stay local so the fold/weight helpers remain lightweight
     # and independently testable.
     from features.text_content import build_content_model
+    from dataset_lineage import load_dataset_lineage, model_lineage_path
     from train.train_viral import (
         apply_calibrator,
         feature_columns,
@@ -298,9 +301,19 @@ def main() -> None:
     parser.add_argument("--folds", type=int, default=DEFAULT_FOLDS)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dataset-version")
+    parser.add_argument("--dataset-manifest", type=Path)
     args = parser.parse_args()
 
     input_df = pd.read_parquet(args.data)
+    dataset_lineage = None
+    if args.dataset_version and not args.dataset_manifest:
+        raise ValueError("Official model training requires --dataset-manifest")
+    if args.dataset_manifest:
+        _, dataset_lineage = load_dataset_lineage(
+            args.dataset_manifest,
+            expected_dataset_version=args.dataset_version,
+        )
+        args.dataset_version = str(dataset_lineage["dataset_version"])
     validate_dataset_version(input_df, args.dataset_version)
     required = {SOURCE, TARGET, GROUP, TEXT}
     missing = sorted(required - set(input_df.columns))
@@ -315,7 +328,7 @@ def main() -> None:
     groups = author_groups(df)
     strata = source_class_strata(df)
     folds = stratified_source_folds(df, n_splits=args.folds, seed=args.seed)
-    base_features = feature_columns(df)
+    base_features = feature_columns(df, include_audience=dataset_lineage is None)
     numeric = df[base_features].astype(float)
     text = df[TEXT].astype(str)
 
@@ -465,6 +478,8 @@ def main() -> None:
             "threshold": final_threshold,
             "features": [*base_features, "content_score"],
             "dataset_version": args.dataset_version,
+            "dataset_lineage": dataset_lineage,
+            "audience_features_included": dataset_lineage is None,
             "validation": "StratifiedGroupKFold(source × viral)",
             "validation_folds": args.folds,
             "source_balance": (
@@ -479,11 +494,35 @@ def main() -> None:
         },
         args.model,
     )
+    if dataset_lineage:
+        lineage_path = model_lineage_path(args.model)
+        lineage_path.write_text(
+            json.dumps(
+                {
+                    "artifact_type": "stage1_multisource_cv_model",
+                    "artifact_file": args.model.name,
+                    "artifact_sha256": hashlib.sha256(args.model.read_bytes()).hexdigest(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "dataset_lineage": dataset_lineage,
+                    "audience_features_included": False,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
     report = {
         "dataset": str(args.data),
         "balanced_dataset": str(args.balanced_data),
         "dataset_version": args.dataset_version,
+        "dataset_lineage": dataset_lineage,
+        "audience_features_included": dataset_lineage is None,
+        "model_artifact": {
+            "file": args.model.name,
+            "sha256": hashlib.sha256(args.model.read_bytes()).hexdigest(),
+        },
         "seed": args.seed,
         "input_rows": int(len(input_df)),
         "input_source_counts": input_source_counts,

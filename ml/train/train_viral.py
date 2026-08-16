@@ -12,7 +12,9 @@ features drive virality — the basis for the explanation layer.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import sys
@@ -41,6 +43,8 @@ if str(ML_ROOT) not in sys.path:
     sys.path.insert(0, str(ML_ROOT))
 
 from features.text_content import build_content_model
+from dataset_lineage import load_dataset_lineage, model_lineage_path
+from role_contract import role_feature_contract
 from virality_lineage import dataset_virality_lineage, validate_virality_compatibility
 
 DEFAULT_DATA = ML_ROOT / "data" / "train_dataset.parquet"
@@ -76,8 +80,19 @@ def validate_dataset_version(df: pd.DataFrame, expected: str | None) -> None:
         raise ValueError(f"Expected exactly dataset version {expected}, received {versions}")
 
 
-def feature_columns(df: pd.DataFrame) -> list[str]:
-    extra = sorted(c for c in df.columns if c.startswith(("src_", "role_", "topic_", "chan_")))
+def feature_columns(
+    df: pd.DataFrame,
+    *,
+    include_audience: bool = True,
+    include_roles: bool = True,
+) -> list[str]:
+    prefixes = ["src_", "topic_"]
+    if include_roles:
+        prefixes.append("role_")
+    if include_audience:
+        prefixes.append("chan_")
+    prefixes_tuple = tuple(prefixes)
+    extra = sorted(c for c in df.columns if c.startswith(prefixes_tuple))
     return CONTENT_FEATURES + extra
 
 
@@ -245,9 +260,23 @@ def main() -> None:
     parser.add_argument("--virality-contract-fingerprint")
     parser.add_argument("--virality-policy")
     parser.add_argument("--training-manifest-output", type=Path)
+    parser.add_argument(
+        "--dataset-manifest",
+        type=Path,
+        help="Validated manifest carrying the pinned Iceberg snapshots for an official run.",
+    )
     args = parser.parse_args()
 
     df = pd.read_parquet(args.data)
+    dataset_lineage = None
+    if args.dataset_version and not args.dataset_manifest:
+        raise ValueError("Official model training requires --dataset-manifest")
+    if args.dataset_manifest:
+        _, dataset_lineage = load_dataset_lineage(
+            args.dataset_manifest,
+            expected_dataset_version=args.dataset_version,
+        )
+        args.dataset_version = str(dataset_lineage["dataset_version"])
     validate_dataset_version(df, args.dataset_version)
     virality_lineage = dataset_virality_lineage(df)
     validate_virality_compatibility(
@@ -255,7 +284,7 @@ def main() -> None:
         expected_fingerprint=args.virality_contract_fingerprint,
         expected_policy=args.virality_policy,
     )
-    features = feature_columns(df)
+    features = feature_columns(df, include_audience=dataset_lineage is None)
     train_idx, test_idx = split_indices(df, args.test_size, args.seed)
     y = df[TARGET].astype(int)
 
@@ -298,16 +327,19 @@ def main() -> None:
     print(shap_importance(model, X_test).head(10).round(4))
 
     args.model.parent.mkdir(parents=True, exist_ok=True)
-    model_bundle = {
+    bundle = {
         "model": model,
         "calibrator": calibrator,
         "classification_probability_threshold": classification_probability_threshold,
         "features": features,
         "dataset_version": args.dataset_version,
+        "dataset_lineage": dataset_lineage,
+        "audience_features_included": dataset_lineage is None,
+        "role_feature_contract": role_feature_contract(),
         **virality_lineage,
         **content_bundle,
     }
-    joblib.dump(model_bundle, args.model)
+    joblib.dump(bundle, args.model)
     training_manifest_path = args.training_manifest_output or args.model.with_suffix(
         ".manifest.json"
     )
@@ -316,8 +348,11 @@ def main() -> None:
         json.dumps(
             {
                 "dataset_version": args.dataset_version,
+                "dataset_lineage": dataset_lineage,
                 **virality_lineage,
                 "classification_probability_threshold": classification_probability_threshold,
+                "audience_features_included": dataset_lineage is None,
+                "role_feature_contract": role_feature_contract(),
                 "model_path": str(args.model),
             },
             indent=2,
@@ -326,6 +361,24 @@ def main() -> None:
         + "\n",
         encoding="utf-8",
     )
+    if dataset_lineage:
+        sidecar = {
+            "artifact_type": "stage1_viral_model",
+            "artifact_file": args.model.name,
+            "artifact_sha256": hashlib.sha256(args.model.read_bytes()).hexdigest(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "dataset_lineage": dataset_lineage,
+            **virality_lineage,
+            "classification_probability_threshold": classification_probability_threshold,
+            "audience_features_included": False,
+            "role_feature_contract": role_feature_contract(),
+        }
+        lineage_path = model_lineage_path(args.model)
+        lineage_path.write_text(
+            json.dumps(sidecar, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print(f"Lineage saved -> {lineage_path}")
     print(f"\nSaved -> {args.model}")
 
 

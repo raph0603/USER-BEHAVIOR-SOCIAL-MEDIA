@@ -6,14 +6,19 @@ Predicts whether a social-media post (EV domain) is likely to go **viral**, and 
 ## Pipeline
 
 ```
-filtered_events.csv (exported from the Silver lakehouse)
+Silver post_features + engagement_snapshots (pinned snapshot IDs)
+        │
+        ▼  maintenance/build_training_dataset.py
+Gold training_examples write → pinned Gold snapshot read
+        │
+        ▼  versioned Parquet export + validated lineage manifest
         │
         ▼  preprocess/build_dataset.py
   clean text → unified content features + PER-SOURCE viral label + source one-hot
         │                                 + rhetorical-role features + topic features
         ▼  train/train_viral.py
   content_model (TF-IDF → content_score)  ─┐
-  + structural features + src_* + role_* + topic_* + chan_*  ─┴─►  XGBoost fusion  →  P(viral)
+  + structural features + src_* + role_* + topic_*  ─┴─►  XGBoost fusion  →  P(viral)
         │                                                          → Platt calibration → threshold
         │
         ▼  serve/explain_viral.py
@@ -42,11 +47,20 @@ snapshot table has no column for, without which train and test could share an au
 - **Unified content features** across all 3 sources (pure functions of the text): `cognitive_friction` + `char/word/has_question/is_vietnamese`.
 - **Per-source viral label**: within each source, z-score `log1p` of that platform's engagement metrics → the top `--quantile` (default 0.75) is labelled viral. Engagement columns build the label only — never features (avoids leakage).
 - **`content_score`** = TF-IDF + LogReg over the text, fused as a single feature (built out-of-fold to avoid leakage). Interface `.predict_proba(list[str])` → swapping in BERT later needs no other change.
-- **`role_*`** = rhetorical marketing roles (cta/hook/proof/…) from the `feature/annotation-roles-marketing` branch; mainly aid explainability.
+- **`role_*` are exploratory interpretation cues**, not validated linguistic labels.
+  They aggregate automated heuristic silver annotations (cta/hook/proof/…) into
+  human-readable dimensions that can be inspected through TreeSHAP. Their classifier
+  score measures agreement with held-out silver labels because no independently
+  human-validated gold set exists. Role-derived absences do not generate prescriptive tips.
 - **`topic_*`** = NMF topic distribution over TF-IDF (fills the "topic" component of the design; BERTopic is the heavier upgrade).
-- **`chan_*`** = channel/author audience size (`follower/subscriber/subreddit_member` unified via log1p) — a *pre-launch* author property (not engagement), so it's a valid feature, not leakage. Best-effort: only added when the export carries those columns. An **unknown audience is `NaN`, never `0`** — `0` means an author with no followers, and collapsing the two lets the feature stand in for the platform instead of the signal. A positive value is trusted even when the export's `*_available` flag disagrees, because that flag describes one observation while the value may come from another collector.
-- **Explanation** = SHAP (XGBoost `pred_contribs`) → maps features to readable reasons + suggestions.
-- **Calibrated probability**: `scale_pos_weight` sharpens ranking but inflates the scores, so a Platt scaler fitted on author-grouped out-of-fold predictions maps them back to honest probabilities (ECE 0.123 → 0.016). It is monotonic, so ranking metrics and the SHAP ordering are untouched. Calibrating also moves the decision boundary — with a 0.25 base rate, few honest scores pass 0.5 — so the threshold is re-picked out-of-fold (currently **0.29**) and stored in the model bundle.
+- **Audience features are excluded from official models.** The available follower and
+  subscriber counts were captured during scraping, not from a state proven to precede
+  publication. They can therefore contain growth caused by the outcome itself. Manual
+  compatibility runs may still construct `chan_*`, but official manifests reject that
+  policy and official model bundles contain no `chan_*` feature.
+- **Explanation** = TreeSHAP (XGBoost `pred_contribs`) → maps features to readable
+  reasons. Any `role_*` factor is explicitly labelled exploratory.
+- **Calibrated probability**: `scale_pos_weight` sharpens ranking but inflates the scores, so a Platt scaler fitted on author-grouped out-of-fold predictions maps them back to honest probabilities. It is monotonic, so ranking metrics and the SHAP ordering are untouched. Calibrating also moves the decision boundary — with a 0.25 base rate, few honest scores pass 0.5 — so the threshold is re-picked out-of-fold (currently **0.26**) and stored in the model bundle.
 
 ## Run (use the `ml/.venv` Python)
 
@@ -71,6 +85,12 @@ $env:PYTHONIOENCODING='utf-8'            # Windows: avoid console encoding issue
 # batch-score a CSV -> JSONL:
 & ".\ml\.venv\Scripts\python.exe" ml/serve/score_batch.py --input posts.csv --output out.jsonl
 ```
+
+The model bundle, its `.lineage.json` sidecar, evaluation JSON, and generated report
+all retain the same dataset fingerprint, Silver source snapshots, and pinned Gold
+training snapshot. See
+[`docs/REPRODUCIBLE_TRAINING.md`](../docs/REPRODUCIBLE_TRAINING.md) for snapshot replay
+and the reporting contract.
 
 Reuse in code: `from serve.explain_viral import explain_post; explain_post(text, source)`.
 
@@ -127,24 +147,28 @@ on this machine yet.
 > per-feature weights, the decision table, how each figure was reached, and what the numbers
 > do not say.
 
-3798 labelled rows (2928 train / 870 test), 52 features, 2367 rows with a known channel
-audience across all three sources. Every number below comes from
-`train/verify_answers.py`, which scores exactly what serving returns (calibrated
-probability, bundled threshold) and reports a 95% bootstrap CI.
+The current official run contains 197 labelled rows from pinned Iceberg snapshots and
+uses an author-grouped 41-row test split. Every number below comes from
+`train/verify_answers.py`, which scores exactly what serving returns and embeds the
+dataset version in the report and calibration figure.
 
 | group | n | ROC-AUC (95% CI) | PR-AUC (95% CI) | ECE |
 |---|---|---|---|---|
-| overall | 870 | 0.793 [0.759, 0.824] | 0.603 [0.534, 0.666] | 0.016 |
-| youtube | 401 | 0.881 [0.840, 0.918] | 0.751 [0.669, 0.825] | 0.037 |
-| x | 150 | 0.750 [0.663, 0.827] | 0.508 [0.366, 0.658] | 0.060 |
-| reddit | 319 | 0.669 [0.601, 0.731] | 0.429 [0.339, 0.542] | 0.025 |
+| overall | 41 | 0.623 [0.154, 0.950] | 0.193 [0.030, 0.697] | 0.207 |
+| youtube | 6 | 0.200 [0.000, 0.600] | 0.200 [0.167, 0.600] | 0.093 |
+| x | 35 | 0.803 [0.545, 0.992] | 0.244 [0.067, 1.000] | 0.226 |
 
-- Role classifier: **macro-F1 ~0.50** over 12 roles.
+- Exploratory role classifier: **macro-F1 0.495** over 12 roles. This is agreement with
+  held-out automated silver labels, not accuracy against human-validated gold labels.
+- Paired ablation on the same 41-row holdout found no demonstrated predictive benefit:
+  without `role_*`, PR-AUC was 0.271 versus 0.193 with roles (paired-delta 95% CI
+  [-0.011, 0.368]); ROC-AUC was 0.658 versus 0.623 (CI [-0.150, 0.250]).
 - Content model: **TF-IDF (0.499) > BERT (0.428)** at this data size → keep TF-IDF for now.
-- Every source clears random (Reddit's CI lower bound is 0.601); X's interval is wide
-  because it only has 150 test rows.
-- `chan_log_audience` and `content_score` are the top two SHAP features, close together —
-  the model reads the post, not just the channel.
+- The official sample is too small for strong claims: overall and per-source intervals
+  are wide, and Reddit has no eligible row in this pinned dataset version.
+- Dataset version `dataset-v2-dd7ce6e598d3ebae6cd7` and Gold snapshot
+  `6550655688150864602` are bound to the model and figures;
+  full snapshot IDs and artifact digests are in `ml/results/`.
 
 Two earlier numbers in this file were wrong and are worth knowing about, because they
 still circulate: an overall PR-AUC of **0.773** and a YouTube ROC-AUC of **0.931**. Both
@@ -152,19 +176,21 @@ came from filling an unknown audience with `0`, which made the feature a near-pe
 stand-in for "is this YouTube?" rather than a virality signal. Unknown audiences are now
 `NaN` and the honest figures are the ones tabled above.
 
-> ⚠️ **Temporal-leakage caveat:** subscriber counts are fetched *now*, not at post time.
-> A post that went viral likely *gained* subscribers, so current audience is partly a
-> *consequence* of virality → the YouTube figures are still optimistic. A clean setup
-> needs the subscriber count snapshotted at publish time (a fresh/retrieve layer with a
-> TTL). Audience size is a valid pre-launch feature in principle; only the measurement is
-> inflated.
+> **Temporal-leakage policy:** the official figures above exclude audience completely.
+> The historical audience measurements were collected after publication and can partly
+> reflect growth caused by virality. Their apparent importance is not evidence of genuine
+> pre-publication predictive power and the older audience-enabled figures are optimistic.
 
 ## Limitations & next steps
 
 - Content model is **TF-IDF** → Vietnamese is still weak; upgrade to **multilingual BERT** (train on Kaggle GPU, same interface).
-- Roles use heuristic labels; no human-verified gold set for a clean evaluation.
-- **Channel/author features** are now live on all three sources (`subscriber_count`, `follower_count`, `subreddit_member_count`) and are the biggest single lift — but see the temporal-leakage caveat above; the honest next step is a *historical* subscriber snapshot at post time.
-- Audience coverage is still thin: 2367 of 4357 rows. 442 YouTube channels are absent from the local cache and Reddit/X carry a value on well under half their rows.
+- Roles remain exploratory until an independently human-verified gold set exists. Do not
+  interpret individual assignments as validated linguistic conclusions. The reproducible
+  comparison is stored in `results/stage1_role_ablation.json`.
+- The next audience implementation must use historically frozen reputation observations:
+  the last subscriber/follower count or Reddit author karma with
+  `reputation_observed_at <= post_published_at`. Rows without such an observation remain
+  missing. See `docs/PREPUBLICATION_REPUTATION.md`.
 - Collect more data (especially X/Reddit) to balance sources and raise `--quantile` toward the paper standard (0.75 → 0.90). X has only 150 test rows, which is why its CI spans 0.16.
 - **Stage 2** is written but has never seen real data. `silver.engagement_snapshots` lives on the unmerged `feat/youtube-metadata-evolution` branch and, once merged, still needs days of polling before a post carries several observations. Until then the only evidence the layer is correct is its tests.
 

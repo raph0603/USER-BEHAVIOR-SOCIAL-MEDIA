@@ -15,7 +15,7 @@ flowchart TB
     CLEAN["clean_text<br/>strip URL / redaction / @ / #"]
     FILT["drop short text + duplicates"]
     TXT["Unified content features<br/>cognitive_friction · char/word<br/>has_question · is_vietnamese"]
-    ROLE["Role features<br/>role_n_* · role_ratio_* · diversity"]
+    ROLE["Exploratory role cues<br/>role_n_* · role_ratio_* · diversity"]
     TOPIC["Topic features<br/>topic_0..7 (NMF)"]
     SRC["source one-hot<br/>src_youtube / x / reddit"]
     LAB["Versioned viral label<br/>fixed platform threshold<br/>from a frozen reference"]
@@ -23,7 +23,7 @@ flowchart TB
 
   subgraph SUB["3. Sub-models (text → signal)"]
     CM["Content model<br/>TF-IDF + LogReg<br/>→ content_score"]
-    RCLS["Role classifier<br/>TF-IDF + LogReg<br/>(trained on silver)"]
+    RCLS["Exploratory role classifier<br/>TF-IDF + LogReg<br/>automated silver; no human gold"]
     TM["Topic model<br/>NMF over TF-IDF"]
   end
 
@@ -63,7 +63,7 @@ flowchart LR
   A["content_score<br/>★ strongest signal"]:::strong
   B["content features<br/>length · reading difficulty · has '?'…"]
   C["topic_* — NMF topics<br/>(clear lift)"]:::strong
-  D["role_* — marketing roles<br/>(mainly for EXPLANATION)"]:::weak
+  D["role_* — exploratory cues<br/>qualitative TreeSHAP interpretation"]:::weak
   E["src_* — platform"]
   A --> X["XGBoost → P(viral)"]
   B --> X
@@ -90,19 +90,23 @@ flowchart LR
 
 ## 4. Current status (real numbers)
 
-870-row test set. Ranking metrics with 95% bootstrap CIs, on the calibrated scores that
+41-row author-grouped test set. Ranking metrics with 95% bootstrap CIs, on the calibrated scores that
 serving actually returns (`train/verify_answers.py`).
 
 | Component | Result |
 |---|---|
-| Fusion viral (overall) | PR-AUC **0.603** [0.534, 0.666] · ROC **0.793** [0.759, 0.824] |
-| └ YouTube | ROC **0.881** [0.840, 0.918] (most data) |
-| └ X | ROC 0.750 [0.663, 0.827] (only 150 test rows — wide) |
-| └ Reddit | ROC 0.669 [0.601, 0.731] (weakest, but clears random) |
-| Probability calibration | ECE **0.016**, Brier 0.146; decision threshold **0.29**, picked out-of-fold |
-| Role classifier | macro-F1 ~0.50 (12 roles) |
+| Fusion viral (overall) | PR-AUC **0.193** [0.030, 0.697] · ROC **0.623** [0.154, 0.950] |
+| └ YouTube | ROC **0.200** [0.000, 0.600] (6 test rows) |
+| └ X | ROC **0.803** [0.545, 0.992] (35 test rows) |
+| └ Reddit | no eligible test row in this pinned version |
+| Probability calibration | ECE **0.207**, Brier 0.110; decision threshold **0.26**, picked out-of-fold |
+| Exploratory role classifier | macro-F1 **0.495** against held-out heuristic silver, not human gold |
+| Role ablation | no demonstrated lift; PR-AUC 0.193 with roles vs 0.271 without, paired CI crosses zero |
 | Content: TF-IDF vs BERT | TF-IDF 0.499 **>** BERT 0.428 (data still small) → keep TF-IDF |
 
-**Legend:** solid arrows = data/feature flow; dashed arrows = auxiliary relations (label, role/topic assignment). The model is strongest on YouTube and weakest on Reddit → the main levers are **collecting more X/Reddit data** and **audience coverage** (2367 of 4357 rows carry one).
+**Legend:** solid arrows = data/feature flow; dashed arrows = auxiliary relations
+(label, role/topic assignment). Role SHAP contributions explain model behavior only; they
+are not evidence that the underlying rhetorical classification is linguistically correct.
+The small pinned sample and wide intervals make additional labelled data the main priority.
 
 > Technical details & decision history are kept in a local engineering log. Code overview: `ml/README.md`. Handoff for the API/UI tasks: `ml/HANDOFF.md`.

@@ -59,6 +59,8 @@ POST_FEATURES_TABLE = "lakehouse.silver.post_features"
 ENGAGEMENT_SNAPSHOTS_TABLE = "lakehouse.silver.engagement_snapshots"
 TRAINING_EXAMPLES_TABLE = "lakehouse.gold.training_examples"
 DATASET_MANIFESTS_TABLE = "lakehouse.gold.dataset_manifests"
+DATASET_BUILDER_REVISION = "prepublication-feature-contract-v3"
+AUDIENCE_FEATURE_POLICY = "excluded_no_prepublication_history"
 
 METRICS_BY_SOURCE = {
     "youtube": ("view_count", "like_count", "comment_count"),
@@ -171,6 +173,30 @@ def _parser() -> argparse.ArgumentParser:
         default=int(_env("ML_MIN_TEXT_CHARS", "3")),
     )
     parser.add_argument(
+        "--post-features-snapshot-id",
+        type=int,
+        default=int(_env("ML_POST_FEATURES_SNAPSHOT_ID", "0")),
+        help="Exact post_features Iceberg snapshot; 0 resolves and locks the latest snapshot once.",
+    )
+    parser.add_argument(
+        "--engagement-snapshots-snapshot-id",
+        type=int,
+        default=int(_env("ML_ENGAGEMENT_SNAPSHOTS_SNAPSHOT_ID", "0")),
+        help=(
+            "Exact engagement_snapshots Iceberg snapshot; 0 resolves and locks the latest "
+            "snapshot once."
+        ),
+    )
+    parser.add_argument(
+        "--training-examples-snapshot-id",
+        type=int,
+        default=int(_env("ML_TRAINING_EXAMPLES_SNAPSHOT_ID", "0")),
+        help=(
+            "Exact Gold training_examples Iceberg snapshot used when exporting an existing "
+            "dataset version. Auto builds capture the post-merge Gold snapshot themselves."
+        ),
+    )
+    parser.add_argument(
         "--export-root",
         type=Path,
         default=Path(_env("ML_DATASET_EXPORT_ROOT", "/opt/spark/balancing/ml")),
@@ -214,6 +240,24 @@ def _validate_args(args: argparse.Namespace) -> None:
         and args.min_reference_examples_per_platform <= 0
     ):
         raise ValueError("--min-reference-examples-per-platform must be greater than zero")
+    requested_snapshots = (
+        args.post_features_snapshot_id,
+        args.engagement_snapshots_snapshot_id,
+    )
+    if any(value < 0 for value in requested_snapshots):
+        raise ValueError("Iceberg snapshot IDs must be zero or positive")
+    if bool(requested_snapshots[0]) != bool(requested_snapshots[1]):
+        raise ValueError("Both source snapshot IDs must be supplied together")
+    if args.dataset_version != "auto" and any(requested_snapshots):
+        raise ValueError("Explicit source snapshots require --dataset-version auto")
+    if args.training_examples_snapshot_id < 0:
+        raise ValueError("The Gold training snapshot ID must be zero or positive")
+    if args.dataset_version == "auto" and args.training_examples_snapshot_id:
+        raise ValueError("An explicit Gold snapshot requires an exact --dataset-version")
+    if args.dataset_version != "auto" and not args.training_examples_snapshot_id:
+        raise ValueError(
+            "Exporting an existing dataset version requires --training-examples-snapshot-id"
+        )
 
 
 def _latest_snapshot_id(spark: SparkSession, table: str) -> int:
@@ -445,7 +489,13 @@ def build_scored_examples(
         ),
     )
     observed, score_total, expected = _metric_expressions(selected)
-    audience_count, audience_available = _audience_expressions(selected)
+    # The collected audience values are not guaranteed to predate publication.
+    # A viral post may already have increased them by collection time, so exposing
+    # them to an official model would leak future outcome information. Keep the Gold
+    # contract nullable until a timestamped reputation history can satisfy
+    # audience_observed_at <= event_ts.
+    audience_count = lit(None).cast("bigint")
+    audience_available = lit(False)
     label_horizon = VALID_HORIZONS[label_horizon_hours]
     scored = (
         selected.withColumn("engagement_observed_metrics", observed.cast("int"))
@@ -685,6 +735,7 @@ def _export_dataset(
     examples: DataFrame,
     manifest: dict,
     *,
+    training_snapshot_id: int,
     export_root: Path,
     manifest_output: Path,
 ) -> None:
@@ -696,7 +747,7 @@ def _export_dataset(
             f"Dataset {version} contains {actual_count} rows; manifest expects {expected_count}"
         )
     dataset_path = export_root / "datasets" / version
-    examples.coalesce(1).write.mode("overwrite").parquet(str(dataset_path))
+    examples.orderBy("example_id").coalesce(1).write.mode("overwrite").parquet(str(dataset_path))
     manifest_output.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         **manifest,
@@ -706,6 +757,8 @@ def _export_dataset(
         "dataset_relative_path": os.path.relpath(dataset_path, manifest_output.parent),
         "format": "parquet",
         "official_input": True,
+        "training_table": TRAINING_EXAMPLES_TABLE,
+        "training_snapshot_id": training_snapshot_id,
     }
     payload["labeling"] = json.loads(str(manifest["labeling_json"]))
     payload["labeling"]["contract_relative_path"] = os.path.relpath(
@@ -763,19 +816,26 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dataset_version != "auto":
         manifest = _existing_manifest(spark, args.dataset_version)
-        examples = spark.table(TRAINING_EXAMPLES_TABLE).filter(
-            col("dataset_version") == args.dataset_version
-        )
+        training_snapshot_id = args.training_examples_snapshot_id
+        examples = _read_snapshot(
+            spark,
+            TRAINING_EXAMPLES_TABLE,
+            training_snapshot_id,
+        ).filter(col("dataset_version") == args.dataset_version)
         if examples.limit(1).count() == 0:
             raise RuntimeError(
                 f"Dataset manifest exists but examples are missing: {args.dataset_version}"
             )
     else:
         snapshots = {
-            POST_FEATURES_TABLE: _latest_snapshot_id(spark, POST_FEATURES_TABLE),
-            ENGAGEMENT_SNAPSHOTS_TABLE: _latest_snapshot_id(spark, ENGAGEMENT_SNAPSHOTS_TABLE),
+            POST_FEATURES_TABLE: args.post_features_snapshot_id
+            or _latest_snapshot_id(spark, POST_FEATURES_TABLE),
+            ENGAGEMENT_SNAPSHOTS_TABLE: args.engagement_snapshots_snapshot_id
+            or _latest_snapshot_id(spark, ENGAGEMENT_SNAPSHOTS_TABLE),
         }
         scoring_filters = {
+            "audience_feature_policy": AUDIENCE_FEATURE_POLICY,
+            "dataset_builder_revision": DATASET_BUILDER_REVISION,
             "label_horizon_hours": args.label_horizon_hours,
             "label_tolerance_hours": args.label_tolerance_hours,
             "min_text_chars": args.min_text_chars,
@@ -862,17 +922,21 @@ def main(argv: list[str] | None = None) -> int:
         try:
             manifest = _manifest_for(examples, identity, contract)
             _merge_examples(examples)
+            training_snapshot_id = _latest_snapshot_id(spark, TRAINING_EXAMPLES_TABLE)
             _merge_manifest(spark, manifest)
             manifest = _existing_manifest(spark, identity.dataset_version)
         finally:
             examples.unpersist()
-        examples = spark.table(TRAINING_EXAMPLES_TABLE).filter(
-            col("dataset_version") == identity.dataset_version
-        )
+        examples = _read_snapshot(
+            spark,
+            TRAINING_EXAMPLES_TABLE,
+            training_snapshot_id,
+        ).filter(col("dataset_version") == identity.dataset_version)
 
     _export_dataset(
         examples,
         manifest,
+        training_snapshot_id=training_snapshot_id,
         export_root=args.export_root,
         manifest_output=manifest_output,
     )
@@ -883,6 +947,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "dataset_version": manifest["dataset_version"],
                 "example_count": int(manifest["example_count"]),
+                "training_snapshot_id": training_snapshot_id,
                 "manifest_output": str(manifest_output),
                 "virality_policy": manifest["virality_policy"],
                 "virality_contract_fingerprint": manifest["virality_contract_fingerprint"],

@@ -24,12 +24,18 @@ The AI splits into four function groups with very different resource profiles:
 ```
 filtered_events.csv (exported from the Silver lakehouse)
         │  preprocess/build_dataset.py
-        ▼  clean text → content features + per-source viral label + role/topic/source features
+        ▼  clean text → content features + per-source viral label + exploratory role/topic/source features
   content_model (TF-IDF → content_score) ─┐
-  + structural + src_* + role_* + topic_* + chan_*  ─┴─►  XGBoost fusion  →  P(viral)
+  + structural + src_* + exploratory role_* + topic_*  ─┴─►  XGBoost fusion  →  P(viral)
         │  serve/explain_viral.py
         ▼  per-prediction SHAP → JSON {viral_score, label, confidence, top_factors, explanation_text, suggestions}
 ```
+
+The role classifier is exploratory: its macro-F1 is measured against held-out automated
+silver labels, with no independently human-validated gold set. `role_*` contributions are
+qualitative TreeSHAP cues, not high-precision linguistic conclusions, and they do not drive
+prescriptive suggestions. The paired ablation is stored in
+[`stage1_role_ablation.json`](../ml/results/stage1_role_ablation.json).
 
 ### Facts that drive the infra decision
 
