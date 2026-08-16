@@ -155,6 +155,13 @@ def main() -> None:
         overall_metrics=overall,
         source_metrics=by_source,
         predictions=predictions,
+        additional_metadata={
+            "dataset_lineage": bundle.get("dataset_lineage"),
+            "model_artifact": {
+                "audience_features_included": bool(bundle.get("audience_features_included", True)),
+                "role_feature_contract": bundle.get("role_feature_contract"),
+            },
+        },
     )
     write_json(args.output, artifact)
 

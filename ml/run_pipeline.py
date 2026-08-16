@@ -359,9 +359,7 @@ def main() -> None:
         run(title, script, *arguments)
     if args.report:
         report_arguments = (
-            ("--dataset-manifest", str(dataset_manifest_path))
-            if dataset_manifest_path
-            else ()
+            ("--dataset-manifest", str(dataset_manifest_path)) if dataset_manifest_path else ()
         )
         run("Build report", ML_ROOT / "report.py", *report_arguments)
 

@@ -114,9 +114,7 @@ def main() -> int:
         validate_created_container(container_id, image_id)
         _run(["docker", "exec", container_id, "touch", "/tmp/experiment-image-verified"])
         _run(["docker", "logs", "--follow", container_id])
-        exit_code = int(
-            _run(["docker", "wait", container_id], capture=True).stdout.strip()
-        )
+        exit_code = int(_run(["docker", "wait", container_id], capture=True).stdout.strip())
         return exit_code
     finally:
         if container_id:

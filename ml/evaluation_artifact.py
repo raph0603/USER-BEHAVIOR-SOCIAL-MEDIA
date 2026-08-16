@@ -50,6 +50,7 @@ def build_evaluation_artifact(
     overall_metrics: Mapping[str, Any],
     source_metrics: Mapping[str, Any],
     predictions: list[dict[str, Any]],
+    additional_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     prediction_identity = [
         {
@@ -71,6 +72,8 @@ def build_evaluation_artifact(
         "predictions": prediction_identity,
         "predictions_fingerprint": fingerprint(prediction_identity),
     }
+    if additional_metadata:
+        artifact.update(dict(additional_metadata))
     artifact["evaluation_fingerprint"] = fingerprint(
         {key: value for key, value in artifact.items() if key != "generated_at"}
     )

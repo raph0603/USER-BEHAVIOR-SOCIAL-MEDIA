@@ -16,6 +16,7 @@ sys.path.insert(0, str(PIPELINE_DIR))
 
 import dataset_manifest
 import gold_schemas
+from common.reproducibility import manifest_sha256
 
 
 def _load_module(name: str, path: Path):
@@ -55,7 +56,10 @@ def _load_feature_columns():
         node
         for node in module.body
         if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "CONTENT_FEATURES" for target in node.targets)
+        and any(
+            isinstance(target, ast.Name) and target.id == "CONTENT_FEATURES"
+            for target in node.targets
+        )
     )
     function = next(
         node
@@ -251,14 +255,14 @@ class OfficialTrainingInputTests(unittest.TestCase):
                 dict(identity.source_snapshots)
             ),
             "filters_json": dataset_manifest.canonical_json(dict(identity.filters)),
-            "dataset_relative_path": relative_path
-            or f"../datasets/{identity.dataset_version}",
+            "dataset_relative_path": relative_path or f"../datasets/{identity.dataset_version}",
             "format": "parquet",
             "official_input": True,
             "training_table": "lakehouse.gold.training_examples",
             "training_snapshot_id": 789,
             "example_count": 1,
         }
+        payload["manifest_sha256"] = manifest_sha256(payload)
         manifest_path.write_text(json.dumps(payload), encoding="utf-8")
         return manifest_path, dataset_path, identity, payload
 
@@ -310,6 +314,7 @@ class OfficialTrainingInputTests(unittest.TestCase):
 
             payload["dataset_fingerprint"] = identity.fingerprint
             payload["dataset_relative_path"] = "../../outside-dataset"
+            payload["manifest_sha256"] = manifest_sha256(payload)
             manifest_path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "escapes the export root"):
                 RUN_PIPELINE.load_lakehouse_manifest(manifest_path)
@@ -356,7 +361,9 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn('audience_count = lit(None).cast("bigint")', source)
         self.assertIn("audience_available = lit(False)", source)
         self.assertIn('"training_snapshot_id": training_snapshot_id', source)
-        self.assertIn("_read_snapshot(\n            spark,\n            TRAINING_EXAMPLES_TABLE", source)
+        self.assertIn(
+            "_read_snapshot(\n            spark,\n            TRAINING_EXAMPLES_TABLE", source
+        )
         self.assertIn('examples.orderBy("example_id")', source)
         self.assertIn(
             "Exporting an existing dataset version requires --training-examples-snapshot-id",

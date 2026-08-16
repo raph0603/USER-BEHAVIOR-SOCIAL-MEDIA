@@ -694,9 +694,7 @@ def _export_dataset(
             f"Dataset {version} contains {actual_count} rows; manifest expects {expected_count}"
         )
     dataset_path = export_root / "datasets" / version
-    examples.orderBy("example_id").coalesce(1).write.mode("overwrite").parquet(
-        str(dataset_path)
-    )
+    examples.orderBy("example_id").coalesce(1).write.mode("overwrite").parquet(str(dataset_path))
     manifest_output.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         **manifest,
@@ -736,9 +734,7 @@ def main(argv: list[str] | None = None) -> int:
             spark,
             TRAINING_EXAMPLES_TABLE,
             training_snapshot_id,
-        ).filter(
-            col("dataset_version") == args.dataset_version
-        )
+        ).filter(col("dataset_version") == args.dataset_version)
         if examples.limit(1).count() == 0:
             raise RuntimeError(
                 f"Dataset manifest exists but examples are missing: {args.dataset_version}"
@@ -790,9 +786,7 @@ def main(argv: list[str] | None = None) -> int:
             spark,
             TRAINING_EXAMPLES_TABLE,
             training_snapshot_id,
-        ).filter(
-            col("dataset_version") == identity.dataset_version
-        )
+        ).filter(col("dataset_version") == identity.dataset_version)
 
     _export_dataset(
         examples,

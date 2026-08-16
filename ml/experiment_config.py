@@ -149,9 +149,7 @@ def resolved_training_config(
             )
         },
         "virality_contract_fingerprint": (
-            dataset_manifest.get("virality_contract_fingerprint")
-            if dataset_manifest
-            else None
+            dataset_manifest.get("virality_contract_fingerprint") if dataset_manifest else None
         ),
         "audience_policy": deepcopy(AUDIENCE_POLICY),
         "auxiliary_artifact_sha256": dict(sorted((auxiliary_artifacts or {}).items())),

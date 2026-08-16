@@ -74,9 +74,7 @@ def paper_ready_identity(
         "dataset_version": lineage.get("dataset_version"),
         "dataset_fingerprint": lineage.get("dataset_fingerprint"),
         "silver_post_features_snapshot": snapshots.get("lakehouse.silver.post_features"),
-        "silver_engagement_snapshot": snapshots.get(
-            "lakehouse.silver.engagement_snapshots"
-        ),
+        "silver_engagement_snapshot": snapshots.get("lakehouse.silver.engagement_snapshots"),
         "gold_snapshot": lineage.get("gold_snapshot_id"),
         "manifest_sha256": lineage.get("manifest_sha256"),
         "git_commit": lineage.get("git_commit"),
@@ -92,10 +90,9 @@ def paper_ready_identity(
 def _write_markdown(path: Path, title: str, rows: list[tuple[str, str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"# {title}", "", "| Check | Status | Detail |", "|---|---:|---|"]
-    lines.extend(
-        f"| {label} | {status} | {detail.replace('|', '\\|')} |"
-        for label, status, detail in rows
-    )
+    for label, status, detail in rows:
+        escaped_detail = detail.replace("|", "\\|")
+        lines.append(f"| {label} | {status} | {escaped_detail} |")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -191,18 +188,19 @@ def validate_artifacts(
             build_fingerprint = fingerprint(build_identity)
             if (
                 build_environment.get("environment_fingerprint") != build_fingerprint
-                or dataset_manifest.get("build_environment_fingerprint")
-                != build_fingerprint
+                or dataset_manifest.get("build_environment_fingerprint") != build_fingerprint
             ):
                 raise ValueError("dataset build-environment fingerprint mismatch")
             if lineage.get("official_run"):
                 build_code = build_environment.get("code", {})
-                if build_code.get("git_commit") != commit or build_code.get("git_dirty") is not False:
+                training_commit = environment_manifest.get("code", {}).get("git_commit")
+                if (
+                    build_code.get("git_commit") != training_commit
+                    or build_code.get("git_dirty") is not False
+                ):
                     raise ValueError("dataset and training Git revisions differ")
                 build_container = build_environment.get("container", {})
-                if not build_container.get("digest") or not build_container.get(
-                    "executor_digest"
-                ):
+                if not build_container.get("digest") or not build_container.get("executor_digest"):
                     raise ValueError("official Spark driver/executor digests are incomplete")
 
     check("Environment fingerprint", validate_environment)
@@ -215,6 +213,7 @@ def validate_artifacts(
             raise ValueError("training config/lineage fingerprint mismatch")
 
     check("Training config", validate_config)
+
     def validate_feature_schema() -> None:
         configured = training_config.get("feature_schema", {}).get("model_columns")
         bundled = bundle.get("features")

@@ -320,9 +320,7 @@ def build_experiment_lineage(
         "environment_fingerprint": environment_manifest.get("environment_fingerprint"),
         "training_config_fingerprint": training_config.get("training_config_fingerprint"),
         "split_fingerprint": split_manifest.get("split_fingerprint"),
-        "virality_contract_fingerprint": training_config.get(
-            "virality_contract_fingerprint"
-        ),
+        "virality_contract_fingerprint": training_config.get("virality_contract_fingerprint"),
         "model_sha256": None,
         "determinism_contract": {
             "model_byte_identity_expected": False,
@@ -462,7 +460,11 @@ def main() -> None:
         auxiliary_artifacts={
             path.name: file_sha256(path)
             for path in (
-                *((ML_ROOT / "models" / "rhetorical_role.joblib",) if not args.official_run else ()),
+                *(
+                    (ML_ROOT / "models" / "rhetorical_role.joblib",)
+                    if not args.official_run
+                    else ()
+                ),
                 ML_ROOT / "models" / "topic_model.joblib",
             )
             if path.is_file()

@@ -147,16 +147,13 @@ def add_text_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def as_bool(series: pd.Series) -> pd.Series:
     """Coerce an export coverage flag (bool, "true"/"1"/"yes", or null) to bool."""
-    return (
-        series.map(
-            lambda value: value
-            if isinstance(value, (bool, np.bool_))
-            else str(value).strip().lower() in {"1", "true", "yes"}
-            if pd.notna(value)
-            else False
-        )
-        .astype(bool)
-    )
+    return series.map(
+        lambda value: value
+        if isinstance(value, (bool, np.bool_))
+        else str(value).strip().lower() in {"1", "true", "yes"}
+        if pd.notna(value)
+        else False
+    ).astype(bool)
 
 
 def add_channel_features(df: pd.DataFrame) -> pd.DataFrame:

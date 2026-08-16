@@ -75,7 +75,9 @@ def load_dataset_lineage(
     if version_match.group("prefix") != fingerprint[:20]:
         raise ValueError("Manifest dataset_version does not match dataset_fingerprint")
     if expected_dataset_version and version != expected_dataset_version:
-        raise ValueError(f"Expected lakehouse dataset {expected_dataset_version}, received {version}")
+        raise ValueError(
+            f"Expected lakehouse dataset {expected_dataset_version}, received {version}"
+        )
 
     snapshots = _json_object(manifest, "iceberg_snapshots_json")
     filters = _json_object(manifest, "filters_json")
@@ -130,7 +132,9 @@ def load_dataset_lineage(
     if dataset_path.name != version:
         raise ValueError("Manifest dataset path does not match dataset_version")
     if require_dataset and not dataset_path.exists():
-        raise FileNotFoundError(f"Versioned lakehouse dataset is missing for {version}: {dataset_path}")
+        raise FileNotFoundError(
+            f"Versioned lakehouse dataset is missing for {version}: {dataset_path}"
+        )
     if str(manifest.get("format") or "").lower() != "parquet":
         raise ValueError("Official lakehouse training input must use Parquet")
 

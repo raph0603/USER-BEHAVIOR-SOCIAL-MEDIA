@@ -166,9 +166,7 @@ def test_canonical_json_and_fingerprint_ignore_mapping_order() -> None:
 
 
 def test_canonical_json_preserves_semantically_meaningful_array_order() -> None:
-    assert fingerprint({"model_columns": ["a", "b"]}) != fingerprint(
-        {"model_columns": ["b", "a"]}
-    )
+    assert fingerprint({"model_columns": ["a", "b"]}) != fingerprint({"model_columns": ["b", "a"]})
 
 
 def test_environment_fingerprint_changes_with_dependency_version() -> None:
@@ -298,9 +296,7 @@ def test_created_container_must_match_the_resolved_image(monkeypatch) -> None:
     monkeypatch.setattr(run_official_container, "_run", lambda *args, **kwargs: Result())
     run_official_container.validate_created_container("container-id", "sha256:" + "a" * 64)
     with pytest.raises(RuntimeError, match="image changed"):
-        run_official_container.validate_created_container(
-            "container-id", "sha256:" + "b" * 64
-        )
+        run_official_container.validate_created_container("container-id", "sha256:" + "b" * 64)
 
 
 def test_environment_manifest_records_an_unavailable_container_digest(tmp_path: Path) -> None:
@@ -481,17 +477,29 @@ def test_central_verifier_executes_every_identity_check() -> None:
 @pytest.mark.parametrize(
     ("check_name", "mutate"),
     [
-        ("Dataset fingerprint", lambda value: value["dataset_manifest"].update(dataset_fingerprint="0" * 64)),
-        ("Manifest SHA-256", lambda value: value["dataset_manifest"].update(manifest_sha256="0" * 64)),
+        (
+            "Dataset fingerprint",
+            lambda value: value["dataset_manifest"].update(dataset_fingerprint="0" * 64),
+        ),
+        (
+            "Manifest SHA-256",
+            lambda value: value["dataset_manifest"].update(manifest_sha256="0" * 64),
+        ),
         ("Silver snapshots", lambda value: value["lineage"].update(silver_snapshot_ids={})),
         ("Gold snapshot", lambda value: value["lineage"].update(gold_snapshot_id=21)),
         ("Git revision", lambda value: value["lineage"].update(git_commit="0" * 40)),
-        ("Environment fingerprint", lambda value: value["lineage"].update(environment_fingerprint="0" * 64)),
+        (
+            "Environment fingerprint",
+            lambda value: value["lineage"].update(environment_fingerprint="0" * 64),
+        ),
         ("Training config", lambda value: value["training_config"]["xgboost"].update(max_depth=99)),
         ("Feature schema", lambda value: value["bundle"].update(features=["different"])),
         ("Split fingerprint", lambda value: value["split_manifest"].update(seed=99)),
         ("Model identity", lambda value: value.update(model_sha256="9" * 64)),
-        ("Evaluation metrics", lambda value: value["evaluation"].update(split_fingerprint="0" * 64)),
+        (
+            "Evaluation metrics",
+            lambda value: value["evaluation"].update(split_fingerprint="0" * 64),
+        ),
     ],
 )
 def test_central_verifier_rejects_each_inconsistent_artifact(check_name, mutate) -> None:
