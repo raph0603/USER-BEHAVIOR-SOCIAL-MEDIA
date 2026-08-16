@@ -16,6 +16,7 @@ sys.path.insert(0, str(PIPELINE_DIR))
 
 import dataset_manifest
 import gold_schemas
+import virality_contract
 from common.reproducibility import manifest_sha256
 
 
@@ -49,6 +50,22 @@ def _load_train_version_validator():
 VALIDATE_DATASET_VERSION = _load_train_version_validator()
 
 
+def _write_contract(root: Path):
+    contract = virality_contract.build_contract(
+        {"x": [1.0, 2.0]},
+        policy=virality_contract.TRAINING_REFERENCE_POLICY,
+        quantile=0.75,
+        reference={"source_snapshots": {"features": 1, "engagement": 2}},
+        horizon_hours=24,
+        tolerance_hours=24,
+        eligibility_filters={"min_text_chars": 3},
+        min_reference_examples_per_platform=1,
+    )
+    path = root / "virality-contracts" / f"{contract.fingerprint}.json"
+    contract.write(path)
+    return contract, path
+
+
 def _load_feature_columns():
     path = ROOT / "ml" / "train" / "train_viral.py"
     module = ast.parse(path.read_text(encoding="utf-8"))
@@ -80,7 +97,7 @@ FEATURE_COLUMNS = _load_feature_columns()
 class DatasetManifestTests(unittest.TestCase):
     def _identity(self, snapshots=None, filters=None):
         return dataset_manifest.DatasetIdentity(
-            schema_version="v2",
+            schema_version="v3",
             source_snapshots=snapshots
             or {
                 "lakehouse.silver.post_features": 123,
@@ -105,7 +122,7 @@ class DatasetManifestTests(unittest.TestCase):
 
         self.assertEqual(first.fingerprint, replay.fingerprint)
         self.assertEqual(first.dataset_version, replay.dataset_version)
-        self.assertRegex(first.dataset_version, r"^dataset-v2-[a-f0-9]{20}$")
+        self.assertRegex(first.dataset_version, r"^dataset-v3-[a-f0-9]{20}$")
 
     def test_snapshot_or_filter_change_creates_a_new_version(self):
         baseline = self._identity()
@@ -131,6 +148,9 @@ class DatasetManifestTests(unittest.TestCase):
             "engagement_coverage",
             "audience_count",
             "audience_available",
+            "split_name",
+            "virality_policy",
+            "virality_contract_fingerprint",
         ):
             self.assertIn(field, gold_schemas.TRAINING_EXAMPLES_DDL)
         for field in (
@@ -144,11 +164,14 @@ class DatasetManifestTests(unittest.TestCase):
             "example_count",
             "missing_rates_json",
             "distributions_json",
+            "labeling_json",
+            "virality_policy",
+            "virality_contract_fingerprint",
             "dataset_fingerprint",
             "created_at",
         ):
             self.assertIn(field, gold_schemas.DATASET_MANIFESTS_DDL)
-        self.assertEqual(gold_schemas.TRAINING_EXAMPLES_SCHEMA_VERSION, "v2")
+        self.assertEqual(gold_schemas.TRAINING_EXAMPLES_SCHEMA_VERSION, "v3")
 
 
 class AudienceFeatureTests(unittest.TestCase):
@@ -229,7 +252,7 @@ class AudienceFeatureTests(unittest.TestCase):
 class OfficialTrainingInputTests(unittest.TestCase):
     def _write_manifest(self, root: Path, *, relative_path: str | None = None):
         identity = dataset_manifest.DatasetIdentity(
-            schema_version="v2",
+            schema_version="v3",
             source_snapshots={
                 "lakehouse.silver.post_features": 123,
                 "lakehouse.silver.engagement_snapshots": 456,
@@ -244,6 +267,7 @@ class OfficialTrainingInputTests(unittest.TestCase):
         dataset_path.mkdir(parents=True)
         manifest_path = root / "runs" / "run.json"
         manifest_path.parent.mkdir()
+        contract, contract_path = _write_contract(root)
         payload = {
             "dataset_version": identity.dataset_version,
             "schema_version": identity.schema_version,
@@ -261,6 +285,11 @@ class OfficialTrainingInputTests(unittest.TestCase):
             "training_table": "lakehouse.gold.training_examples",
             "training_snapshot_id": 789,
             "example_count": 1,
+            "labeling": {
+                "policy": contract.policy,
+                "virality_contract_fingerprint": contract.fingerprint,
+                "contract_relative_path": "../" + contract_path.relative_to(root).as_posix(),
+            },
         }
         payload["manifest_sha256"] = manifest_sha256(payload)
         manifest_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -334,12 +363,12 @@ class OfficialTrainingInputTests(unittest.TestCase):
                 BUILD_DATASET.load_events(path)
 
     def test_model_training_revalidates_the_exact_dataset_version(self):
-        expected = "dataset-v2-1234567890abcdef1234"
+        expected = "dataset-v3-1234567890abcdef1234"
         frame = pd.DataFrame({"dataset_version": [expected, expected]})
 
         VALIDATE_DATASET_VERSION(frame, expected)
         with self.assertRaisesRegex(ValueError, "received"):
-            VALIDATE_DATASET_VERSION(frame, "dataset-v2-aaaaaaaaaaaaaaaaaaaa")
+            VALIDATE_DATASET_VERSION(frame, "dataset-v3-aaaaaaaaaaaaaaaaaaaa")
         with self.assertRaisesRegex(ValueError, "must include"):
             VALIDATE_DATASET_VERSION(pd.DataFrame({"viral": [1]}), expected)
 
@@ -355,6 +384,9 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn("dataset_relative_path", source)
         self.assertIn("_feature_rank", source)
         self.assertIn("_snapshot_tiebreaker", source)
+        self.assertIn("apply_virality_contract", source)
+        self.assertNotIn("_viral_target", source)
+        self.assertNotIn("_label_rank", source)
         self.assertIn("DATASET_BUILDER_REVISION", source)
         self.assertIn('"dataset_builder_revision"', source)
         self.assertIn('"audience_feature_policy": AUDIENCE_FEATURE_POLICY', source)

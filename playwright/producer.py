@@ -294,16 +294,18 @@ def _extract_reddit_score(comment) -> int | None:
     )
     for selector in selectors:
         score_locator = comment.locator(selector)
-        if not score_locator.count():
-            continue
-        score_node = score_locator.first
-        for raw_value in (
-            score_node.get_attribute("title"),
-            score_node.inner_text(timeout=1000),
-        ):
-            parsed = parse_count(raw_value)
+        try:
+            if not score_locator.count():
+                continue
+            score_node = score_locator.first
+            parsed = parse_count(score_node.get_attribute("title"))
             if parsed is not None:
                 return parsed
+            parsed = parse_count(score_node.inner_text(timeout=1000))
+            if parsed is not None:
+                return parsed
+        except (PlaywrightTimeoutError, PlaywrightError) as exc:
+            LOGGER.debug("Could not read Reddit score with %s: %s", selector, exc)
     return None
 
 
@@ -2533,7 +2535,28 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
     return events
 
 
-def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]:
+def _publish_ready_batch(
+    events: list[dict],
+    publish_batch,
+    batch_size: int,
+) -> int:
+    effective_batch_size = max(1, batch_size)
+    if publish_batch is None or len(events) < effective_batch_size:
+        return 0
+
+    ready_batch = events[:effective_batch_size]
+    publish_batch(ready_batch)
+    del events[:effective_batch_size]
+    return len(ready_batch)
+
+
+def _collect_reddit_events(
+    state: ProcessedState,
+    max_events: int,
+    *,
+    publish_batch=None,
+    publish_batch_size: int = 50,
+) -> list[dict]:
     subreddits = _env_json_list(
         "REDDIT_SUBREDDITS_JSON",
         [
@@ -2732,6 +2755,11 @@ def _collect_reddit_events(state: ProcessedState, max_events: int) -> list[dict]
                 )
 
             events.append(event)
+            _publish_ready_batch(
+                events,
+                publish_batch,
+                publish_batch_size,
+            )
             page.wait_for_timeout(wait_ms)
 
         browser.close()
@@ -3032,11 +3060,33 @@ def main() -> None:
         elif mode == "x":
             events = _collect_x_events(state, max_events)
         else:
-            events = _collect_reddit_events(state, max_events)
+            reddit_batch_size = max(
+                1,
+                _env_int("REDDIT_PUBLISH_BATCH_SIZE", 50),
+            )
 
-        if mode != "youtube":
+            def publish_reddit_batch(batch: list[dict]) -> None:
+                nonlocal produced_event_count
+                publish(batch)
+                produced_event_count += len(batch)
+                print(
+                    "Published Reddit batch: "
+                    f"{len(batch)} events ({produced_event_count} total)",
+                    flush=True,
+                )
+
+            events = _collect_reddit_events(
+                state,
+                max_events,
+                publish_batch=publish_reddit_batch,
+                publish_batch_size=reddit_batch_size,
+            )
+
+        if mode == "x":
             publish(events)
             produced_event_count = len(events)
+        elif mode == "reddit" and events:
+            publish_reddit_batch(events)
         print(f"Produced {produced_event_count} new {mode} events")
     except CollectorSoftBlock as exc:
         print(f"Collector soft-blocked: {exc}", file=sys.stderr, flush=True)

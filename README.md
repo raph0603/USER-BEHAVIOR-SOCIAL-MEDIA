@@ -11,6 +11,7 @@ Architecture and operations:
 - [Canonical event schema](docs/DATA_SCHEMA.md)
 - [Collector behavior](docs/COLLECTORS.md)
 - [Lakehouse data model](docs/data-model.md)
+- [Virality label contract](docs/VIRALITY_LABEL_CONTRACT.md)
 - [Metadata and caption troubleshooting](docs/TROUBLESHOOTING.md)
 - [YouTube thumbnail URLs and transcript fallback](docs/YOUTUBE_MEDIA_REFERENCES.md)
 - [Démonstration vérifiable RAW → Bronze → Silver → Gold pour un événement X](docs/X_LINEAGE_DEMO.md)

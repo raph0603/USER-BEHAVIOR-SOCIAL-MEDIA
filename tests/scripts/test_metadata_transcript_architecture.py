@@ -134,6 +134,92 @@ class ProducerEnvironmentParsingTests(unittest.TestCase):
 
 
 class RedditCommentExtractionTests(unittest.TestCase):
+    @staticmethod
+    def _reddit_score_function():
+        function = _producer_functions("_extract_reddit_score")[0]
+
+        class FakeTimeoutError(Exception):
+            pass
+
+        class FakeLogger:
+            def debug(self, *args, **kwargs):
+                pass
+
+        def parse_count(value):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        namespace = {
+            "LOGGER": FakeLogger(),
+            "PlaywrightTimeoutError": FakeTimeoutError,
+            "PlaywrightError": FakeTimeoutError,
+            "parse_count": parse_count,
+        }
+        exec(
+            compile(ast.Module(body=[function], type_ignores=[]), str(PRODUCER_PATH), "exec"),
+            namespace,
+        )
+        return namespace["_extract_reddit_score"], FakeTimeoutError
+
+    def test_score_timeout_falls_back_to_another_selector(self):
+        extract_score, timeout_error = self._reddit_score_function()
+
+        class FakeLocator:
+            def __init__(self, *, title=None, timeout=False, present=True):
+                self.title = title
+                self.timeout = timeout
+                self.present = present
+                self.first = self
+
+            def count(self):
+                return int(self.present)
+
+            def get_attribute(self, name):
+                return self.title
+
+            def inner_text(self, timeout):
+                if self.timeout:
+                    raise timeout_error("score text did not load")
+                return ""
+
+        class FakeComment:
+            def locator(self, selector):
+                if selector == "span.score.unvoted":
+                    return FakeLocator(timeout=True)
+                if selector == "span.score.likes":
+                    return FakeLocator(title="42")
+                return FakeLocator(present=False)
+
+        self.assertEqual(extract_score(FakeComment()), 42)
+
+    def test_score_timeout_returns_none_when_no_fallback_is_available(self):
+        extract_score, timeout_error = self._reddit_score_function()
+
+        class FakeLocator:
+            first = None
+
+            def __init__(self, present):
+                self.present = present
+                self.first = self
+
+            def count(self):
+                return int(self.present)
+
+            def get_attribute(self, name):
+                return None
+
+            def inner_text(self, timeout):
+                raise timeout_error("score text did not load")
+
+        class FakeComment:
+            def locator(self, selector):
+                return FakeLocator(selector == "span.score.unvoted")
+
+        self.assertIsNone(extract_score(FakeComment()))
+
+
     def test_author_timeout_keeps_the_comment_with_anonymous_author(self):
         import re
         from urllib.parse import urljoin
@@ -196,6 +282,51 @@ class RedditCommentExtractionTests(unittest.TestCase):
 
         self.assertEqual(event["user_id"], "reddit-anonymous-comment-1")
         self.assertEqual(event["title"], "Useful comment")
+
+
+class RedditIncrementalPublishingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        function = _producer_functions("_publish_ready_batch")[0]
+        namespace = {}
+        exec(
+            compile(ast.Module(body=[function], type_ignores=[]), str(PRODUCER_PATH), "exec"),
+            namespace,
+        )
+        cls.publish_ready_batch = staticmethod(namespace["_publish_ready_batch"])
+
+    def test_ready_batch_is_published_and_removed_from_buffer(self):
+        events = [{"event_id": str(index)} for index in range(75)]
+        published = []
+
+        published_count = self.publish_ready_batch(events, published.append, 50)
+
+        self.assertEqual(published_count, 50)
+        self.assertEqual(len(published), 1)
+        self.assertEqual(len(published[0]), 50)
+        self.assertEqual(len(events), 25)
+        self.assertEqual(events[0]["event_id"], "50")
+
+    def test_incomplete_batch_stays_buffered(self):
+        events = [{"event_id": str(index)} for index in range(49)]
+        published = []
+
+        published_count = self.publish_ready_batch(events, published.append, 50)
+
+        self.assertEqual(published_count, 0)
+        self.assertEqual(published, [])
+        self.assertEqual(len(events), 49)
+
+    def test_failed_publish_keeps_batch_buffered(self):
+        events = [{"event_id": str(index)} for index in range(50)]
+
+        def fail_publish(batch):
+            raise RuntimeError("Kafka unavailable")
+
+        with self.assertRaisesRegex(RuntimeError, "Kafka unavailable"):
+            self.publish_ready_batch(events, fail_publish, 50)
+
+        self.assertEqual(len(events), 50)
 
 
 class SchemaRegistryLookupTests(unittest.TestCase):
@@ -590,7 +721,14 @@ class YouTubeMetadataMappingTests(unittest.TestCase):
 
         self.assertIn("youtube_processing_deadline = time.monotonic()", source)
         self.assertIn("publish(video_events)", source)
-        self.assertIn('if mode != "youtube":\n            publish(events)', source)
+        self.assertIn('if mode == "x":\n            publish(events)', source)
+
+    def test_reddit_events_are_published_in_configurable_batches(self):
+        source = PRODUCER_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('_env_int("REDDIT_PUBLISH_BATCH_SIZE", 50)', source)
+        self.assertIn("publish_batch=publish_reddit_batch", source)
+        self.assertIn("Published Reddit batch:", source)
 
     def test_video_metadata_and_transcript_provenance_are_preserved(self):
         now = datetime(2026, 1, 2, tzinfo=timezone.utc)

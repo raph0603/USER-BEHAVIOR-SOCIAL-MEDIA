@@ -27,6 +27,7 @@ Outputs
     ml/data/calibration.png          - reliability diagram (overall + per source)
 and a short summary is printed to stdout.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -96,7 +97,10 @@ def _confusion_at(y_true, proba, thr: float) -> dict:
     tn, fp, fn, tp = confusion_matrix(y_true, pred, labels=[0, 1]).ravel()
     return {
         "threshold": round(float(thr), 3),
-        "tp": int(tp), "fp": int(fp), "fn": int(fn), "tn": int(tn),
+        "tp": int(tp),
+        "fp": int(fp),
+        "fn": int(fn),
+        "tn": int(tn),
         "precision": round(float(precision_score(y_true, pred, zero_division=0)), 3),
         "recall": round(float(recall_score(y_true, pred, zero_division=0)), 3),
         "f1": round(float(f1_score(y_true, pred, zero_division=0)), 3),
@@ -140,8 +144,9 @@ def evaluate_group(y_true, proba, n_boot: int, threshold: float = 0.5) -> dict:
     out = {"n": int(len(y_true)), "viral_rate": round(float(y_true.mean()), 3)}
     if len(np.unique(y_true)) < 2:
         out["note"] = "single class in test - ranking metrics undefined"
-        out["brier"] = round(float(brier_score_loss(y_true, proba, pos_label=1)), 3) \
-            if len(y_true) else None
+        out["brier"] = (
+            round(float(brier_score_loss(y_true, proba, pos_label=1)), 3) if len(y_true) else None
+        )
         out["confusion_serving"] = _confusion_at(y_true, proba, threshold)
         return out
     out["pr_auc"] = round(float(average_precision_score(y_true, proba)), 3)
@@ -169,10 +174,14 @@ def score_test_set(data_path: Path, model_path: Path, test_size: float, seed: in
     _, test_idx = split_indices(df, test_size, seed)
     test = df.iloc[test_idx].reset_index(drop=True)
 
-    X = test.reindex(columns=[c for c in features if c != "content_score"], fill_value=0.0).astype(float)
+    X = test.reindex(columns=[c for c in features if c != "content_score"], fill_value=0.0).astype(
+        float
+    )
     if "content_score" in features:
         if content_model is None:
-            raise SystemExit("Bundle has no content_model (BERT mode); score with the BERT wrapper.")
+            raise SystemExit(
+                "Bundle has no content_model (BERT mode); score with the BERT wrapper."
+            )
         X["content_score"] = content_model.predict_proba(test[TEXT].astype(str))[:, 1]
     X = X.reindex(columns=features, fill_value=0.0)
 
@@ -181,7 +190,9 @@ def score_test_set(data_path: Path, model_path: Path, test_size: float, seed: in
         proba = apply_calibrator(bundle["calibrator"], proba)
     y = test[TARGET].astype(int).to_numpy()
     src = test["source"].fillna("unknown").to_numpy()
-    threshold = float(bundle.get("threshold") or 0.5)
+    threshold = float(
+        bundle.get("classification_probability_threshold", bundle.get("threshold")) or 0.5
+    )
     return y, np.asarray(proba, dtype=float), src, threshold
 
 
@@ -233,13 +244,15 @@ def build_markdown(
     ]
     for g, m in results.items():
         if "roc_auc" not in m:
-            lines.append(f"| {g} | {m['n']} | {m['viral_rate']} | {m.get('note','single class')} | - | {m.get('brier','-')} | - |")
+            lines.append(
+                f"| {g} | {m['n']} | {m['viral_rate']} | {m.get('note', 'single class')} | - | {m.get('brier', '-')} | - |"
+            )
             continue
         lines.append(
             f"| {g} | {m['n']} | {m['viral_rate']} | "
             f"{m['roc_auc']} {_fmt_ci(m.get('roc_auc_ci95'))} | "
             f"{m['pr_auc']} {_fmt_ci(m.get('pr_auc_ci95'))} | "
-            f"{m['brier']} | {m.get('ece','-')} |"
+            f"{m['brier']} | {m.get('ece', '-')} |"
         )
     lines += [
         "",
@@ -283,6 +296,7 @@ def build_markdown(
 
 def make_plot(y, proba, src, out_path: Path, dataset_version: str | None = None):
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -317,7 +331,9 @@ def make_plot(y, proba, src, out_path: Path, dataset_version: str | None = None)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Verify the model's answers (calibration, decisions, stability).")
+    parser = argparse.ArgumentParser(
+        description="Verify the model's answers (calibration, decisions, stability)."
+    )
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA)
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--test-size", type=float, default=0.2)

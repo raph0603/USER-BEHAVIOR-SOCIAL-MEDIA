@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
+import re
 from typing import List, Optional
 
 
@@ -36,8 +37,8 @@ from typing import List, Optional
 # ---------------------------------------------------------------------------
 
 PREDICTIONS_SCHEMA_VERSION = "v1"
-TRAINING_EXAMPLES_SCHEMA_VERSION = "v2"
-DATASET_MANIFESTS_SCHEMA_VERSION = "v1"
+TRAINING_EXAMPLES_SCHEMA_VERSION = "v3"
+DATASET_MANIFESTS_SCHEMA_VERSION = "v2"
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +100,9 @@ CREATE TABLE IF NOT EXISTS lakehouse.gold.training_examples (
   engagement_coverage        DOUBLE    COMMENT 'Observed source-specific counters divided by expected counters',
   audience_count             BIGINT    COMMENT 'Known author/channel/community audience, including a real zero',
   audience_available         BOOLEAN   COMMENT 'True only when audience_count was actually observed',
+  split_name                 STRING    COMMENT 'Deterministic train or holdout assignment used by labeling and training',
+  virality_policy            STRING    COMMENT 'Ground-truth policy; never a model probability threshold',
+  virality_contract_fingerprint STRING COMMENT 'SHA-256 identity of the frozen virality labeling contract',
   dataset_version            STRING    COMMENT 'Dataset build version for reproducibility',
   context_feature_snapshot   STRING    COMMENT 'JSON snapshot of context features used at labeling time (nullable)',
   schema_version             STRING    COMMENT 'Schema version for consumer compatibility',
@@ -125,6 +129,9 @@ TRAINING_EXAMPLES_COLUMNS = [
     "engagement_coverage",
     "audience_count",
     "audience_available",
+    "split_name",
+    "virality_policy",
+    "virality_contract_fingerprint",
     "dataset_version",
     "context_feature_snapshot",
     "schema_version",
@@ -144,6 +151,9 @@ CREATE TABLE IF NOT EXISTS lakehouse.gold.dataset_manifests (
   example_count            BIGINT    COMMENT 'Number of labeled examples',
   missing_rates_json       STRING    COMMENT 'Canonical JSON of field-level missing rates',
   distributions_json       STRING    COMMENT 'Canonical JSON of label and source distributions',
+  labeling_json            STRING    COMMENT 'Canonical frozen virality contract summary and sidecar identity',
+  virality_policy          STRING    COMMENT 'Ground-truth labeling policy',
+  virality_contract_fingerprint STRING COMMENT 'SHA-256 identity of the frozen labeling contract',
   dataset_fingerprint      STRING    COMMENT 'SHA-256 of input snapshots, schema, and filters',
   created_at               TIMESTAMP COMMENT 'UTC manifest creation timestamp'
 )
@@ -162,6 +172,9 @@ DATASET_MANIFESTS_COLUMNS = [
     "example_count",
     "missing_rates_json",
     "distributions_json",
+    "labeling_json",
+    "virality_policy",
+    "virality_contract_fingerprint",
     "dataset_fingerprint",
     "created_at",
 ]
@@ -246,6 +259,9 @@ class TrainingExampleRow:
     engagement_coverage: float = 0.0
     audience_count: Optional[int] = None
     audience_available: bool = False
+    split_name: Optional[str] = None
+    virality_policy: Optional[str] = None
+    virality_contract_fingerprint: Optional[str] = None
     context_feature_snapshot: Optional[str] = None  # JSON string
     schema_version: str = TRAINING_EXAMPLES_SCHEMA_VERSION
     example_date: Optional[str] = None  # ISO date string
@@ -284,6 +300,9 @@ class TrainingExampleRow:
             engagement_coverage=float(data.get("engagement_coverage", 0.0)),
             audience_count=data.get("audience_count"),
             audience_available=bool(data.get("audience_available", False)),
+            split_name=data.get("split_name"),
+            virality_policy=data.get("virality_policy"),
+            virality_contract_fingerprint=data.get("virality_contract_fingerprint"),
             context_feature_snapshot=data.get("context_feature_snapshot"),
             schema_version=data.get("schema_version", TRAINING_EXAMPLES_SCHEMA_VERSION),
             example_date=data.get("example_date"),
@@ -333,6 +352,16 @@ def validate_training_example(row: TrainingExampleRow) -> list[str]:
             f"label_horizon must be one of {sorted(VALID_LABEL_HORIZONS)}, "
             f"got {row.label_horizon!r}"
         )
+    if row.schema_version == TRAINING_EXAMPLES_SCHEMA_VERSION:
+        if row.split_name not in {"train", "holdout"}:
+            errors.append("split_name must be train or holdout for versioned labels")
+        if row.virality_policy not in {
+            "platform_reference_quantile",
+            "training_reference_quantile",
+        }:
+            errors.append("virality_policy must identify a frozen threshold policy")
+        if not re.fullmatch(r"[a-f0-9]{64}", row.virality_contract_fingerprint or ""):
+            errors.append("virality_contract_fingerprint must be a SHA-256 hex digest")
     return errors
 
 
@@ -365,7 +394,19 @@ def create_gold_tables(spark) -> None:
         "engagement_coverage": "DOUBLE",
         "audience_count": "BIGINT",
         "audience_available": "BOOLEAN",
+        "split_name": "STRING",
+        "virality_policy": "STRING",
+        "virality_contract_fingerprint": "STRING",
     }
     for name, data_type in additive_columns.items():
         if name not in current_columns:
             spark.sql(f"ALTER TABLE lakehouse.gold.training_examples ADD COLUMN {name} {data_type}")
+    manifest_columns = set(spark.table("lakehouse.gold.dataset_manifests").columns)
+    manifest_additions = {
+        "labeling_json": "STRING",
+        "virality_policy": "STRING",
+        "virality_contract_fingerprint": "STRING",
+    }
+    for name, data_type in manifest_additions.items():
+        if name not in manifest_columns:
+            spark.sql(f"ALTER TABLE lakehouse.gold.dataset_manifests ADD COLUMN {name} {data_type}")

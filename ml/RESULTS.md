@@ -84,9 +84,13 @@ engagement. Split 2928 / 870, grouped on `author_hash` so no author appears on b
 | reddit | 1079 | 285 | 0.264 | 297 (28%) |
 | x | 719 | 180 | 0.250 | 362 (50%) |
 
-The label is built **per source**: within a platform, `log1p` of that platform's engagement
-metrics is z-scored, and the top 25% is labelled viral. Engagement columns build the label
-and are never features.
+> Historical result: this experiment used the retired dataset-relative label.
+> It must not be compared directly with models trained under the current
+> [versioned virality contract](../docs/VIRALITY_LABEL_CONTRACT.md).
+
+For this historical run, the label was built **per source**: within a platform,
+`log1p` of that platform's engagement metrics was z-scored, and the top 25% was
+labelled viral. Engagement columns built the label and were never features.
 
 ---
 
