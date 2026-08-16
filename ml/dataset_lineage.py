@@ -5,8 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from common.reproducibility import manifest_sha256
 
 
 DATASET_VERSION_PATTERN = re.compile(r"^dataset-(?P<schema>v\d+)-(?P<prefix>[a-f0-9]{20})$")
@@ -105,6 +113,9 @@ def load_dataset_lineage(
     computed_fingerprint = hashlib.sha256(_canonical_json(identity).encode("utf-8")).hexdigest()
     if computed_fingerprint != fingerprint:
         raise ValueError("Manifest dataset_fingerprint does not match its pinned inputs")
+    expected_manifest_sha = str(manifest.get("manifest_sha256") or "")
+    if expected_manifest_sha != manifest_sha256(manifest):
+        raise ValueError("Manifest manifest_sha256 does not match its canonical contents")
 
     relative_path = str(manifest.get("dataset_relative_path") or "").strip()
     if not relative_path:
@@ -147,7 +158,8 @@ def load_dataset_lineage(
         "example_count": int(manifest.get("example_count") or 0),
         "period_start": str(manifest.get("period_start") or ""),
         "period_end": str(manifest.get("period_end") or ""),
-        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "manifest_sha256": expected_manifest_sha,
+        "source_manifest_file_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
     }
     return dataset_path, lineage
 

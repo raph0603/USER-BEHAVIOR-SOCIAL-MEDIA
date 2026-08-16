@@ -2,22 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
-
-def canonical_json(value: Mapping[str, Any]) -> str:
-    """Serialize manifest identity inputs with stable ordering and separators."""
-
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
+from common.reproducibility import canonical_json, fingerprint
 
 
 @dataclass(frozen=True)
@@ -51,7 +39,7 @@ class DatasetIdentity:
 
     @property
     def fingerprint(self) -> str:
-        return hashlib.sha256(canonical_json(self.inputs()).encode("utf-8")).hexdigest()
+        return fingerprint(self.inputs())
 
     @property
     def dataset_version(self) -> str:
