@@ -25,6 +25,11 @@ from pathlib import Path
 
 ML_ROOT = Path(__file__).resolve().parents[0]
 PY = sys.executable
+PIPELINE_ROOT = ML_ROOT.parent / "spark" / "jobs"
+if str(PIPELINE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PIPELINE_ROOT))
+
+from pipeline.virality_contract import ViralityContract
 
 STEPS = [
     ("Build dataset", ML_ROOT / "preprocess" / "build_dataset.py"),
@@ -115,12 +120,28 @@ def load_lakehouse_manifest(
         raise ValueError("Manifest is not marked as an official lakehouse input")
     if not version or not relative_path:
         raise ValueError("Manifest must contain dataset_version and dataset_relative_path")
-    if not re.fullmatch(r"dataset-v2-[a-f0-9]{20}", version):
+    if re.fullmatch(r"dataset-v2-[a-f0-9]{20}", version):
+        raise ValueError(
+            "Legacy dataset-v2 uses dataset-relative top-quartile labels and cannot be "
+            "treated as a frozen virality contract"
+        )
+    if not re.fullmatch(r"dataset-v3-[a-f0-9]{20}", version):
         raise ValueError("Manifest dataset_version has an invalid format")
     if not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
         raise ValueError("Manifest dataset_fingerprint must be a SHA-256 hex digest")
-    if version != f"dataset-v2-{fingerprint[:20]}":
+    if version != f"dataset-v3-{fingerprint[:20]}":
         raise ValueError("Manifest dataset_version does not match dataset_fingerprint")
+    labeling = manifest.get("labeling")
+    if not isinstance(labeling, dict):
+        raise ValueError("Official manifest must contain frozen virality labeling lineage")
+    virality_fingerprint = str(labeling.get("virality_contract_fingerprint") or "")
+    if not re.fullmatch(r"[a-f0-9]{64}", virality_fingerprint):
+        raise ValueError("Manifest virality_contract_fingerprint must be a SHA-256 hex digest")
+    if labeling.get("policy") not in {
+        "platform_reference_quantile",
+        "training_reference_quantile",
+    }:
+        raise ValueError("Manifest has an unsupported virality labeling policy")
     if expected_dataset_version and version != expected_dataset_version:
         raise ValueError(
             f"Expected lakehouse dataset {expected_dataset_version}, received {version}"
@@ -140,6 +161,17 @@ def load_lakehouse_manifest(
         )
     if str(manifest.get("format") or "").lower() != "parquet":
         raise ValueError("Official lakehouse training input must use Parquet")
+    relative_contract_path = Path(str(labeling.get("contract_relative_path") or ""))
+    if not str(relative_contract_path) or relative_contract_path.is_absolute():
+        raise ValueError("Manifest labeling must reference a relative virality contract sidecar")
+    contract_path = (path.parent / relative_contract_path).resolve()
+    if not contract_path.is_relative_to(export_root):
+        raise ValueError("Manifest virality contract path escapes the export root")
+    if not contract_path.is_file():
+        raise FileNotFoundError(f"Frozen virality contract sidecar is missing: {contract_path}")
+    contract = ViralityContract.load(contract_path)
+    if contract.fingerprint != virality_fingerprint:
+        raise ValueError("Manifest and sidecar virality contract fingerprints do not match")
     return dataset_path, version
 
 
@@ -198,10 +230,15 @@ def main() -> None:
             expected_dataset_version=args.dataset_version,
         )
         official_input = True
+        lakehouse_payload = json.loads(args.lakehouse_manifest.read_text(encoding="utf-8"))
+        virality_fingerprint = lakehouse_payload["labeling"]["virality_contract_fingerprint"]
+        virality_policy = lakehouse_payload["labeling"]["policy"]
     elif args.manual_csv_input:
         training_input = args.manual_csv_input
         dataset_version = None
         official_input = False
+        virality_fingerprint = None
+        virality_policy = None
         validate_training_input(
             training_input,
             max_age_hours=args.max_input_age_hours,
@@ -223,8 +260,15 @@ def main() -> None:
             arguments = ("--input", str(training_input))
             if dataset_version:
                 arguments += ("--dataset-version", dataset_version)
-        elif script.name == "train_viral.py" and dataset_version:
-            arguments = ("--dataset-version", dataset_version)
+        elif script.name in {"train_viral.py", "evaluate.py"} and dataset_version:
+            arguments = (
+                "--virality-contract-fingerprint",
+                virality_fingerprint,
+                "--virality-policy",
+                virality_policy,
+            )
+            if script.name == "train_viral.py":
+                arguments += ("--dataset-version", dataset_version)
         run(title, script, *arguments)
     if args.report:
         run("Build report", ML_ROOT / "report.py")

@@ -81,6 +81,9 @@ class TrainingExampleRowTests(unittest.TestCase):
             label_horizon="T+24h",
             label_value="viral",
             dataset_version="2026-06-01",
+            split_name="train",
+            virality_policy="training_reference_quantile",
+            virality_contract_fingerprint="a" * 64,
         )
         base.update(overrides)
         return gs.TrainingExampleRow(**base)
@@ -151,6 +154,9 @@ class GoldSchemaContractTests(unittest.TestCase):
             "label_horizon",
             "label_value",
             "dataset_version",
+            "split_name",
+            "virality_policy",
+            "virality_contract_fingerprint",
             "context_feature_snapshot",
             "schema_version",
             "example_date",

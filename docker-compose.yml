@@ -584,6 +584,9 @@ services:
       - ML_LABEL_HORIZON_HOURS=${ML_LABEL_HORIZON_HOURS:-24}
       - ML_LABEL_TOLERANCE_HOURS=${ML_LABEL_TOLERANCE_HOURS:-24}
       - ML_VIRAL_QUANTILE=${ML_VIRAL_QUANTILE:-0.75}
+      - ML_VIRALITY_POLICY=${ML_VIRALITY_POLICY:-training_reference_quantile}
+      - ML_HOLDOUT_FRACTION=${ML_HOLDOUT_FRACTION:-0.2}
+      - ML_SPLIT_SEED=${ML_SPLIT_SEED:-42}
       - ML_MIN_TEXT_CHARS=${ML_MIN_TEXT_CHARS:-3}
       - LAKEHOUSE_QUALITY_PROFILE=${LAKEHOUSE_QUALITY_PROFILE:-standard}
       - LAKEHOUSE_QUALITY_RULES_PATH=${LAKEHOUSE_QUALITY_RULES_PATH:-/opt/spark/jobs/config/lakehouse_quality_rules.json}
@@ -753,7 +756,7 @@ services:
       - balancing:/workspace/data/lakehouse-ml:ro
     command: >
       python ml/run_pipeline.py
-      --lakehouse-manifest /workspace/data/lakehouse-ml/current.json
+      --lakehouse-manifest /workspace/data/lakehouse-ml/ml/current.json
       --report
 
 volumes:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -11,13 +12,12 @@ from datetime import datetime, timezone
 from functools import reduce
 from pathlib import Path
 
+import numpy as np
 from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql.functions import (
-    ceil,
     coalesce,
     col,
     concat_ws,
-    count,
     expr,
     greatest,
     length,
@@ -43,6 +43,15 @@ from pipeline.gold_schemas import (
     TRAINING_EXAMPLES_COLUMNS,
     TRAINING_EXAMPLES_SCHEMA_VERSION,
     create_gold_tables,
+)
+from pipeline.virality_contract import (
+    ENGAGEMENT_SCORE_VERSION,
+    OBSERVATION_SELECTION_POLICY,
+    PLATFORM_REFERENCE_POLICY,
+    QUANTILE_METHOD,
+    TRAINING_REFERENCE_POLICY,
+    ViralityContract,
+    build_contract,
 )
 
 
@@ -127,6 +136,36 @@ def _parser() -> argparse.ArgumentParser:
         default=float(_env("ML_VIRAL_QUANTILE", "0.75")),
     )
     parser.add_argument(
+        "--virality-policy",
+        choices=(PLATFORM_REFERENCE_POLICY, TRAINING_REFERENCE_POLICY),
+        default=_env("ML_VIRALITY_POLICY", TRAINING_REFERENCE_POLICY),
+    )
+    parser.add_argument(
+        "--virality-contract",
+        type=Path,
+        help="Frozen contract to apply; required for platform_reference_quantile",
+    )
+    parser.add_argument(
+        "--virality-contract-output",
+        type=Path,
+        help="Optional additional path for the generated/resolved immutable contract",
+    )
+    parser.add_argument(
+        "--min-reference-examples-per-platform",
+        type=int,
+        help="Explicit minimum reference population required for every included platform",
+    )
+    parser.add_argument(
+        "--holdout-fraction",
+        type=float,
+        default=float(_env("ML_HOLDOUT_FRACTION", "0.2")),
+    )
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=int(_env("ML_SPLIT_SEED", "42")),
+    )
+    parser.add_argument(
         "--min-text-chars",
         type=int,
         default=int(_env("ML_MIN_TEXT_CHARS", "3")),
@@ -156,6 +195,25 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--viral-quantile must be between zero and one")
     if args.min_text_chars < 1:
         raise ValueError("--min-text-chars must be greater than zero")
+    if not 0 < args.holdout_fraction < 1:
+        raise ValueError("--holdout-fraction must be between zero and one")
+    if args.dataset_version == "auto" and args.virality_policy == PLATFORM_REFERENCE_POLICY:
+        if args.virality_contract is None:
+            raise ValueError(
+                "--virality-contract is required for platform_reference_quantile; "
+                "evaluation data must never estimate its own thresholds"
+            )
+    if args.dataset_version == "auto" and args.virality_policy == TRAINING_REFERENCE_POLICY:
+        if args.min_reference_examples_per_platform is None:
+            raise ValueError(
+                "--min-reference-examples-per-platform must be explicitly configured "
+                "for training_reference_quantile"
+            )
+    if (
+        args.min_reference_examples_per_platform is not None
+        and args.min_reference_examples_per_platform <= 0
+    ):
+        raise ValueError("--min-reference-examples-per-platform must be greater than zero")
 
 
 def _latest_snapshot_id(spark: SparkSession, table: str) -> int:
@@ -228,17 +286,15 @@ def _audience_expressions(dataframe: DataFrame):
     return value, available
 
 
-def build_training_examples(
+def build_scored_examples(
     post_features: DataFrame,
     snapshots: DataFrame,
     *,
-    dataset_version: str,
     label_horizon_hours: int,
     label_tolerance_hours: int,
-    viral_quantile: float,
     min_text_chars: int,
 ) -> DataFrame:
-    """Derive one coverage-aware, deterministic label per eligible content row."""
+    """Build fixed-horizon engagement scores without consulting evaluation composition."""
 
     feature_types = {
         "source": "string",
@@ -420,28 +476,6 @@ def build_training_examples(
             ),
         )
     )
-    rank_window = Window.partitionBy("source").orderBy(
-        col("engagement_score").desc(),
-        col("example_id").asc(),
-    )
-    count_window = Window.partitionBy("source")
-    labeled = (
-        scored.withColumn("_label_rank", row_number().over(rank_window))
-        .withColumn("_source_count", count(lit(1)).over(count_window))
-        .withColumn(
-            "_viral_target",
-            greatest(
-                lit(1),
-                ceil(col("_source_count") * lit(1.0 - viral_quantile)),
-            ),
-        )
-        .withColumn(
-            "label_value",
-            when(col("_label_rank") <= col("_viral_target"), lit("viral")).otherwise(
-                lit("not_viral")
-            ),
-        )
-    )
     context_fields = [
         "observation_id",
         "label_observed_at",
@@ -455,12 +489,78 @@ def build_training_examples(
         *ALL_METRICS,
         *[f"{metric}_available" for metric in ALL_METRICS],
     ]
-    return (
-        labeled.withColumn(
-            "context_feature_snapshot",
-            to_json(struct(*[col(name) for name in context_fields])),
+    return scored.withColumn(
+        "context_feature_snapshot",
+        to_json(struct(*[col(name) for name in context_fields])),
+    )
+
+
+def assign_split(scored: DataFrame, *, holdout_fraction: float, split_seed: int) -> DataFrame:
+    """Reproduce GroupShuffleSplit semantics from stable author/example identities."""
+
+    with_groups = scored.withColumn("_split_group", coalesce(col("author_hash"), col("example_id")))
+    groups = sorted(
+        row["_split_group"] for row in with_groups.select("_split_group").distinct().collect()
+    )
+    if len(groups) < 2:
+        raise RuntimeError("At least two author groups are required for a train/holdout split")
+    holdout_count = int(math.ceil(len(groups) * holdout_fraction))
+    permutation = np.random.RandomState(split_seed).permutation(len(groups))
+    holdout = {groups[int(index)] for index in permutation[:holdout_count]}
+    assignments = [(group, "holdout" if group in holdout else "train") for group in groups]
+    assignment_frame = scored.sparkSession.createDataFrame(
+        assignments, schema="_split_group string, split_name string"
+    )
+    return with_groups.join(assignment_frame, "_split_group", "inner").drop("_split_group")
+
+
+def reference_scores(scored: DataFrame) -> dict[str, list[float]]:
+    """Collect only the explicitly materialized training partition for contract estimation."""
+
+    result: dict[str, list[float]] = {}
+    rows = (
+        scored.filter(col("split_name") == "train")
+        .select("source", "engagement_score")
+        .toLocalIterator()
+    )
+    for row in rows:
+        result.setdefault(str(row["source"]), []).append(float(row["engagement_score"]))
+    return result
+
+
+def apply_virality_contract(
+    scored: DataFrame,
+    contract: ViralityContract,
+    *,
+    dataset_version: str,
+) -> DataFrame:
+    """Apply absolute platform thresholds; no rank, target rate, or tie breaker exists."""
+
+    observed_platforms = {
+        str(row["source"]) for row in scored.select("source").distinct().collect()
+    }
+    missing = sorted(observed_platforms - set(contract.thresholds))
+    if missing:
+        raise RuntimeError(
+            "Frozen virality contract has no threshold for platform(s): " + ", ".join(missing)
         )
+    label_expression = None
+    for platform in sorted(contract.thresholds):
+        threshold = float(contract.thresholds[platform]["value"])
+        platform_label = when(col("engagement_score") >= lit(threshold), lit("viral")).otherwise(
+            lit("not_viral")
+        )
+        condition = col("source") == platform
+        label_expression = (
+            when(condition, platform_label)
+            if label_expression is None
+            else label_expression.when(condition, platform_label)
+        )
+    return (
+        scored.withColumn("label_value", label_expression)
         .withColumn("dataset_version", lit(dataset_version))
+        .withColumn("virality_policy", lit(contract.policy))
+        .withColumn("virality_contract_fingerprint", lit(contract.fingerprint))
         .withColumn("schema_version", lit(TRAINING_EXAMPLES_SCHEMA_VERSION))
         .withColumn("example_date", to_date(col("event_ts")))
         .select(*TRAINING_EXAMPLES_COLUMNS)
@@ -486,6 +586,7 @@ def _merge_examples(examples: DataFrame) -> None:
 def _manifest_for(
     examples: DataFrame,
     identity: DatasetIdentity,
+    contract: ViralityContract,
 ) -> dict:
     example_count = examples.count()
     if example_count == 0:
@@ -533,6 +634,19 @@ def _manifest_for(
         "example_count": example_count,
         "missing_rates_json": canonical_json(missing_rates),
         "distributions_json": canonical_json({"source_label": distribution}),
+        "labeling_json": canonical_json(
+            {
+                "target": "virality",
+                "policy": contract.policy,
+                "virality_contract_fingerprint": contract.fingerprint,
+                "quantile": contract.payload["quantile"],
+                "quantile_method": contract.payload["quantile_method"],
+                "engagement": contract.payload["engagement"],
+                "thresholds": contract.payload["thresholds"],
+            }
+        ),
+        "virality_policy": contract.policy,
+        "virality_contract_fingerprint": contract.fingerprint,
         "dataset_fingerprint": identity.fingerprint,
         "created_at": created_at,
     }
@@ -593,10 +707,49 @@ def _export_dataset(
         "format": "parquet",
         "official_input": True,
     }
+    payload["labeling"] = json.loads(str(manifest["labeling_json"]))
+    payload["labeling"]["contract_relative_path"] = os.path.relpath(
+        export_root / "virality-contracts" / f"{manifest['virality_contract_fingerprint']}.json",
+        manifest_output.parent,
+    )
     manifest_output.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n",
         encoding="utf-8",
     )
+
+
+def _print_contract_summary(contract: ViralityContract, examples: DataFrame) -> None:
+    applications = {
+        str(row["source"]): {
+            "count": int(row["count"]),
+            "positive_count": int(row["positive_count"] or 0),
+        }
+        for row in examples.groupBy("source")
+        .agg(
+            spark_sum(lit(1)).alias("count"),
+            spark_sum(when(col("label_value") == "viral", 1).otherwise(0)).alias("positive_count"),
+        )
+        .collect()
+    }
+    print("Virality reference contract")
+    print("---------------------------")
+    print(f"Policy: {contract.policy}")
+    print(f"Quantile: {contract.payload['quantile']} ({QUANTILE_METHOD})")
+    print(
+        f"Horizon: {contract.payload['engagement']['horizon_hours']}h | "
+        f"Tolerance: {contract.payload['engagement']['tolerance_hours']}h"
+    )
+    for platform, threshold in sorted(contract.thresholds.items()):
+        application = applications.get(platform, {"count": 0, "positive_count": 0})
+        rate = application["positive_count"] / application["count"] if application["count"] else 0.0
+        print(
+            f"{platform}: reference_rows={threshold['reference_count']} "
+            f"virality_engagement_threshold={threshold['value']:.12g} "
+            f"applied_positive_count={application['positive_count']} "
+            f"applied_positive_rate={rate:.6f}"
+        )
+    print(f"Contract fingerprint: {contract.fingerprint}")
+    print("Status: VALID")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -606,6 +759,7 @@ def main(argv: list[str] | None = None) -> int:
     spark.sparkContext.setLogLevel("WARN")
     create_gold_tables(spark)
     manifest_output = args.manifest_output or args.export_root / "current.json"
+    resolved_contract = None
 
     if args.dataset_version != "auto":
         manifest = _existing_manifest(spark, args.dataset_version)
@@ -621,34 +775,92 @@ def main(argv: list[str] | None = None) -> int:
             POST_FEATURES_TABLE: _latest_snapshot_id(spark, POST_FEATURES_TABLE),
             ENGAGEMENT_SNAPSHOTS_TABLE: _latest_snapshot_id(spark, ENGAGEMENT_SNAPSHOTS_TABLE),
         }
-        filters = {
+        scoring_filters = {
             "label_horizon_hours": args.label_horizon_hours,
-            "label_strategy": "coverage_aware_source_rank_v1",
             "label_tolerance_hours": args.label_tolerance_hours,
             "min_text_chars": args.min_text_chars,
             "required_observed_metrics": 1,
-            "viral_quantile": args.viral_quantile,
+            "engagement_score_version": ENGAGEMENT_SCORE_VERSION,
+            "observation_selection_policy": OBSERVATION_SELECTION_POLICY,
+            "holdout_fraction": args.holdout_fraction,
+            "split_seed": args.split_seed,
+        }
+        reference_identity = DatasetIdentity(
+            schema_version=TRAINING_EXAMPLES_SCHEMA_VERSION,
+            source_snapshots=snapshots,
+            filters=scoring_filters,
+        )
+        scored = assign_split(
+            build_scored_examples(
+                _read_snapshot(spark, POST_FEATURES_TABLE, snapshots[POST_FEATURES_TABLE]),
+                _read_snapshot(
+                    spark,
+                    ENGAGEMENT_SNAPSHOTS_TABLE,
+                    snapshots[ENGAGEMENT_SNAPSHOTS_TABLE],
+                ),
+                label_horizon_hours=args.label_horizon_hours,
+                label_tolerance_hours=args.label_tolerance_hours,
+                min_text_chars=args.min_text_chars,
+            ),
+            holdout_fraction=args.holdout_fraction,
+            split_seed=args.split_seed,
+        ).cache()
+        if args.virality_policy == PLATFORM_REFERENCE_POLICY:
+            contract = ViralityContract.load(args.virality_contract)
+            if contract.policy != PLATFORM_REFERENCE_POLICY:
+                raise ValueError("External official contract must use platform_reference_quantile")
+            engagement = contract.payload["engagement"]
+            if (
+                int(engagement["horizon_hours"]) != args.label_horizon_hours
+                or int(engagement["tolerance_hours"]) != args.label_tolerance_hours
+                or engagement["engagement_score_version"] != ENGAGEMENT_SCORE_VERSION
+            ):
+                raise ValueError(
+                    "Frozen virality contract is incompatible with the requested engagement contract"
+                )
+        else:
+            contract = build_contract(
+                reference_scores(scored),
+                policy=TRAINING_REFERENCE_POLICY,
+                quantile=args.viral_quantile,
+                reference={
+                    "reference_population": "deterministic_training_partition",
+                    "construction_fingerprint": reference_identity.fingerprint,
+                    "source_snapshots": snapshots,
+                    "holdout_excluded": True,
+                    "holdout_fraction": args.holdout_fraction,
+                    "split_seed": args.split_seed,
+                },
+                horizon_hours=args.label_horizon_hours,
+                tolerance_hours=args.label_tolerance_hours,
+                eligibility_filters=scoring_filters,
+                min_reference_examples_per_platform=(args.min_reference_examples_per_platform),
+            )
+        filters = {
+            **scoring_filters,
+            "label_policy": contract.policy,
+            "quantile": contract.payload["quantile"],
+            "quantile_method": QUANTILE_METHOD,
+            "virality_contract_fingerprint": contract.fingerprint,
         }
         identity = DatasetIdentity(
             schema_version=TRAINING_EXAMPLES_SCHEMA_VERSION,
             source_snapshots=snapshots,
             filters=filters,
         )
-        examples = build_training_examples(
-            _read_snapshot(spark, POST_FEATURES_TABLE, snapshots[POST_FEATURES_TABLE]),
-            _read_snapshot(
-                spark,
-                ENGAGEMENT_SNAPSHOTS_TABLE,
-                snapshots[ENGAGEMENT_SNAPSHOTS_TABLE],
-            ),
+        contract_path = args.export_root / "virality-contracts" / f"{contract.fingerprint}.json"
+        contract.write(contract_path)
+        if args.virality_contract_output:
+            contract.write(args.virality_contract_output)
+        resolved_contract = contract
+        examples = apply_virality_contract(
+            scored,
+            contract,
             dataset_version=identity.dataset_version,
-            label_horizon_hours=args.label_horizon_hours,
-            label_tolerance_hours=args.label_tolerance_hours,
-            viral_quantile=args.viral_quantile,
-            min_text_chars=args.min_text_chars,
         ).cache()
+        scored.unpersist()
         try:
-            manifest = _manifest_for(examples, identity)
+            manifest = _manifest_for(examples, identity, contract)
             _merge_examples(examples)
             _merge_manifest(spark, manifest)
             manifest = _existing_manifest(spark, identity.dataset_version)
@@ -664,12 +876,16 @@ def main(argv: list[str] | None = None) -> int:
         export_root=args.export_root,
         manifest_output=manifest_output,
     )
+    if resolved_contract is not None:
+        _print_contract_summary(resolved_contract, examples)
     print(
         json.dumps(
             {
                 "dataset_version": manifest["dataset_version"],
                 "example_count": int(manifest["example_count"]),
                 "manifest_output": str(manifest_output),
+                "virality_policy": manifest["virality_policy"],
+                "virality_contract_fingerprint": manifest["virality_contract_fingerprint"],
             },
             sort_keys=True,
         )

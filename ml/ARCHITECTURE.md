@@ -18,7 +18,7 @@ flowchart TB
     ROLE["Role features<br/>role_n_* · role_ratio_* · diversity"]
     TOPIC["Topic features<br/>topic_0..7 (NMF)"]
     SRC["source one-hot<br/>src_youtube / x / reddit"]
-    LAB["PER-SOURCE viral label<br/>z-score log1p(engagement) → top 25%"]
+    LAB["Versioned viral label<br/>fixed platform threshold<br/>from a frozen reference"]
   end
 
   subgraph SUB["3. Sub-models (text → signal)"]

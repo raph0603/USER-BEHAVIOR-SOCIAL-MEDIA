@@ -6,6 +6,7 @@ SHAP contributions to surface the top drivers as human-readable factors. Emits t
 structured JSON the dashboard parses:
   {viral_score, label, confidence, top_factors[], explanation_text, suggestions[]}
 """
+
 from __future__ import annotations
 
 import sys
@@ -68,7 +69,7 @@ def _label_for(feature: str) -> str:
         return f"Topic #{feature[6:]}"
     for prefix in ("role_n_", "role_ratio_"):
         if feature.startswith(prefix):
-            role = feature[len(prefix):]
+            role = feature[len(prefix) :]
             name = _ROLE_LABELS.get(role, role)
             kind = "Count of" if prefix == "role_n_" else "Ratio of"
             return f"{kind} {name}"
@@ -82,11 +83,15 @@ class ViralExplainer:
         self.features = bundle["features"]
         # Both absent in models trained before calibration; 0.5 was the old default.
         self.calibrator = bundle.get("calibrator")
-        self.threshold = float(bundle.get("threshold") or DECISION_THRESHOLD)
+        self.threshold = float(
+            bundle.get("classification_probability_threshold", bundle.get("threshold"))
+            or DECISION_THRESHOLD
+        )
         if "content_model" in bundle:
             self.content_model = bundle["content_model"]
         else:  # BERT backend: rebuild from the saved model folder
             from features.bert_content import BertContentModel
+
             self.content_model = BertContentModel(bundle["content_model_dir"])
         self.roles = (
             RoleFeaturizer()
@@ -210,7 +215,10 @@ if __name__ == "__main__":
     import json
 
     samples = [
-        ("This EV has insane range. Over 300,000 drivers already switched. Limited offer — order today!", "x"),
+        (
+            "This EV has insane range. Over 300,000 drivers already switched. Limited offer — order today!",
+            "x",
+        ),
         ("Pin xe điện hết giữa đường, chờ 3 tiếng mới có cứu hộ.", "reddit"),
     ]
     for text, src in samples:

@@ -1,14 +1,12 @@
 """Turn lakehouse examples or an explicit manual export into model features.
 
 Pipeline: load -> clean text -> drop empty/duplicate -> static content features
--> per-source viral label -> one-hot source -> save parquet.
+-> consume frozen official label -> one-hot source -> save parquet.
 
 Design choices:
 - Content features are UNIFIED across sources (pure functions of the text).
-- The viral label is computed PER SOURCE, because engagement scales differ
-  (YouTube views vs X retweets vs Reddit upvotes are not comparable). Within a
-  source we z-score log1p(engagement metrics) so each metric contributes evenly,
-  then label the top `VIRAL_QUANTILE` as viral.
+- Official labels are produced upstream from a versioned, platform-specific
+  virality engagement threshold contract. They are never recomputed here.
 - Engagement columns are the LABEL source, never features (avoids leakage).
 """
 
@@ -35,7 +33,8 @@ DEFAULT_INPUT = ML_ROOT.parent / "data" / "samples" / "filtered_events.csv"
 DEFAULT_OUTPUT = ML_ROOT / "data" / "train_dataset.parquet"
 
 MIN_TEXT_CHARS = 3
-VIRAL_QUANTILE = 0.75  # top 25% per source = viral; raise toward 0.90 as data grows
+# Retained only for the explicitly marked manual/legacy preprocessing path.
+VIRAL_QUANTILE = 0.75
 
 # Engagement metrics available per platform -> used only to build the label.
 ENGAGEMENT_METRICS = {
@@ -117,6 +116,18 @@ def load_events(path: Path) -> pd.DataFrame:
     official = "label_value" in df.columns
     if official and "dataset_version" not in df.columns:
         raise ValueError("Official lakehouse input with label_value must include dataset_version")
+    if official:
+        required_lineage = {
+            "split_name",
+            "virality_policy",
+            "virality_contract_fingerprint",
+        }
+        missing = sorted(required_lineage - set(df.columns))
+        if missing:
+            raise ValueError(
+                "Official lakehouse labels are missing virality contract lineage: "
+                + ", ".join(missing)
+            )
     text_column = "text_for_model" if official else "text"
     if text_column not in df.columns:
         raise ValueError(f"Training input is missing required text column: {text_column}")
@@ -146,16 +157,13 @@ def add_text_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def as_bool(series: pd.Series) -> pd.Series:
     """Coerce an export coverage flag (bool, "true"/"1"/"yes", or null) to bool."""
-    return (
-        series.map(
-            lambda value: value
-            if isinstance(value, (bool, np.bool_))
-            else str(value).strip().lower() in {"1", "true", "yes"}
-            if pd.notna(value)
-            else False
-        )
-        .astype(bool)
-    )
+    return series.map(
+        lambda value: value
+        if isinstance(value, (bool, np.bool_))
+        else str(value).strip().lower() in {"1", "true", "yes"}
+        if pd.notna(value)
+        else False
+    ).astype(bool)
 
 
 def add_channel_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -283,7 +291,13 @@ def build(
             raise ValueError(f"Unsupported official label values: {invalid}")
         df["viral"] = labels.astype("Int64")
     else:
+        print(
+            "WARNING: manual compatibility input uses "
+            "legacy_dataset_relative_top_quartile; it is not an official label contract."
+        )
         df = add_viral_label(df, quantile)
+        df["virality_policy"] = "legacy_dataset_relative_top_quartile"
+        df["virality_contract_fingerprint"] = pd.NA
     unlabeled = int(df["viral"].isna().sum())
     if unlabeled:
         print(

@@ -1,7 +1,7 @@
 """Train the unified multi-source viral classifier (Stage 1).
 
-One XGBoost model on the unified content features + source one-hot. The viral
-label was already defined per-source in preprocess/build_dataset.py.
+One XGBoost model on the unified content features + source one-hot. Official
+labels are already fixed by the versioned upstream virality contract.
 
 Split is grouped by author_hash so the same author never appears in both train
 and test (avoids identity leakage). Metrics: PR-AUC (primary, data is imbalanced)
@@ -12,6 +12,7 @@ features drive virality — the basis for the explanation layer.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import sys
@@ -40,6 +41,7 @@ if str(ML_ROOT) not in sys.path:
     sys.path.insert(0, str(ML_ROOT))
 
 from features.text_content import build_content_model
+from virality_lineage import dataset_virality_lineage, validate_virality_compatibility
 
 DEFAULT_DATA = ML_ROOT / "data" / "train_dataset.parquet"
 DEFAULT_MODEL = ML_ROOT / "models" / "stage1_multisource.joblib"
@@ -80,6 +82,15 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
 
 
 def split_indices(df: pd.DataFrame, test_size: float, seed: int):
+    if "split_name" in df.columns:
+        split_names = set(df["split_name"].dropna().astype(str).unique())
+        if split_names != {"train", "holdout"}:
+            raise ValueError(
+                "Versioned split_name must contain exactly the train and holdout partitions"
+            )
+        train_idx = np.flatnonzero(df["split_name"].astype(str).eq("train").to_numpy())
+        holdout_idx = np.flatnonzero(df["split_name"].astype(str).eq("holdout").to_numpy())
+        return train_idx, holdout_idx
     groups = df[GROUP].fillna(df.index.to_series().astype(str))
     splitter = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=seed)
     return next(splitter.split(df, df[TARGET], groups))
@@ -231,10 +242,19 @@ def main() -> None:
         "--dataset-version",
         help="Exact lakehouse dataset version embedded in the model artifact.",
     )
+    parser.add_argument("--virality-contract-fingerprint")
+    parser.add_argument("--virality-policy")
+    parser.add_argument("--training-manifest-output", type=Path)
     args = parser.parse_args()
 
     df = pd.read_parquet(args.data)
     validate_dataset_version(df, args.dataset_version)
+    virality_lineage = dataset_virality_lineage(df)
+    validate_virality_compatibility(
+        virality_lineage,
+        expected_fingerprint=args.virality_contract_fingerprint,
+        expected_policy=args.virality_policy,
+    )
     features = feature_columns(df)
     train_idx, test_idx = split_indices(df, args.test_size, args.seed)
     y = df[TARGET].astype(int)
@@ -263,23 +283,48 @@ def main() -> None:
     print(f"Train: {len(X_train)} | Test: {len(X_test)} | Features: {len(features)}")
     model = train_model(X_train, y_train, args.seed)
     train_groups = df[GROUP].fillna(df.index.to_series().astype(str)).iloc[train_idx]
-    calibrator, threshold = fit_calibrator(X_train, y_train, train_groups, args.seed)
-    evaluate(model, X_test, y_test, calibrator, threshold)
+    calibrator, classification_probability_threshold = fit_calibrator(
+        X_train, y_train, train_groups, args.seed
+    )
+    evaluate(
+        model,
+        X_test,
+        y_test,
+        calibrator,
+        classification_probability_threshold,
+    )
 
     print("\nTop SHAP feature importance (mean |contribution|):")
     print(shap_importance(model, X_test).head(10).round(4))
 
     args.model.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(
-        {
-            "model": model,
-            "calibrator": calibrator,
-            "threshold": threshold,
-            "features": features,
-            "dataset_version": args.dataset_version,
-            **content_bundle,
-        },
-        args.model,
+    model_bundle = {
+        "model": model,
+        "calibrator": calibrator,
+        "classification_probability_threshold": classification_probability_threshold,
+        "features": features,
+        "dataset_version": args.dataset_version,
+        **virality_lineage,
+        **content_bundle,
+    }
+    joblib.dump(model_bundle, args.model)
+    training_manifest_path = args.training_manifest_output or args.model.with_suffix(
+        ".manifest.json"
+    )
+    training_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    training_manifest_path.write_text(
+        json.dumps(
+            {
+                "dataset_version": args.dataset_version,
+                **virality_lineage,
+                "classification_probability_threshold": classification_probability_threshold,
+                "model_path": str(args.model),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
     )
     print(f"\nSaved -> {args.model}")
 

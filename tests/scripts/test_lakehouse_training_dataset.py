@@ -16,6 +16,7 @@ sys.path.insert(0, str(PIPELINE_DIR))
 
 import dataset_manifest
 import gold_schemas
+import virality_contract
 
 
 def _load_module(name: str, path: Path):
@@ -48,10 +49,26 @@ def _load_train_version_validator():
 VALIDATE_DATASET_VERSION = _load_train_version_validator()
 
 
+def _write_contract(root: Path):
+    contract = virality_contract.build_contract(
+        {"x": [1.0, 2.0]},
+        policy=virality_contract.TRAINING_REFERENCE_POLICY,
+        quantile=0.75,
+        reference={"source_snapshots": {"features": 1, "engagement": 2}},
+        horizon_hours=24,
+        tolerance_hours=24,
+        eligibility_filters={"min_text_chars": 3},
+        min_reference_examples_per_platform=1,
+    )
+    path = root / "virality-contracts" / f"{contract.fingerprint}.json"
+    contract.write(path)
+    return contract, path
+
+
 class DatasetManifestTests(unittest.TestCase):
     def _identity(self, snapshots=None, filters=None):
         return dataset_manifest.DatasetIdentity(
-            schema_version="v2",
+            schema_version="v3",
             source_snapshots=snapshots
             or {
                 "lakehouse.silver.post_features": 123,
@@ -76,7 +93,7 @@ class DatasetManifestTests(unittest.TestCase):
 
         self.assertEqual(first.fingerprint, replay.fingerprint)
         self.assertEqual(first.dataset_version, replay.dataset_version)
-        self.assertRegex(first.dataset_version, r"^dataset-v2-[a-f0-9]{20}$")
+        self.assertRegex(first.dataset_version, r"^dataset-v3-[a-f0-9]{20}$")
 
     def test_snapshot_or_filter_change_creates_a_new_version(self):
         baseline = self._identity()
@@ -102,6 +119,9 @@ class DatasetManifestTests(unittest.TestCase):
             "engagement_coverage",
             "audience_count",
             "audience_available",
+            "split_name",
+            "virality_policy",
+            "virality_contract_fingerprint",
         ):
             self.assertIn(field, gold_schemas.TRAINING_EXAMPLES_DDL)
         for field in (
@@ -115,11 +135,14 @@ class DatasetManifestTests(unittest.TestCase):
             "example_count",
             "missing_rates_json",
             "distributions_json",
+            "labeling_json",
+            "virality_policy",
+            "virality_contract_fingerprint",
             "dataset_fingerprint",
             "created_at",
         ):
             self.assertIn(field, gold_schemas.DATASET_MANIFESTS_DDL)
-        self.assertEqual(gold_schemas.TRAINING_EXAMPLES_SCHEMA_VERSION, "v2")
+        self.assertEqual(gold_schemas.TRAINING_EXAMPLES_SCHEMA_VERSION, "v3")
 
 
 class AudienceFeatureTests(unittest.TestCase):
@@ -219,18 +242,25 @@ class OfficialTrainingInputTests(unittest.TestCase):
     def test_manifest_resolves_one_exact_relative_parquet_dataset(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            dataset_path = root / "datasets" / "dataset-v2-1234567890abcdef1234"
+            dataset_path = root / "datasets" / "dataset-v3-1234567890abcdef1234"
             dataset_path.mkdir(parents=True)
             manifest_path = root / "runs" / "run.json"
             manifest_path.parent.mkdir()
+            contract, contract_path = _write_contract(root)
             manifest_path.write_text(
                 json.dumps(
                     {
-                        "dataset_version": "dataset-v2-1234567890abcdef1234",
+                        "dataset_version": "dataset-v3-1234567890abcdef1234",
                         "dataset_fingerprint": "1234567890abcdef1234" + "a" * 44,
-                        "dataset_relative_path": "../datasets/dataset-v2-1234567890abcdef1234",
+                        "dataset_relative_path": "../datasets/dataset-v3-1234567890abcdef1234",
                         "format": "parquet",
                         "official_input": True,
+                        "labeling": {
+                            "policy": "training_reference_quantile",
+                            "virality_contract_fingerprint": contract.fingerprint,
+                            "contract_relative_path": "../"
+                            + contract_path.relative_to(root).as_posix(),
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -239,7 +269,7 @@ class OfficialTrainingInputTests(unittest.TestCase):
             resolved, version = RUN_PIPELINE.load_lakehouse_manifest(manifest_path)
 
             self.assertEqual(resolved, dataset_path.resolve())
-            self.assertEqual(version, "dataset-v2-1234567890abcdef1234")
+            self.assertEqual(version, "dataset-v3-1234567890abcdef1234")
 
     def test_manifest_rejects_invalid_fingerprint_and_path_escape(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -249,12 +279,18 @@ class OfficialTrainingInputTests(unittest.TestCase):
             outside.mkdir(parents=True)
             manifest_path = root / "runs" / "run.json"
             manifest_path.parent.mkdir(parents=True)
+            contract, contract_path = _write_contract(root)
             payload = {
-                "dataset_version": "dataset-v2-1234567890abcdef1234",
+                "dataset_version": "dataset-v3-1234567890abcdef1234",
                 "dataset_fingerprint": "not-a-sha256",
                 "dataset_relative_path": str(outside),
                 "format": "parquet",
                 "official_input": True,
+                "labeling": {
+                    "policy": "training_reference_quantile",
+                    "virality_contract_fingerprint": contract.fingerprint,
+                    "contract_relative_path": "../" + contract_path.relative_to(root).as_posix(),
+                },
             }
             manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -287,12 +323,12 @@ class OfficialTrainingInputTests(unittest.TestCase):
                 BUILD_DATASET.load_events(path)
 
     def test_model_training_revalidates_the_exact_dataset_version(self):
-        expected = "dataset-v2-1234567890abcdef1234"
+        expected = "dataset-v3-1234567890abcdef1234"
         frame = pd.DataFrame({"dataset_version": [expected, expected]})
 
         VALIDATE_DATASET_VERSION(frame, expected)
         with self.assertRaisesRegex(ValueError, "received"):
-            VALIDATE_DATASET_VERSION(frame, "dataset-v2-aaaaaaaaaaaaaaaaaaaa")
+            VALIDATE_DATASET_VERSION(frame, "dataset-v3-aaaaaaaaaaaaaaaaaaaa")
         with self.assertRaisesRegex(ValueError, "must include"):
             VALIDATE_DATASET_VERSION(pd.DataFrame({"viral": [1]}), expected)
 
@@ -308,6 +344,9 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn("dataset_relative_path", source)
         self.assertIn("_feature_rank", source)
         self.assertIn("_snapshot_tiebreaker", source)
+        self.assertIn("apply_virality_contract", source)
+        self.assertNotIn("_viral_target", source)
+        self.assertNotIn("_label_rank", source)
         self.assertIn("actual_count != expected_count", source)
         self.assertIn("DATASET_VERSION_PATTERN", source)
         self.assertNotIn("read.csv", source.lower())
@@ -321,6 +360,7 @@ class OfficialTrainingInputTests(unittest.TestCase):
         self.assertIn("build_training_dataset.py", source)
         self.assertIn("--dataset-version", source)
         self.assertIn("--lakehouse-manifest", source)
+        self.assertIn("/workspace/data/lakehouse-ml/ml/runs/", source)
         self.assertIn("initialize_services >> build_lakehouse_dataset >> train_stage1", source)
         run_pipeline = (ROOT / "ml" / "run_pipeline.py").read_text(encoding="utf-8")
         self.assertLess(

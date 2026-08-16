@@ -30,7 +30,7 @@ with DAG(
         "dataset_version": Param(
             "auto",
             type="string",
-            pattern=r"^(auto|dataset-v2-[a-f0-9]{20})$",
+            pattern=r"^(auto|dataset-v3-[a-f0-9]{20})$",
             title="Exact dataset version, or auto to build from pinned snapshots",
         ),
         "label_horizon_hours": Param(
@@ -44,6 +44,23 @@ with DAG(
             type="integer",
             minimum=0,
             title="Maximum wait after the target horizon",
+        ),
+        "virality_policy": Param(
+            "training_reference_quantile",
+            type="string",
+            enum=["training_reference_quantile", "platform_reference_quantile"],
+            title="Frozen virality engagement-threshold policy",
+        ),
+        "virality_contract": Param(
+            "",
+            type="string",
+            title="Pinned historical contract path (required for platform reference)",
+        ),
+        "min_reference_examples_per_platform": Param(
+            1,
+            type="integer",
+            minimum=1,
+            title="Explicit operational floor; set deliberately for each run",
         ),
     },
     tags=["ai", "stage1", "lakehouse"],
@@ -70,6 +87,11 @@ with DAG(
           --dataset-version "{{ params.dataset_version }}" \
           --label-horizon-hours {{ params.label_horizon_hours }} \
           --label-tolerance-hours {{ params.label_tolerance_hours }} \
+          --virality-policy "{{ params.virality_policy }}" \
+          --min-reference-examples-per-platform {{ params.min_reference_examples_per_platform }} \
+          {% if params.virality_contract %}
+          --virality-contract "{{ params.virality_contract }}" \
+          {% endif %}
           --export-root /opt/spark/balancing/ml \
           --manifest-output "/opt/spark/balancing/ml/runs/{{ ts_nodash }}.json"
         """,
@@ -81,7 +103,7 @@ with DAG(
         bash_command=docker_compose(
             "run --rm ai-trainer python ml/run_pipeline.py "
             "--lakehouse-manifest "
-            '"/workspace/data/lakehouse-ml/runs/{{ ts_nodash }}.json" '
+            '"/workspace/data/lakehouse-ml/ml/runs/{{ ts_nodash }}.json" '
             "--report"
         ),
     )
