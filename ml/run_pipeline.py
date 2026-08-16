@@ -28,6 +28,9 @@ ML_ROOT = Path(__file__).resolve().parents[0]
 PROJECT_ROOT = ML_ROOT.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+PIPELINE_ROOT = PROJECT_ROOT / "spark" / "jobs"
+if str(PIPELINE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PIPELINE_ROOT))
 
 from common.reproducibility import (
     capture_environment_manifest,
@@ -38,6 +41,7 @@ from common.reproducibility import (
     require_official_git,
     write_json,
 )
+from pipeline.virality_contract import ViralityContract
 
 PY = sys.executable
 
@@ -127,12 +131,45 @@ def load_lakehouse_manifest(
     *,
     expected_dataset_version: str | None = None,
 ) -> tuple[Path, str]:
+    path = path.resolve()
     dataset_path, lineage = load_dataset_lineage(
         path,
         expected_dataset_version=expected_dataset_version,
     )
     assert dataset_path is not None
-    return dataset_path, str(lineage["dataset_version"])
+    version = str(lineage["dataset_version"])
+    if version.startswith("dataset-v2-"):
+        raise ValueError(
+            "Legacy dataset-v2 uses dataset-relative top-quartile labels and cannot be "
+            "treated as a frozen virality contract"
+        )
+    if not version.startswith("dataset-v3-"):
+        raise ValueError("Official virality training requires a dataset-v3 manifest")
+    manifest = load_json(path)
+    labeling = manifest.get("labeling")
+    if not isinstance(labeling, dict):
+        raise ValueError("Official manifest must contain frozen virality labeling lineage")
+    virality_fingerprint = str(labeling.get("virality_contract_fingerprint") or "")
+    if len(virality_fingerprint) != 64 or any(
+        character not in "0123456789abcdef" for character in virality_fingerprint
+    ):
+        raise ValueError("Manifest virality_contract_fingerprint must be a SHA-256 hex digest")
+    if labeling.get("policy") not in {
+        "platform_reference_quantile",
+        "training_reference_quantile",
+    }:
+        raise ValueError("Manifest has an unsupported virality labeling policy")
+    export_root = (path.parent.parent if path.parent.name == "runs" else path.parent).resolve()
+    relative_contract_path = Path(str(labeling.get("contract_relative_path") or ""))
+    if not str(relative_contract_path) or relative_contract_path.is_absolute():
+        raise ValueError("Manifest labeling must reference a relative virality contract sidecar")
+    contract_path = (path.parent / relative_contract_path).resolve()
+    if not contract_path.is_relative_to(export_root):
+        raise ValueError("Manifest virality contract path escapes the export root")
+    contract = ViralityContract.load(contract_path)
+    if contract.fingerprint != virality_fingerprint:
+        raise ValueError("Manifest and sidecar virality contract fingerprints do not match")
+    return dataset_path, version
 
 
 def validate_official_manifest(manifest: dict) -> list[str]:
@@ -240,14 +277,14 @@ def main() -> None:
         export_from_lakehouse(args.export_out)
         args.manual_csv_input = args.export_out
     if args.lakehouse_manifest:
-        training_input, dataset_lineage = load_dataset_lineage(
+        training_input, dataset_version = load_lakehouse_manifest(
             args.lakehouse_manifest,
             expected_dataset_version=args.dataset_version,
         )
-        assert training_input is not None
-        dataset_version = str(dataset_lineage["dataset_version"])
         dataset_manifest_path = args.lakehouse_manifest.resolve()
         dataset_manifest_payload = load_json(dataset_manifest_path)
+        virality_fingerprint = dataset_manifest_payload["labeling"]["virality_contract_fingerprint"]
+        virality_policy = dataset_manifest_payload["labeling"]["policy"]
         missing_manifest_fields = validate_official_manifest(dataset_manifest_payload)
         if missing_manifest_fields and not args.allow_legacy_manifest_nonofficial:
             raise ValueError(
@@ -262,6 +299,8 @@ def main() -> None:
         dataset_manifest_path = None
         dataset_manifest_payload = {}
         official_input = False
+        virality_fingerprint = None
+        virality_policy = None
         validate_training_input(
             training_input,
             max_age_hours=args.max_input_age_hours,
@@ -334,6 +373,12 @@ def main() -> None:
                 arguments += ("--dataset-version", dataset_version)
             if args.lakehouse_manifest:
                 arguments += ("--dataset-manifest", str(args.lakehouse_manifest))
+                arguments += (
+                    "--virality-contract-fingerprint",
+                    virality_fingerprint,
+                    "--virality-policy",
+                    virality_policy,
+                )
             if args.expected_lineage:
                 arguments += ("--expected-lineage", str(args.expected_lineage))
             if official_run:
@@ -353,6 +398,12 @@ def main() -> None:
             )
             if args.lakehouse_manifest:
                 arguments += ("--dataset-manifest", str(args.lakehouse_manifest))
+                arguments += (
+                    "--virality-contract-fingerprint",
+                    virality_fingerprint,
+                    "--virality-policy",
+                    virality_policy,
+                )
         elif script.name in {"verify_answers.py", "evaluate_role_ablation.py"}:
             if dataset_manifest_path:
                 arguments = ("--dataset-manifest", str(dataset_manifest_path))

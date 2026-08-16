@@ -28,6 +28,7 @@ from common.reproducibility import (
 )
 from evaluation_artifact import build_evaluation_artifact, validate_evaluation_inputs
 from train.train_viral import TARGET, TEXT, apply_calibrator, split_indices
+from virality_lineage import dataset_virality_lineage, validate_virality_compatibility
 
 DEFAULT_DATA = ML_ROOT / "data" / "train_dataset.parquet"
 DEFAULT_MODEL = ML_ROOT / "models" / "stage1_multisource.joblib"
@@ -76,6 +77,8 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=DEFAULT_EVALUATION)
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--virality-contract-fingerprint")
+    parser.add_argument("--virality-policy")
     parser.add_argument(
         "--legacy-recompute-split",
         action="store_true",
@@ -101,6 +104,16 @@ def main() -> None:
     )
 
     df = pd.read_parquet(args.data)
+    observed_virality_lineage = dataset_virality_lineage(df)
+    model_virality_fingerprint = str(bundle.get("virality_contract_fingerprint") or "")
+    model_virality_policy = str(bundle.get("virality_policy") or "")
+    if not model_virality_fingerprint or not model_virality_policy:
+        raise ValueError("Model bundle has no frozen virality contract lineage")
+    validate_virality_compatibility(
+        observed_virality_lineage,
+        expected_fingerprint=(args.virality_contract_fingerprint or model_virality_fingerprint),
+        expected_policy=(args.virality_policy or model_virality_policy),
+    )
     if args.split_manifest.is_file():
         split_manifest = load_json(args.split_manifest)
         if split_manifest.get("split_fingerprint") != lineage.get("split_fingerprint"):
@@ -131,7 +144,9 @@ def main() -> None:
     raw_proba = model.predict_proba(X)[:, 1]
     calibrator = bundle.get("calibrator")
     proba = apply_calibrator(calibrator, raw_proba) if calibrator is not None else raw_proba
-    threshold = float(bundle.get("threshold", 0.5))
+    threshold = float(
+        bundle.get("classification_probability_threshold", bundle.get("threshold", 0.5))
+    )
     y = test[TARGET].astype(int)
     overall = _metrics(y, pd.Series(proba), threshold)
     by_source: dict[str, Any] = {}
@@ -157,6 +172,8 @@ def main() -> None:
         predictions=predictions,
         additional_metadata={
             "dataset_lineage": bundle.get("dataset_lineage"),
+            **observed_virality_lineage,
+            "classification_probability_threshold": threshold,
             "model_artifact": {
                 "audience_features_included": bool(bundle.get("audience_features_included", True)),
                 "role_feature_contract": bundle.get("role_feature_contract"),

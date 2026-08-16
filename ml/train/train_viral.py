@@ -70,6 +70,7 @@ from experiment_config import (
 from features.text_content import build_content_model
 from dataset_lineage import load_dataset_lineage, model_lineage_path
 from role_contract import role_feature_contract
+from virality_lineage import dataset_virality_lineage, validate_virality_compatibility
 
 DEFAULT_DATA = ML_ROOT / "data" / "train_dataset.parquet"
 DEFAULT_MODEL = ML_ROOT / "models" / "stage1_multisource.joblib"
@@ -124,6 +125,16 @@ def feature_columns(
 
 
 def split_indices(df: pd.DataFrame, test_size: float, seed: int):
+    if "split_name" in df.columns:
+        split_names = df["split_name"].astype(str)
+        unexpected = sorted(set(split_names) - {"train", "holdout"})
+        if unexpected:
+            raise ValueError(f"Unexpected persisted split_name values: {unexpected}")
+        train_idx = np.flatnonzero(split_names.eq("train").to_numpy())
+        test_idx = np.flatnonzero(split_names.eq("holdout").to_numpy())
+        if not len(train_idx) or not len(test_idx):
+            raise ValueError("Persisted split_name must contain train and holdout rows")
+        return train_idx, test_idx
     groups = df[GROUP].fillna(df.index.to_series().astype(str))
     splitter = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=seed)
     return next(splitter.split(df, df[TARGET], groups))
@@ -305,6 +316,7 @@ def build_experiment_lineage(
     official_run: bool,
 ) -> dict:
     code = environment_manifest.get("code", {})
+    labeling = dataset_manifest.get("labeling", {})
     lineage = {
         "schema_version": "experiment-lineage-v1",
         "official_run": bool(official_run),
@@ -321,6 +333,7 @@ def build_experiment_lineage(
         "training_config_fingerprint": training_config.get("training_config_fingerprint"),
         "split_fingerprint": split_manifest.get("split_fingerprint"),
         "virality_contract_fingerprint": training_config.get("virality_contract_fingerprint"),
+        "virality_policy": labeling.get("policy") if isinstance(labeling, dict) else None,
         "model_sha256": None,
         "determinism_contract": {
             "model_byte_identity_expected": False,
@@ -340,6 +353,8 @@ def build_experiment_lineage(
         "environment_fingerprint",
         "training_config_fingerprint",
         "split_fingerprint",
+        "virality_contract_fingerprint",
+        "virality_policy",
     )
     if official_run and any(not lineage.get(field) for field in required):
         missing = [field for field in required if not lineage.get(field)]
@@ -375,6 +390,8 @@ def main() -> None:
     parser.add_argument("--lineage-output", type=Path, default=DEFAULT_LINEAGE)
     parser.add_argument("--expected-lineage", type=Path)
     parser.add_argument("--official-run", action="store_true")
+    parser.add_argument("--virality-contract-fingerprint")
+    parser.add_argument("--virality-policy")
     args = parser.parse_args()
 
     df = pd.read_parquet(args.data)
@@ -388,6 +405,12 @@ def main() -> None:
         )
         args.dataset_version = str(dataset_lineage["dataset_version"])
     validate_dataset_version(df, args.dataset_version)
+    virality_lineage = dataset_virality_lineage(df)
+    validate_virality_compatibility(
+        virality_lineage,
+        expected_fingerprint=args.virality_contract_fingerprint,
+        expected_policy=args.virality_policy,
+    )
     # The supervised silver role corpus can overlap the outer holdout. Keep role
     # features available for explicit exploratory analyses, but never include them
     # in an official model until their fit is scoped to the outer training boundary.
@@ -401,7 +424,7 @@ def main() -> None:
     split_manifest = build_split_manifest(
         stable_ids.iloc[train_idx],
         stable_ids.iloc[test_idx],
-        strategy="group_shuffle_split",
+        strategy=("persisted_split_name" if "split_name" in df.columns else "group_shuffle_split"),
         group_column=GROUP,
         seed=args.seed,
         test_size=args.test_size,
@@ -504,13 +527,14 @@ def main() -> None:
         "schema_version": "model-bundle-v2",
         "model": model,
         "calibrator": calibrator,
-        "threshold": threshold,
+        "classification_probability_threshold": threshold,
         "features": features,
         "dataset_version": args.dataset_version,
         "dataset_lineage": dataset_lineage,
         "audience_features_included": dataset_lineage is None,
         "role_feature_contract": role_feature_contract(),
         "lineage": compact_lineage(lineage),
+        **virality_lineage,
         **content_bundle,
     }
     joblib.dump(bundle, args.model)
@@ -524,6 +548,8 @@ def main() -> None:
             "artifact_sha256": lineage["model_sha256"],
             "created_at": datetime.now(timezone.utc).isoformat(),
             "dataset_lineage": dataset_lineage,
+            **virality_lineage,
+            "classification_probability_threshold": threshold,
             "audience_features_included": False,
             "role_feature_contract": role_feature_contract(),
         }

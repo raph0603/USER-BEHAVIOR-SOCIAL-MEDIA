@@ -360,6 +360,8 @@ def compact_lineage(lineage: Mapping[str, Any]) -> dict[str, Any]:
     compact = {field: lineage[field] for field in fields}
     if "virality_contract_fingerprint" in lineage:
         compact["virality_contract_fingerprint"] = lineage["virality_contract_fingerprint"]
+    if "virality_policy" in lineage:
+        compact["virality_policy"] = lineage["virality_policy"]
     return compact
 
 
