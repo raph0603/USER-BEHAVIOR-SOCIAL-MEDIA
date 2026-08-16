@@ -171,6 +171,7 @@ for pass_number in 1 2; do
     --dataset-version auto \
     --label-horizon-hours 1 \
     --label-tolerance-hours 1 \
+    --min-reference-examples-per-platform 1 \
     --export-root /opt/spark/e2e-artifacts/ml \
     --manifest-output /opt/spark/e2e-artifacts/ml/current.json \
     | tee "$artifacts/training-dataset-pass-$pass_number.log"
