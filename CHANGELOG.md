@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.28.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.27.0...v1.28.0) (2026-08-18)
+
+
+### Features
+
+* add reproducible pipeline performance and reliability benchmarks ([9c9b9ce](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/9c9b9ce02f4320d165cde2d6220f14143e49068d))
+* **benchmark:** add real pipeline system backend ([5b309d4](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/5b309d4c5639b7b91deece51be18f78001c83864))
+
 ## [1.27.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.26.2...v1.27.0) (2026-08-16)
 
 
