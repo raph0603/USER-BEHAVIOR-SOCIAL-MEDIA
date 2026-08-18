@@ -27,7 +27,7 @@ if str(ML_ROOT) not in sys.path:
 
 from features.cognitive_friction import cognitive_friction
 from features.rhetorical_roles import add_role_features
-from features.topics import add_topic_features
+
 from experiment_config import DEFAULT_RANDOM_SEED
 
 DEFAULT_INPUT = ML_ROOT.parent / "data" / "samples" / "filtered_events.csv"
@@ -279,7 +279,6 @@ def build(
     df = filter_rows(df)
     df = add_text_features(df)
     df = add_role_features(df)
-    df = add_topic_features(df, seed=seed)
     df = add_channel_features(df)
     if "label_value" in df.columns:
         versions = sorted(df["dataset_version"].dropna().astype(str).unique())
