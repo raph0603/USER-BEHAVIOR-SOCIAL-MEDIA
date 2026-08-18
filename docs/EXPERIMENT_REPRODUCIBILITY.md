@@ -9,7 +9,7 @@ pinned Silver Iceberg snapshots
   -> exact Git revision
   -> resolved runtime and container identity
   -> resolved training configuration
-  -> persisted train/holdout composition
+  -> exact grouped cross-validation folds
   -> serialized model SHA-256
   -> evaluation of that serialized model
 ```
@@ -24,13 +24,14 @@ training process, and evaluator obtain identities from the resources they actual
 | Dataset | Source snapshots, labeling/filter contract, and exact Gold export | Lakehouse dataset manifest |
 | Code | Full Git commit and initial working-tree state | `environment_manifest.json` |
 | Environment | Runtime versions, installed dependencies, lock-file SHA-256, and container digest when applicable | `environment_manifest.json` |
-| Training configuration | Fully resolved split, TF-IDF, logistic-regression, NMF, XGBoost, calibration, threshold, feature, labeling, and audience parameters | `training_config.json` |
-| Split | Exact sorted stable IDs assigned to train and holdout | `split_manifest.json` |
+| Training configuration | Fully resolved TF-IDF, logistic-regression, NMF, XGBoost, calibration, threshold, feature, labeling, and audience parameters | `training_config.json` |
+| Evaluation protocol | Outer/inner fold strategy, group column, stratified parameters | `evaluation_protocol.json` |
+| Folds | Exact sorted stable IDs assigned to each cross-validation fold | `cv_folds_manifest.json` |
 | Model | SHA-256 of the serialized bundle plus its embedded compact lineage | `experiment_lineage.json` and the joblib bundle |
 | Evaluation | Metrics and holdout predictions tied to the exact model SHA-256 | `evaluation.json` |
 
 `experiment_id` is deterministic. It hashes the dataset, manifest, Git, environment,
-training-configuration, and split identities; it is not a random run label.
+training-configuration, evaluation protocol, and folds identities; it is not a random run label.
 
 ## Fingerprint algorithms
 
@@ -45,9 +46,9 @@ by SHA-256.
   versions, the dependency-lock SHA-256, and container identity. `generated_at` is excluded.
 - `training_config_fingerprint` hashes the resolved configuration used by training.
   It also contains the SHA-256 of the role and topic artifacts used to build features.
-- `split_fingerprint` hashes sorted `train_content_ids` and `holdout_content_ids` plus
-  the strategy, group column, stable-ID column, seed, and test size. Membership order is
-  irrelevant; feature-column order remains meaningful and is preserved.
+- `evaluation_protocol_fingerprint` hashes the strategy, group column, stable-ID column, seed, and test size.
+- `evaluation_folds_fingerprint` hashes sorted stable IDs assigned to each fold. Membership order is irrelevant; feature-column order remains meaningful and is preserved.
+- *Legacy:* `split_fingerprint` hashed sorted `train_content_ids` and `holdout_content_ids` for the previous single train/holdout `GroupShuffleSplit`.
 - `model_sha256` hashes the bytes of the model file that evaluation loads.
 - `evaluation_fingerprint` hashes the complete logical evaluation payload except its
   generation timestamp.
@@ -71,9 +72,9 @@ An official run requires all of the following:
    driver and executor image digests. Container training receives its own immutable digest
    resolved from Docker metadata. A
    repository digest is preferred; a local image ID is used for an unpushed local build.
-7. Training configuration and the exact split are persisted before model fitting.
+7. Training configuration, evaluation protocol, and exact folds are persisted before model fitting.
 8. Evaluation loads the serialized model, verifies its SHA-256 and all lineage fields,
-   then selects the holdout from the persisted ID list.
+   then evaluates OOF predictions across the persisted folds.
 
 A dirty tree fails by default. `--allow-dirty-nonofficial` is the explicit compatibility
 escape hatch and marks the run non-official. A legacy dataset manifest similarly requires
@@ -97,14 +98,16 @@ The current default paths are:
 ```text
 ml/results/environment_manifest.json
 ml/results/training_config.json
-ml/results/split_manifest.json
+ml/results/evaluation_protocol.json
+ml/results/cv_folds_manifest.json
+ml/results/oof_predictions.parquet
 ml/results/experiment_lineage.json
 ml/models/stage1_multisource.joblib
 ml/results/evaluation.json
 ```
 
-The split sidecar deliberately contains the full sorted partition membership so an audit
-can reconstruct the holdout exactly. The model and evaluation carry the compact identity,
+The `cv_folds_manifest.json` sidecar deliberately contains the full sorted partition membership so an audit
+can reconstruct the folds exactly. The model and evaluation carry the compact identity,
 while `experiment_lineage.json` carries source snapshots, Gold snapshot, the determinism
 contract, and the model SHA-256.
 
@@ -122,7 +125,7 @@ python ml/run_official_container.py --service ai-trainer --build -- \
 ```
 
 `--expected-lineage` fails before fitting if the dataset, Git commit, environment,
-training configuration, or split differs. Verify the resulting artefacts and compare the
+training configuration, or folds differ. Verify the resulting artefacts and compare the
 logical replay outputs with:
 
 ```bash
@@ -130,7 +133,9 @@ python ml/reproducibility_cli.py verify \
   --dataset-manifest data/lakehouse-ml/runs/<reference>.json \
   --environment-manifest ml/results/environment_manifest.json \
   --training-config ml/results/training_config.json \
-  --split-manifest ml/results/split_manifest.json \
+  --evaluation-protocol ml/results/evaluation_protocol.json \
+  --cv-folds-manifest ml/results/cv_folds_manifest.json \
+  --oof-predictions ml/results/oof_predictions.parquet \
   --lineage ml/results/experiment_lineage.json \
   --model ml/models/stage1_multisource.joblib \
   --evaluation ml/results/evaluation.json \
@@ -170,8 +175,8 @@ is still bound to the exact evaluated bytes by `model_sha256`.
 Replay compares:
 
 - Silver and Gold snapshots;
-- dataset, feature-schema, environment, configuration, and split fingerprints;
-- ordered holdout labels and probabilities;
+- dataset, feature-schema, environment, configuration, protocol, and folds fingerprints;
+- complete OOF predictions (labels and probabilities);
 - evaluation metrics.
 
 The lineage records explicit absolute tolerances for predictions and metrics. Model
@@ -179,29 +184,27 @@ SHA-256 equality is required only if a future determinism contract explicitly se
 `model_byte_identity_expected` to true.
 
 This work does not change the top-25% definition, engagement score, target, virality
-threshold protocol, or grouped train/holdout methodology.
+threshold protocol, or 5-fold `StratifiedGroupKFold` outer evaluation methodology (which replaces the legacy single `GroupShuffleSplit`).
 
 ### Corpus-fitted transformations
 
-The main TF-IDF/logistic content model is fitted out-of-fold on the outer training rows;
-the holdout vocabulary is never used to fit it. The rhetorical-role classifier is fitted
-on a separate supervised silver corpus. An overlap audit found that such a corpus can
-contain exact text also present in the outer holdout, so official models exclude all
-`role_*` features. They remain available only to explicitly exploratory role analyses
-until their fitting boundary is derived from the persisted outer split.
+The CURRENT methodology uses a 5-fold `StratifiedGroupKFold` outer evaluation, with strictly inductive transformations:
+- Inductive outer-train TF-IDF.
+- Inductive outer-train NMF.
+- Grouped inner content-model OOF.
+- Grouped-stratified calibration OOF.
+- Complete OOF evaluation (`oof_predictions.parquet`).
 
-The current NMF topic model is an explicitly transductive, unsupervised transformation:
-its TF-IDF vocabulary and topic basis are fitted on the full experiment corpus before the
-outer split. This is recorded as `topic_model.fit_scope =
-full_dataset_unsupervised_transductive` in the training configuration. It does not use
-labels, but it does use holdout text distribution and is therefore a known methodological
-limitation. Changing that fit scope belongs to the separate evaluation-protocol work; it
-must not be described as inductive performance in the meantime.
+This produces author bootstrap CIs for reliable performance estimation.
+
+The rhetorical-role classifier is fitted on a separate supervised silver corpus. An overlap audit found that such a corpus can
+contain exact text also present in the outer folds, so official models exclude all
+`role_*` features. They remain available only to explicitly exploratory role analyses.
 
 ### Guaranteed replay contract
 
 With the same immutable dataset, code, environment, resolved configuration, and persisted
-split, replay requires the same feature schema and compares predictions and metrics using
+folds, replay requires the same feature schema and compares predictions and metrics using
 the absolute tolerances recorded before comparison in `determinism_contract`. The current
 values are `1e-12` for probabilities and metrics. Tests cover both sides of each boundary.
 The contract does not require byte-identical joblib/XGBoost serialization, so a replayed
@@ -225,7 +228,10 @@ RUN` directly from these fields; do not type substitute values:
 | Container image digest | environment manifest: `container.digest` |
 | Environment fingerprint | environment manifest: `environment_fingerprint` |
 | Training-config fingerprint | training config: `training_config_fingerprint` |
-| Split fingerprint | split manifest: `split_fingerprint` |
+| Evaluation protocol fingerprint | evaluation protocol: `evaluation_protocol_fingerprint` |
+| Evaluation folds fingerprint | folds manifest: `evaluation_folds_fingerprint` |
+| OOF predictions SHA-256 | predictions: `oof_predictions_sha256` |
+| *Legacy Split fingerprint* | *split manifest: `split_fingerprint` (historical)* |
 | Model SHA-256 | experiment lineage or evaluation: `model_sha256` |
 | Evaluation fingerprint | evaluation artifact: `evaluation_fingerprint` |
 

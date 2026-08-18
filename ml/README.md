@@ -152,8 +152,10 @@ on this machine yet.
 > per-feature weights, the decision table, how each figure was reached, and what the numbers
 > do not say.
 
-The current official run contains 197 labelled rows from pinned Iceberg snapshots and
-uses an author-grouped 41-row test split. Every number below comes from
+The current official run contains 197 labelled rows from pinned Iceberg snapshots.
+*(Note: These are historical results from the legacy single `GroupShuffleSplit` train/holdout protocol. The CURRENT methodology uses 5-fold `StratifiedGroupKFold` outer evaluation with complete OOF predictions and author bootstrap CIs.)*
+
+Every number below comes from
 `train/verify_answers.py`, which scores exactly what serving returns and embeds the
 dataset version in the report and calibration figure.
 
