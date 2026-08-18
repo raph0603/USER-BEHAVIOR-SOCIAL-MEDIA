@@ -43,7 +43,7 @@ ROLE_MODEL = {
 
 TOPIC_MODEL = {
     "n_topics": 8,
-    "fit_scope": "full_dataset_unsupervised_transductive",
+    "fit_scope": "outer_training_inductive",
     "tfidf": {"min_df": 3, "max_features": 20_000, "sublinear_tf": True},
     "nmf": {"init": "nndsvda", "max_iter": 400},
 }
@@ -114,9 +114,10 @@ def resolved_training_config(
         "schema_version": "training-config-v1",
         "random_seed": int(seed),
         "outer_split": {
-            "strategy": "group_shuffle_split",
+            "strategy": "stratified_group_k_fold",
             "group_column": "author_hash",
-            "test_size": float(test_size),
+            "stratification": "source x viral",
+            "n_splits": 5,
         },
         "content_model": {
             "backend": content_backend,

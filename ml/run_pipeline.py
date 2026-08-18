@@ -55,10 +55,8 @@ MODEL_ARTIFACT = ML_ROOT / "models" / "stage1_multisource.joblib"
 STEPS = [
     ("Train role classifier", ML_ROOT / "train" / "train_roles.py"),
     ("Build dataset", ML_ROOT / "preprocess" / "build_dataset.py"),
-    ("Train viral model", ML_ROOT / "train" / "train_viral.py"),
-    ("Evaluate per source", ML_ROOT / "train" / "evaluate.py"),
+    ("Train viral model with CV", ML_ROOT / "train" / "train_viral.py"),
     ("Verify performance figures", ML_ROOT / "train" / "verify_answers.py"),
-    ("Evaluate exploratory role-feature ablation", ML_ROOT / "train" / "evaluate_role_ablation.py"),
 ]
 
 ENV = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
@@ -364,8 +362,6 @@ def main() -> None:
                 str(ENVIRONMENT_MANIFEST),
                 "--training-config-output",
                 str(TRAINING_CONFIG),
-                "--split-output",
-                str(SPLIT_MANIFEST),
                 "--lineage-output",
                 str(EXPERIMENT_LINEAGE),
             )
