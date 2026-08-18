@@ -457,7 +457,7 @@ class OfficialTrainingInputTests(unittest.TestCase):
         report = (ROOT / "ml" / "report.py").read_text(encoding="utf-8")
         lineage = (ROOT / "ml" / "dataset_lineage.py").read_text(encoding="utf-8")
 
-        self.assertIn('"dataset_lineage": dataset_lineage', train)
+        self.assertIn('"dataset_lineage": load_dataset_lineage', train)
         self.assertIn("model_lineage_path", train)
         self.assertIn('"iceberg_snapshot_ids"', lineage)
         self.assertIn('"training_snapshot_id"', lineage)

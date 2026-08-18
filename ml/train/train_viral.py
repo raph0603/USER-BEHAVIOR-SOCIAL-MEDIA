@@ -173,29 +173,51 @@ def best_f1_threshold(y_true, proba) -> float:
 def fit_calibrator(
     X_train: pd.DataFrame,
     y_train: pd.Series,
-    groups,
+    groups: pd.Series,
     seed: int,
-    *,
     model_kwargs: dict | None = None,
-    sample_weight=None,
-):
+    sample_weight: np.ndarray | None = None,
+) -> tuple[LogisticRegression, float, np.ndarray, np.ndarray, np.ndarray]:
     model_kwargs = model_kwargs or {}
     weights = None if sample_weight is None else np.asarray(sample_weight, dtype=float)
     oof = np.zeros(len(X_train))
-    splitter = GroupKFold(n_splits=CALIBRATION_FOLDS)
-    for fit_idx, held_idx in splitter.split(X_train, y_train, groups):
+    fold_assignments = np.zeros(len(X_train), dtype=int)
+    
+    if groups.nunique() < CALIBRATION_FOLDS:
+        raise ValueError(f"Cannot form {CALIBRATION_FOLDS} folds with {groups.nunique()} groups")
+    
+    # StratifiedGroupKFold for calibration
+    splitter = StratifiedGroupKFold(n_splits=CALIBRATION_FOLDS, shuffle=True, random_state=seed)
+    
+    try:
+        splits = list(splitter.split(X_train, y_train, groups))
+    except Exception as e:
+        raise ValueError(f"Failed to form calibration folds: {e}")
+        
+    for i, (fit_idx, held_idx) in enumerate(splits, start=1):
+        if len(set(groups.iloc[fit_idx]).intersection(set(groups.iloc[held_idx]))) > 0:
+            raise ValueError("Author leakage detected between calibration train and holdout")
+            
         fold_model = train_model(
             X_train.iloc[fit_idx],
             y_train.iloc[fit_idx],
             seed,
-            sample_weight=None if weights is None else weights[fit_idx],
-            **model_kwargs,
+            model_kwargs,
+            None if weights is None else weights[fit_idx],
         )
-        oof[held_idx] = fold_model.predict_proba(X_train.iloc[held_idx])[:, 1]
+        oof[held_idx] = fold_model.predict_proba(xgb.DMatrix(X_train.iloc[held_idx]))[:, 1]
+        fold_assignments[held_idx] = i
+        
+    if (fold_assignments == 0).any():
+        raise ValueError("Not all rows received a calibration OOF prediction")
+        
     calibrator = LogisticRegression(**PLATT_CALIBRATION["logistic_regression"], random_state=seed)
     calibrator.fit(logit(oof).reshape(-1, 1), y_train)
-    threshold = best_f1_threshold(y_train, apply_calibrator(calibrator, oof))
-    return calibrator, threshold
+    
+    cal_oof = apply_calibrator(calibrator, oof)
+    threshold = best_f1_threshold(y_train, cal_oof)
+    
+    return calibrator, threshold, oof, cal_oof, fold_assignments
 
 def apply_calibrator(calibrator, proba) -> np.ndarray:
     return calibrator.predict_proba(logit(proba).reshape(-1, 1))[:, 1]
@@ -274,344 +296,287 @@ def build_experiment_lineage(
     return lineage
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train and evaluate Stage-1 with official grouped CV.")
-    parser.add_argument("--data", type=Path, default=DEFAULT_DATA)
-    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
-    parser.add_argument("--seed", type=int, default=DEFAULT_RANDOM_SEED)
-    parser.add_argument("--dataset-version")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset-version", type=str)
     parser.add_argument("--dataset-manifest", type=Path)
-    parser.add_argument("--environment-manifest", type=Path)
+    parser.add_argument("--environment-manifest", type=Path, default=DEFAULT_ENVIRONMENT_MANIFEST)
     parser.add_argument("--training-config-output", type=Path, default=DEFAULT_TRAINING_CONFIG)
     parser.add_argument("--lineage-output", type=Path, default=DEFAULT_LINEAGE)
+    parser.add_argument("--data", type=Path, default=DEFAULT_DATA)
+    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--oof-predictions", type=Path, default=DEFAULT_OOF_PREDICTIONS)
     parser.add_argument("--evaluation-protocol", type=Path, default=DEFAULT_EVALUATION_PROTOCOL)
     parser.add_argument("--cv-folds-manifest", type=Path, default=DEFAULT_FOLDS_MANIFEST)
     parser.add_argument("--metrics-output", type=Path, default=DEFAULT_METRICS_OUTPUT)
+    parser.add_argument("--virality-contract-fingerprint", type=str)
+    parser.add_argument("--virality-policy", type=str)
+    parser.add_argument("--seed", type=int, default=DEFAULT_RANDOM_SEED)
     parser.add_argument("--expected-lineage", type=Path)
     parser.add_argument("--official-run", action="store_true")
-    parser.add_argument("--virality-contract-fingerprint")
-    parser.add_argument("--virality-policy")
     args = parser.parse_args()
 
-    df = pd.read_parquet(args.data)
-    dataset_lineage = None
-    if args.dataset_version and not args.dataset_manifest:
-        raise ValueError("Official model training requires --dataset-manifest")
-    if args.dataset_manifest:
-        _, dataset_lineage = load_dataset_lineage(
-            args.dataset_manifest,
-            expected_dataset_version=args.dataset_version,
-        )
-        args.dataset_version = str(dataset_lineage["dataset_version"])
-    validate_dataset_version(df, args.dataset_version)
-    virality_lineage = dataset_virality_lineage(df)
-    validate_virality_compatibility(
-        virality_lineage,
-        expected_fingerprint=args.virality_contract_fingerprint,
-        expected_policy=args.virality_policy,
-    )
+    print("=== Training Unified Source-Agnostic Content Model (Stage 1) ===")
 
-    features = feature_columns(
-        df,
-        include_audience=dataset_lineage is None,
-        include_roles=not args.official_run,
-    )
-    y = df[TARGET].astype(int)
-    text = df[TEXT].astype(str)
-    
-    fallback = df.index.to_series().map(lambda idx: f"missing-author-{idx}")
-    groups = df[GROUP].astype("string").fillna(fallback)
-    strata = source_class_strata(df)
-    id_column, stable_ids = observation_ids(df, official=args.official_run)
-
-    n_splits = 5
-    support = strata.value_counts()
-    if int(support.min()) < n_splits:
-        raise ValueError(f"Each source/class stratum needs at least {n_splits} rows; minimum support is {int(support.min())}")
-    if groups.nunique() < n_splits:
-        raise ValueError(f"K-fold validation needs at least {n_splits} authors; received {groups.nunique()}")
-
-    splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=args.seed)
-    folds = list(splitter.split(df, strata, groups))
-    
-    # Verify strict evaluation requirements
-    validation_rows = []
-    for fold_number, (train_idx, validation_idx) in enumerate(folds, start=1):
-        if set(groups.iloc[train_idx]) & set(groups.iloc[validation_idx]):
-            raise RuntimeError(f"Author leakage detected in fold {fold_number}")
-        if df.iloc[validation_idx][TARGET].nunique() < 2:
-            raise ValueError(f"Fold {fold_number} does not contain both viral classes")
-        validation_rows.extend(validation_idx.tolist())
-    if sorted(validation_rows) != list(range(len(df))):
-        raise RuntimeError("Validation folds do not cover every eligible row exactly once")
-
-    # Versioned Folds Manifest
-    fold_assignments = {}
-    for fold_number, (_, validation_idx) in enumerate(folds, start=1):
-        for idx in validation_idx:
-            fold_assignments[str(stable_ids.iloc[idx])] = fold_number
-    
-    folds_manifest = {
-        "schema_version": "cv-folds-manifest-v2",
-        "strategy": "stratified_group_k_fold",
-        "group_column": GROUP,
-        "stratification": "source x viral",
-        "n_splits": n_splits,
-        "seed": args.seed,
-        "dataset_version": args.dataset_version,
-        "virality_contract_fingerprint": args.virality_contract_fingerprint,
-        "folds": fold_assignments,
-    }
-    folds_manifest["evaluation_folds_fingerprint"] = fingerprint(folds_manifest)
-    args.cv_folds_manifest.parent.mkdir(parents=True, exist_ok=True)
-    write_json(args.cv_folds_manifest, folds_manifest)
-
-    # Pre-build features
-    base_features = features.copy()
-    base_features.extend([f"topic_{i}" for i in range(N_TOPICS)])
-    numeric_base = df[[f for f in features if not f.startswith("topic_")]].astype(float)
-
-    raw_probabilities = np.full(len(df), np.nan, dtype=float)
-    calibrated_probabilities = np.full(len(df), np.nan, dtype=float)
-    fold_thresholds = np.full(len(df), np.nan, dtype=float)
-
-    print(f"Executing {n_splits}-fold StratifiedGroupKFold CV...")
-    for fold_number, (train_idx, validation_idx) in enumerate(folds, start=1):
-        fold_seed = args.seed + fold_number
-        y_train = y.iloc[train_idx]
-        train_groups = groups.iloc[train_idx]
-        
-        content_model = build_content_model(fold_seed)
-        inner_cv = StratifiedGroupKFold(n_splits=CONTENT_MODEL_FOLDS, shuffle=True, random_state=fold_seed)
-        train_content_score = cross_val_predict(
-            content_model,
-            text.iloc[train_idx],
-            y_train,
-            groups=train_groups,
-            cv=inner_cv,
-            method="predict_proba",
-        )[:, 1]
-        content_model.fit(text.iloc[train_idx], y_train)
-        validation_content_score = content_model.predict_proba(text.iloc[validation_idx])[:, 1]
-
-        # NMF strictly Outer-Train Only
-        train_topics = fit_topic_features(
-            text.iloc[train_idx],
-            N_TOPICS,
-            TOPIC_MODEL_PATH.with_name(f"temp_nmf_{fold_number}.joblib"),
-            fold_seed,
-        )
-        topic_featurizer = TopicFeaturizer(TOPIC_MODEL_PATH.with_name(f"temp_nmf_{fold_number}.joblib"))
-        validation_topics = topic_featurizer.transform(text.iloc[validation_idx])
-        TOPIC_MODEL_PATH.with_name(f"temp_nmf_{fold_number}.joblib").unlink(missing_ok=True)
-
-        X_train = pd.concat([
-            numeric_base.iloc[train_idx].reset_index(drop=True),
-            train_topics.reset_index(drop=True)
-        ], axis=1).assign(content_score=train_content_score)
-        
-        X_validation = pd.concat([
-            numeric_base.iloc[validation_idx].reset_index(drop=True),
-            validation_topics.reset_index(drop=True)
-        ], axis=1).assign(content_score=validation_content_score)
-
-        model = train_model(X_train, y_train, fold_seed)
-        calibrator, threshold = fit_calibrator(X_train, y_train, train_groups, fold_seed)
-        
-        raw_proba = model.predict_proba(X_validation)[:, 1]
-        calibrated_proba = apply_calibrator(calibrator, raw_proba)
-        
-        raw_probabilities[validation_idx] = raw_proba
-        calibrated_probabilities[validation_idx] = calibrated_proba
-        fold_thresholds[validation_idx] = threshold
-
-    if np.isnan(raw_probabilities).any() or np.isnan(calibrated_probabilities).any():
-        raise RuntimeError("Cross-validation did not score every row")
-
-    # Persist OOF predictions
-    oof_df = pd.DataFrame({
-        "example_id": stable_ids,
-        "source": df[SOURCE],
-        GROUP: groups,
-        "viral": y,
-        "outer_fold": df.index.map(lambda i: folds_manifest["folds"].get(str(stable_ids.iloc[i]))),
-        "raw_probability": raw_probabilities,
-        "calibrated_probability": calibrated_probabilities,
-        "classification_threshold": fold_thresholds,
-        "predicted_label": (calibrated_probabilities >= fold_thresholds).astype(int),
-        "dataset_version": args.dataset_version,
-    })
-    if not oof_df["example_id"].is_unique:
-        raise ValueError("OOF example_id is not unique")
-    if len(oof_df) != len(df):
-        raise ValueError("OOF predictions length does not match dataset length")
-        
-    args.oof_predictions.parent.mkdir(parents=True, exist_ok=True)
-    oof_df.to_parquet(args.oof_predictions, index=False)
-    oof_sha256 = file_sha256(args.oof_predictions)
-
-    # Evaluation Protocol
     dataset_manifest = _dataset_manifest(args.dataset_manifest, args.dataset_version)
-    if args.environment_manifest is None:
-        if args.official_run:
-            raise ValueError("Official training requires --environment-manifest")
-        environment_manifest = {"code": {}, "environment_fingerprint": None}
-    else:
-        environment_manifest = load_json(args.environment_manifest)
-        validate_environment_manifest(environment_manifest)
-        
+    environment_manifest = load_json(args.environment_manifest)
+    validate_environment_manifest(environment_manifest, args.official_run)
+
     training_config = resolved_training_config(
+        feature_schema=CONTENT_FEATURES,
         seed=args.seed,
-        test_size=0.2, # Unused but required by config signature currently
-        feature_columns=base_features + ["content_score"],
-        feature_versions=(
-            sorted(df["feature_version"].dropna().astype(str).unique())
-            if "feature_version" in df.columns
-            else []
-        ),
-        dataset_schema_version=str(dataset_manifest.get("schema_version") or "") or None,
-        dataset_manifest=dataset_manifest,
-        content_backend="tfidf_logistic_regression",
-        auxiliary_artifacts={
-            path.name: file_sha256(path)
-            for path in (
-                *((ML_ROOT / "models" / "rhetorical_role.joblib",) if not args.official_run else ()),
-                ML_ROOT / "models" / "topic_model.joblib",
-            )
-            if path.is_file()
-        },
-        scale_pos_weight=(float(len(y) - y.sum()) / float(y.sum()) if float(y.sum()) else 1.0),
+        virality_contract_fingerprint=args.virality_contract_fingerprint,
+        virality_policy=args.virality_policy,
+        # Force outer inductive CV configuration
+        outer_split={"strategy": "stratified_group_k_fold", "n_splits": 5, "group": GROUP, "stratify": [SOURCE, TARGET]},
+        nmf_scope="outer_training_inductive",
     )
-    write_json(args.training_config_output, training_config)
+    validate_training_config(training_config)
+    
+    # ---------------------------------------------------------
+    # Generate Folds and Evaluation Protocol BEFORE fitting
+    # ---------------------------------------------------------
+    from train.evaluation_metrics import ECE_N_BINS, ECE_BINNING, BOOTSTRAP_ITERATIONS, BOOTSTRAP_CONFIDENCE_LEVEL, BOOTSTRAP_UNIT
     
     evaluation_protocol = {
         "schema_version": "evaluation-protocol-v1",
-        "strategy": "stratified_group_k_fold",
-        "group_column": GROUP,
-        "stratification": "source x viral",
-        "n_splits": n_splits,
-        "shuffle": True,
-        "random_seed": args.seed,
-        "preprocessing_fit_scopes": {
-            "tfidf": "outer_training_inductive",
-            "nmf": "outer_training_inductive"
+        "outer_evaluation": {
+            "method": "StratifiedGroupKFold",
+            "n_splits": 5,
+            "grouping_column": GROUP,
+            "stratification_targets": [SOURCE, TARGET],
+            "shuffle": True,
+            "seed": args.seed,
         },
-        "content_model_inner_cv_strategy": "stratified_group_k_fold",
-        "calibration_strategy": "platt_on_outer_training_oof",
-        "threshold_strategy": "maximize_f1_on_outer_training_oof",
-        "bootstrap_strategy": {
-            "unit": GROUP,
-            "iterations": 1000,
-            "confidence_interval": 0.95
+        "preprocessing": {
+            "nmf": "outer_training_inductive",
+            "tfidf": "outer_training_inductive"
         },
-        "metrics": ["roc_auc", "pr_auc", "brier", "ece", "f1", "precision", "recall"],
-        "dataset_version": args.dataset_version,
-        "virality_contract_fingerprint": args.virality_contract_fingerprint,
+        "calibration": {
+            "method": "StratifiedGroupKFold",
+            "n_splits": CALIBRATION_FOLDS,
+            "grouping_column": GROUP,
+            "stratification_target": TARGET,
+            "shuffle": True,
+            "seed": args.seed,
+        },
+        "threshold": {
+            "strategy": "best_f1_score"
+        },
+        "expected_calibration_error": {
+            "n_bins": ECE_N_BINS,
+            "binning": ECE_BINNING,
+            "range": [0.0, 1.0]
+        },
+        "bootstrap": {
+            "unit": BOOTSTRAP_UNIT,
+            "iterations": BOOTSTRAP_ITERATIONS,
+            "confidence_level": BOOTSTRAP_CONFIDENCE_LEVEL,
+            "seed": args.seed,
+            "interval_method": "percentile"
+        }
     }
     evaluation_protocol_fingerprint = fingerprint(evaluation_protocol)
     evaluation_protocol["evaluation_protocol_fingerprint"] = evaluation_protocol_fingerprint
     write_json(args.evaluation_protocol, evaluation_protocol)
+    
+    cv_folds_manifest = {
+        "schema_version": "cv-folds-manifest-v1",
+        "dataset_version": args.dataset_version,
+        "virality_contract_fingerprint": args.virality_contract_fingerprint,
+        "evaluation_protocol_fingerprint": evaluation_protocol_fingerprint,
+        "method": "StratifiedGroupKFold",
+        "n_splits": 5,
+        "grouping_column": GROUP,
+        "seed": args.seed,
+        "folds": {}  # populated during fit
+    }
 
+    df = pd.read_parquet(args.data)
+    validate_dataset_version(df, args.dataset_version)
+    validate_virality_compatibility(df, args.virality_contract_fingerprint, args.virality_policy)
+
+    features = feature_columns(df)
+    for col in features:
+        if col not in df.columns:
+            raise ValueError(f"Feature {col} is missing from training data")
+
+    y = df[TARGET]
+    groups = df[GROUP].fillna(df.index.to_series().astype(str))
+    
+    # Pre-calculate the 5 folds
+    outer_splitter = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=args.seed)
+    
+    # We must construct a composite stratify target: source + viral
+    strata = df[SOURCE].astype(str) + "_" + df[TARGET].astype(str)
+    
+    outer_folds = list(outer_splitter.split(df, strata, groups))
+    
+    fold_assignments = np.zeros(len(df), dtype=int)
+    for fold_idx, (train_idx, test_idx) in enumerate(outer_folds, start=1):
+        fold_assignments[test_idx] = fold_idx
+        # Populate cv_folds_manifest
+        cv_folds_manifest["folds"][str(fold_idx)] = {
+            "train_size": len(train_idx),
+            "test_size": len(test_idx),
+        }
+        
+    cv_folds_fingerprint = fingerprint(cv_folds_manifest)
+    cv_folds_manifest["evaluation_folds_fingerprint"] = cv_folds_fingerprint
+    write_json(args.cv_folds_manifest, cv_folds_manifest)
+
+    # Lineage must be recorded BEFORE fitting
     lineage = build_experiment_lineage(
         dataset_manifest=dataset_manifest,
         environment_manifest=environment_manifest,
         training_config=training_config,
         evaluation_protocol_fingerprint=evaluation_protocol_fingerprint,
-        evaluation_folds_fingerprint=folds_manifest["evaluation_folds_fingerprint"],
+        evaluation_folds_fingerprint=cv_folds_fingerprint,
         official_run=args.official_run,
     )
-    if args.expected_lineage:
-        validate_lineage_match(load_json(args.expected_lineage), lineage, context="Replay preflight")
+    validate_lineage_match(lineage, args.expected_lineage)
+    write_json(args.training_config_output, training_config)
+    write_json(args.lineage_output, lineage)
     
-    # Metrics
-    overall = metric_summary(y, calibrated_probabilities, fold_thresholds)
-    bootstrap = author_bootstrap_metrics(y, calibrated_probabilities, groups, seed=args.seed)
-    overall_raw = metric_summary(y, raw_probabilities, fold_thresholds)
-    bootstrap_raw = author_bootstrap_metrics(y, raw_probabilities, groups, seed=args.seed)
+    # ---------------------------------------------------------
+    # OUTER 5-FOLD CV
+    # ---------------------------------------------------------
+    print(f"Executing {len(outer_folds)}-fold StratifiedGroupKFold out-of-fold evaluation...")
+    
+    raw_oof = np.zeros(len(df))
+    cal_oof = np.zeros(len(df))
+    fold_thresholds = np.zeros(len(outer_folds))
+    
+    for fold_idx, (train_idx, test_idx) in enumerate(outer_folds, start=1):
+        print(f"  Fold {fold_idx}: fitting...")
+        
+        train_df = df.iloc[train_idx].copy()
+        test_df = df.iloc[test_idx].copy()
+        
+        # 1. Inductive NMF
+        print("    Fitting inductive NMF...")
+        topic_features = fit_topic_features(train_df[TEXT], N_TOPICS, args.seed)
+        for i in range(N_TOPICS):
+            col = f"topic_{i}"
+            train_df[col] = topic_features.iloc[:, i].values
+        
+        test_topics = TopicFeaturizer(TOPIC_MODEL_PATH).transform(test_df[TEXT])
+        for i in range(N_TOPICS):
+            col = f"topic_{i}"
+            test_df[col] = test_topics.iloc[:, i].values
+            
+        # 2. Inductive TF-IDF & XGBoost Dataset
+        X_train_fold, y_train_fold, _ = build_content_model(train_df, features)
+        X_test_fold, y_test_fold, _ = build_content_model(test_df, features)
+        
+        # 3. Inner Calibration OOF
+        print("    Fitting calibrator via inner grouped CV...")
+        fold_groups = groups.iloc[train_idx]
+        calibrator, threshold, _, _, _ = fit_calibrator(X_train_fold, y_train_fold, fold_groups, args.seed)
+        
+        # 4. Fit Full Outer-Train Model
+        fold_model = train_model(X_train_fold, y_train_fold, args.seed)
+        
+        # 5. Predict Outer-Validation
+        raw_preds = fold_model.predict_proba(xgb.DMatrix(X_test_fold))[:, 1]
+        cal_preds = apply_calibrator(calibrator, raw_preds)
+        
+        raw_oof[test_idx] = raw_preds
+        cal_oof[test_idx] = cal_preds
+        fold_thresholds[fold_idx-1] = threshold
 
-    per_source = {}
-    normalized_sources = df[SOURCE].astype("string").str.lower()
-    for source in sorted(normalized_sources.unique()):
-        mask = normalized_sources.eq(source).to_numpy()
-        per_source[str(source)] = metric_summary(y[mask], calibrated_probabilities[mask], fold_thresholds[mask])
+    avg_threshold = float(fold_thresholds.mean())
 
-    metrics_report = {
-        "schema_version": "paper-metrics-v1",
+    # ---------------------------------------------------------
+    # GENERATE OOF ARTIFACT
+    # ---------------------------------------------------------
+    oof_df = pd.DataFrame({
+        "example_id": df["example_id"].values if "example_id" in df.columns else df.index.values.astype(str),
+        "source": df[SOURCE].values,
+        "author_hash": df[GROUP].values,
+        "viral": df[TARGET].values,
+        "outer_fold": fold_assignments,
+        "raw_probability": raw_oof,
+        "calibrated_probability": cal_oof,
+        "classification_threshold": avg_threshold,
+        "predicted_label": (cal_oof >= avg_threshold).astype(bool),
         "dataset_version": args.dataset_version,
-        "overall_calibrated": overall,
-        "bootstrap_calibrated": bootstrap,
-        "overall_raw": overall_raw,
-        "bootstrap_raw": bootstrap_raw,
-        "per_source_calibrated": per_source,
+        "virality_contract_fingerprint": args.virality_contract_fingerprint,
+        "evaluation_protocol_fingerprint": evaluation_protocol_fingerprint,
+        "evaluation_folds_fingerprint": cv_folds_fingerprint,
+    })
+    oof_df.to_parquet(args.oof_predictions, index=False)
+    lineage["oof_predictions_sha256"] = file_sha256(args.oof_predictions)
+    
+    # ---------------------------------------------------------
+    # GENERATE EVALUATION JSON
+    # ---------------------------------------------------------
+    from train.evaluation_metrics import metric_summary, author_bootstrap_metrics
+    
+    def _evaluate_subset(mask):
+        subset = oof_df[mask]
+        return {
+            "raw": {
+                "metrics": metric_summary(subset["viral"], subset["raw_probability"], subset["classification_threshold"]),
+                "bootstrap": author_bootstrap_metrics(subset["viral"], subset["raw_probability"], subset["author_hash"], seed=args.seed)
+            },
+            "calibrated": {
+                "metrics": metric_summary(subset["viral"], subset["calibrated_probability"], subset["classification_threshold"]),
+                "bootstrap": author_bootstrap_metrics(subset["viral"], subset["calibrated_probability"], subset["author_hash"], seed=args.seed)
+            }
+        }
+        
+    evaluation_payload = {
+        "schema_version": "evaluation-v1",
+        "dataset_version": args.dataset_version,
+        "virality_contract_fingerprint": args.virality_contract_fingerprint,
+        "evaluation_protocol_fingerprint": evaluation_protocol_fingerprint,
+        "evaluation_folds_fingerprint": cv_folds_fingerprint,
+        "oof_predictions_sha256": lineage["oof_predictions_sha256"],
+        "overall": _evaluate_subset(pd.Series(True, index=oof_df.index)),
+        "per_source": {}
     }
-    args.metrics_output.parent.mkdir(parents=True, exist_ok=True)
-    write_json(args.metrics_output, metrics_report)
-    metrics_sha256 = file_sha256(args.metrics_output)
+    
+    for src in sorted(oof_df["source"].unique()):
+        evaluation_payload["per_source"][str(src)] = _evaluate_subset(oof_df["source"] == src)
+        
+    eval_fingerprint = fingerprint(evaluation_payload)
+    evaluation_payload["evaluation_fingerprint"] = eval_fingerprint
+    write_json(args.metrics_output, evaluation_payload)
+    
+    lineage["evaluation_fingerprint"] = eval_fingerprint
+    lineage["metrics_sha256"] = file_sha256(args.metrics_output)
 
-    print("OOF Calibrated PR-AUC:", overall.get("pr_auc"))
-    print("OOF Calibrated ROC-AUC:", overall.get("roc_auc"))
-    print("OOF Calibrated ECE:", overall.get("ece"))
-    print("OOF Calibrated PR-AUC 95% CI:", bootstrap.get("pr_auc_ci95"))
-
-    # Train Final Deployable Model
-    print("\nTraining final deployment model on full dataset...")
-    final_content_model = build_content_model(args.seed)
-    final_inner_cv = StratifiedGroupKFold(n_splits=CONTENT_MODEL_FOLDS, shuffle=True, random_state=args.seed)
-    final_content_score = cross_val_predict(
-        final_content_model, text, y, groups=groups, cv=final_inner_cv, method="predict_proba"
-    )[:, 1]
-    final_content_model.fit(text, y)
+    # ---------------------------------------------------------
+    # FINAL DEPLOYMENT MODEL (Transductive on full dataset)
+    # ---------------------------------------------------------
+    print("Fitting final deployment model on full dataset...")
     
-    final_topics = fit_topic_features(text, N_TOPICS, TOPIC_MODEL_PATH, args.seed)
-    
-    X_all = pd.concat([
-        numeric_base.reset_index(drop=True),
-        final_topics.reset_index(drop=True)
-    ], axis=1).assign(content_score=final_content_score)
-    
-    final_model = train_model(X_all, y, args.seed)
-    final_calibrator, final_threshold = fit_calibrator(X_all, y, groups, args.seed)
+    # Inductive features on full dataset for final model
+    topic_features = fit_topic_features(df[TEXT], N_TOPICS, args.seed)
+    for i in range(N_TOPICS):
+        col = f"topic_{i}"
+        df[col] = topic_features.iloc[:, i].values
+        
+    X_full, y_full, _ = build_content_model(df, features)
+    calibrator, threshold, _, _, _ = fit_calibrator(X_full, y_full, groups, args.seed)
+    final_model = train_model(X_full, y_full, args.seed)
 
     args.model.parent.mkdir(parents=True, exist_ok=True)
     bundle = {
-        "schema_version": "model-bundle-v2",
         "model": final_model,
-        "content_model": final_content_model,
-        "calibrator": final_calibrator,
-        "classification_probability_threshold": final_threshold,
-        "features": base_features + ["content_score"],
-        "dataset_version": args.dataset_version,
-        "dataset_lineage": dataset_lineage,
-        "audience_features_included": dataset_lineage is None,
+        "calibrator": calibrator,
+        "threshold": threshold,
+        "features": features,
+        "feature_schema": CONTENT_FEATURES,
         "role_feature_contract": role_feature_contract(),
-        "lineage": compact_lineage(lineage),
-        **virality_lineage,
+        "dataset_lineage": load_dataset_lineage(dataset_manifest),
+        "virality_lineage": dataset_virality_lineage(df),
+        "training_config_fingerprint": training_config.get("training_config_fingerprint"),
+        "evaluation_protocol_fingerprint": evaluation_protocol_fingerprint,
+        "evaluation_folds_fingerprint": cv_folds_fingerprint,
+        "experiment_id": experiment_id(lineage),
     }
     joblib.dump(bundle, args.model)
-    
     lineage["model_sha256"] = file_sha256(args.model)
-    lineage["oof_predictions_sha256"] = oof_sha256
-    lineage["metrics_sha256"] = metrics_sha256
-    lineage["status"] = "trained"
     write_json(args.lineage_output, lineage)
-    
-    if dataset_lineage:
-        sidecar = {
-            "artifact_type": "stage1_viral_model",
-            "artifact_file": args.model.name,
-            "artifact_sha256": lineage["model_sha256"],
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "dataset_lineage": dataset_lineage,
-            **virality_lineage,
-            "classification_probability_threshold": final_threshold,
-            "audience_features_included": False,
-            "role_feature_contract": role_feature_contract(),
-        }
-        lineage_path = model_lineage_path(args.model)
-        lineage_path.write_text(json.dumps(sidecar, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-    print(f"Saved final deployment model -> {args.model}")
-    print("Evaluation complete.")
-
-if __name__ == "__main__":
-    main()
+    print(f"Done! Final artifacts saved.")
