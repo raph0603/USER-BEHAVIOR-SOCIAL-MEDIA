@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/schemas/pipeline-benchmark-v1.json",
+  "title": "Pipeline benchmark manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "benchmark_id",
+    "manifest_fingerprint",
+    "status",
+    "run_class",
+    "backend",
+    "system_performance_measured",
+    "configuration",
+    "workloads",
+    "environment",
+    "isolation",
+    "reliability"
+  ],
+  "properties": {
+    "schema_version": {"const": "pipeline-benchmark-v1"},
+    "benchmark_id": {"type": "string", "pattern": "^pipeline-"},
+    "manifest_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "status": {"enum": ["passed", "failed"]},
+    "run_class": {"enum": ["test", "validation", "official"]},
+    "backend": {"type": "string"},
+    "system_performance_measured": {"type": "boolean"},
+    "configuration": {"type": "object"},
+    "workloads": {"type": "object"},
+    "environment": {"type": "object"},
+    "isolation": {"type": "object"},
+    "reliability": {"type": "object"},
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}
