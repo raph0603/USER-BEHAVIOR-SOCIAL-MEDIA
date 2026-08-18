@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v3.0.0...v3.0.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **evaluation:** restore executable grouped cv training ([ffffbb6](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/ffffbb60b8644107ee6a7bead566ee0ee068f41a))
+
 ## [3.0.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v2.0.1...v3.0.0) (2026-08-18)
 
 
