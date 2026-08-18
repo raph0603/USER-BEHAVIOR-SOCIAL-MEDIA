@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import html as html_lib
 import json
@@ -11,7 +12,7 @@ import time
 import traceback
 import unicodedata
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -35,6 +36,8 @@ from googleapiclient.errors import HttpError
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
+from twikit import Client as TwikitClient
+from yt_dlp import YoutubeDL
 
 from common.collection import (
     ContentRelationship,
@@ -187,6 +190,39 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_utc_datetime(value: str | None) -> datetime | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    try:
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _incremental_scope(*parts: str) -> str:
+    material = "\x1f".join(str(part).strip() for part in parts)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _incremental_cutoff(watermark: str | None) -> datetime | None:
+    parsed = _parse_utc_datetime(watermark)
+    if parsed is None:
+        return None
+    overlap_hours = max(0, _env_int("COLLECTOR_INCREMENTAL_OVERLAP_HOURS", 24))
+    return parsed - timedelta(hours=overlap_hours)
+
+
+def _x_incremental_query(query: str, watermark: str | None) -> str:
+    cutoff = _incremental_cutoff(watermark)
+    if cutoff is None or re.search(r"(?:^|\s)since:", query, re.IGNORECASE):
+        return query
+    return f"{query} since:{cutoff.date().isoformat()}"
+
+
 def _load_schema(schema_path: str) -> str:
     return Path(schema_path).read_text(encoding="utf-8")
 
@@ -305,7 +341,7 @@ def _extract_reddit_score(comment) -> int | None:
             if parsed is not None:
                 return parsed
         except (PlaywrightTimeoutError, PlaywrightError) as exc:
-            LOGGER.debug("Could not read Reddit score with %s: %s", selector, exc)
+            pass
     return None
 
 
@@ -729,7 +765,7 @@ def _collect_reddit_feed_events(
             for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
                 discovered += 1
                 event = _extract_reddit_feed_event(entry, subreddit_info)
-                if event is None or state.contains("reddit", event["event_id"]):
+                if event is None or state.should_skip("reddit", event["event_id"]):
                     continue
                 if not _matches_keywords(
                     event["title"],
@@ -781,6 +817,17 @@ class ProcessedState:
             )
             """
         )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS collection_watermarks (
+              source TEXT NOT NULL,
+              scope TEXT NOT NULL,
+              watermark TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (source, scope)
+            )
+            """
+        )
         current_columns = {
             row[1] for row in self.connection.execute("PRAGMA table_info(processed_events)")
         }
@@ -800,6 +847,68 @@ class ProcessedState:
                 )
         self.connection.commit()
 
+    def has_terminal_events(self, source: str) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1
+            FROM processed_events
+            WHERE source = ? AND terminal = 1
+            LIMIT 1
+            """,
+            (source,),
+        ).fetchone()
+        return row is not None
+
+    def get_watermark(self, source: str, scope: str) -> str | None:
+        row = self.connection.execute(
+            """
+            SELECT watermark
+            FROM collection_watermarks
+            WHERE source = ? AND scope = ?
+            """,
+            (source, scope),
+        ).fetchone()
+        return str(row[0]) if row else None
+
+    def set_watermark(self, source: str, scope: str, watermark: str) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO collection_watermarks (source, scope, watermark, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(source, scope) DO UPDATE SET
+              watermark = excluded.watermark,
+              updated_at = excluded.updated_at
+            """,
+            (
+                source,
+                scope,
+                watermark,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        self.connection.commit()
+
+    def incremental_watermark(self, source: str, scope: str) -> str | None:
+        if not _env_bool("COLLECTOR_INCREMENTAL_ENABLED", True):
+            return None
+        if _env_bool("COLLECTOR_INCREMENTAL_IGNORE_WATERMARKS", False):
+            print(
+                f"Ignoring incremental {source} watermark for backfill scope "
+                f"{scope[:12]}",
+                flush=True,
+            )
+            return None
+        watermark = self.get_watermark(source, scope)
+        if watermark or not self.has_terminal_events(source):
+            return watermark
+        watermark = datetime.now(timezone.utc).isoformat()
+        self.set_watermark(source, scope, watermark)
+        print(
+            f"Initialized incremental {source} watermark for scope {scope[:12]}",
+            flush=True,
+        )
+        return watermark
+
     def contains(self, source: str, event_id: str) -> bool:
         row = self.connection.execute(
             """
@@ -810,6 +919,28 @@ class ProcessedState:
             (source, event_id),
         ).fetchone()
         return bool(row and row[0])
+
+    def seen(self, source: str, event_id: str) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1
+            FROM processed_events
+            WHERE source = ? AND event_id = ?
+            LIMIT 1
+            """,
+            (source, event_id),
+        ).fetchone()
+        return row is not None
+
+    def should_skip(self, source: str, event_id: str) -> bool:
+        strict_incremental = (
+            _env_bool("COLLECTOR_INCREMENTAL_ENABLED", True)
+            and _env_bool("COLLECTOR_INCREMENTAL_SKIP_SEEN", True)
+        )
+        return self.seen(source, event_id) if strict_incremental else self.contains(
+            source,
+            event_id,
+        )
 
     def next_attempt_count(self, source: str, event_id: str) -> int:
         row = self.connection.execute(
@@ -982,9 +1113,14 @@ def _search_youtube_video_ids(
     max_results: int,
     relevance_language: str,
     order: str,
+    published_after: str | None = None,
+    is_known=None,
+    known_stop_threshold: int = 25,
 ) -> list[str]:
     video_ids: list[str] = []
     page_token: str | None = None
+    consecutive_known = 0
+    frontier_reached = False
 
     def video_id_from_item(item) -> str | None:
         if not isinstance(item, dict):
@@ -999,33 +1135,107 @@ def _search_youtube_video_ids(
 
     while len(video_ids) < max_results:
         try:
-            response = (
-                youtube.search()
-                .list(
-                    part="id",
-                    q=search_query,
-                    type="video",
-                    relevanceLanguage=relevance_language or None,
-                    order=order,
-                    maxResults=min(50, max_results - len(video_ids)),
-                    pageToken=page_token,
-                )
-                .execute()
-            )
+            request_kwargs = {
+                "part": "id",
+                "q": search_query,
+                "type": "video",
+                "relevanceLanguage": relevance_language or None,
+                "order": order,
+                "maxResults": min(50, max_results - len(video_ids)),
+                "pageToken": page_token,
+            }
+            if published_after:
+                request_kwargs["publishedAfter"] = published_after
+            response = youtube.search().list(**request_kwargs).execute()
         except HttpError as exc:
             if _is_auth_or_quota_block(exc):
                 raise _soft_block("youtube", str(exc)) from exc
             raise
-        video_ids.extend(
-            video_id
-            for video_id in (video_id_from_item(item) for item in response.get("items", []))
-            if video_id
-        )
+        for video_id in (
+            video_id_from_item(item) for item in response.get("items", [])
+        ):
+            if not video_id:
+                continue
+            video_ids.append(video_id)
+            if is_known is not None and is_known(video_id):
+                consecutive_known += 1
+                if consecutive_known >= max(1, known_stop_threshold):
+                    frontier_reached = True
+                    print(
+                        "YouTube incremental frontier reached after "
+                        f"{consecutive_known} known videos",
+                        flush=True,
+                    )
+                    break
+            else:
+                consecutive_known = 0
+        if frontier_reached:
+            break
         page_token = response.get("nextPageToken")
         if not page_token:
             break
 
     return video_ids[:max_results]
+
+
+def _search_youtube_video_ids_ytdlp(
+    search_query: str,
+    max_results: int,
+    *,
+    is_known=None,
+    known_stop_threshold: int = 25,
+) -> list[str]:
+    if max_results <= 0:
+        return []
+    options = {
+        "extract_flat": "in_playlist",
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "playlistend": max_results,
+        "socket_timeout": max(5, _env_int("YOUTUBE_YTDLP_TIMEOUT_SECONDS", 30)),
+    }
+    try:
+        with YoutubeDL(options) as downloader:
+            result = downloader.extract_info(
+                f"ytsearch{max_results}:{search_query}",
+                download=False,
+            )
+    except Exception as exc:
+        if _is_auth_or_quota_block(exc) or isinstance(exc, (OSError, socket.error)):
+            raise _soft_block("youtube", f"yt-dlp discovery failed: {exc}") from exc
+        raise RuntimeError(f"YouTube yt-dlp discovery failed: {exc}") from exc
+
+    video_ids: list[str] = []
+    seen_ids: set[str] = set()
+    consecutive_known = 0
+    for entry in (result or {}).get("entries") or []:
+        if not isinstance(entry, dict):
+            continue
+        video_id = str(entry.get("id") or "").strip()
+        if not video_id or video_id in seen_ids:
+            continue
+        seen_ids.add(video_id)
+        if is_known is not None and is_known(video_id):
+            consecutive_known += 1
+            if consecutive_known >= max(1, known_stop_threshold):
+                print(
+                    "YouTube yt-dlp frontier reached after "
+                    f"{consecutive_known} known videos",
+                    flush=True,
+                )
+                break
+            continue
+        consecutive_known = 0
+        video_ids.append(video_id)
+        if len(video_ids) >= max_results:
+            break
+    print(
+        f"YouTube yt-dlp discovered {len(video_ids)} unseen videos for "
+        f"query: {search_query}",
+        flush=True,
+    )
+    return video_ids
 
 
 def _fetch_video_metadata(youtube, video_id: str) -> OperationResult[dict]:
@@ -2306,7 +2516,189 @@ def _load_x_full_tweet_text(context, tweet_url: str, fallback_text: str) -> str:
                 pass
 
 
-def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
+def _publish_ready_batch(
+    events: list[dict],
+    publish_batch,
+    publish_batch_size: int,
+) -> int:
+    if publish_batch is not None and len(events) >= publish_batch_size:
+        batch = events[:publish_batch_size]
+        publish_batch(batch)
+        del events[:publish_batch_size]
+        return len(batch)
+    return 0
+
+
+def _twikit_timestamp(tweet) -> str | None:
+    value = getattr(tweet, "created_at_datetime", None)
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat()
+    raw_value = str(value or getattr(tweet, "created_at", "") or "").strip()
+    if not raw_value:
+        return None
+    parsed = _parse_utc_datetime(raw_value)
+    if parsed is None:
+        try:
+            parsed = datetime.strptime(
+                raw_value,
+                "%a %b %d %H:%M:%S %z %Y",
+            ).astimezone(timezone.utc)
+        except ValueError:
+            return raw_value
+    return parsed.isoformat()
+
+
+def _collect_x_events_twikit(
+    state: ProcessedState,
+    max_events: int,
+    *,
+    publish_batch=None,
+    publish_batch_size: int = 50,
+) -> list[dict]:
+    queries = _env_json_list(
+        "X_SEARCH_QUERIES_JSON",
+        [
+            query.strip()
+            for query in _env_str(
+                "X_SEARCH_QUERIES",
+                "||".join(DEFAULT_X_QUERIES),
+            ).split("||")
+            if query.strip()
+        ],
+    )
+    product = _env_str("X_TWIKIT_PRODUCT", "Latest").title()
+    if product not in {"Latest", "Top", "Media"}:
+        raise RuntimeError("X_TWIKIT_PRODUCT must be Latest, Top, or Media")
+    pages_per_query = max(1, _env_int("X_TWIKIT_PAGES_PER_QUERY", 25))
+    auth_token = _env_str("X_AUTH_TOKEN", "")
+    csrf_token = _env_str("X_CT0", "")
+    if not auth_token or not csrf_token:
+        raise _soft_block(
+            "x",
+            "Twikit collection requires X_AUTH_TOKEN and X_CT0 cookies",
+        )
+
+    async def collect() -> list[dict]:
+        client = TwikitClient(language=_env_str("X_TWIKIT_LANGUAGE", "en-US"))
+        client.set_cookies(
+            {"auth_token": auth_token, "ct0": csrf_token},
+            clear_cookies=True,
+        )
+        events: list[dict] = []
+        seen_ids: set[str] = set()
+        collected_count = 0
+        limit_reached = False
+
+        for query in queries:
+            scope = _incremental_scope("x", "twikit", product, query)
+            watermark = state.incremental_watermark("x", scope)
+            effective_query = _x_incremental_query(query, watermark)
+            query_started_at = datetime.now(timezone.utc).isoformat()
+            result = await client.search_tweet(
+                effective_query,
+                product,
+                count=20,
+            )
+            for page_index in range(pages_per_query):
+                if not result:
+                    break
+                for tweet in result:
+                    status_id = str(getattr(tweet, "id", "") or "").strip()
+                    if (
+                        not status_id
+                        or status_id in seen_ids
+                        or state.should_skip("x", status_id)
+                    ):
+                        continue
+                    text = _clean_text(
+                        getattr(tweet, "full_text", None)
+                        or getattr(tweet, "text", "")
+                    )
+                    if not text:
+                        continue
+                    user = getattr(tweet, "user", None)
+                    screen_name = str(
+                        getattr(user, "screen_name", "")
+                        or getattr(user, "name", "")
+                        or "anonymous"
+                    ).lstrip("@")
+                    events.append(
+                        {
+                            "event_id": status_id,
+                            "platform_event_id": status_id,
+                            "user_id": f"x-{_hash_identity(screen_name, status_id)}",
+                            "url": f"https://x.com/{screen_name}/status/{status_id}",
+                            "title": text,
+                            "raw_text": text,
+                            "timestamp": _twikit_timestamp(tweet),
+                            "source": "x",
+                            "x_account": screen_name,
+                            "conversation_id": str(
+                                getattr(tweet, "conversation_id", "") or status_id
+                            ),
+                            "parent_interaction_id": (
+                                str(
+                                    getattr(tweet, "in_reply_to_status_id", "")
+                                    or ""
+                                ).strip()
+                                or None
+                            ),
+                            "like_count": getattr(tweet, "favorite_count", None),
+                            "view_count": getattr(tweet, "view_count", None),
+                            "reply_count": getattr(tweet, "reply_count", None),
+                            "retweet_count": getattr(tweet, "retweet_count", None),
+                            "bookmark_count": getattr(tweet, "bookmark_count", None),
+                            "follower_count": getattr(user, "followers_count", None),
+                        }
+                    )
+                    seen_ids.add(status_id)
+                    collected_count += 1
+                    _publish_ready_batch(
+                        events,
+                        publish_batch,
+                        publish_batch_size,
+                    )
+                    if max_events > 0 and collected_count >= max_events:
+                        limit_reached = True
+                        break
+                if limit_reached or page_index + 1 >= pages_per_query:
+                    break
+                result = await result.next()
+
+            if publish_batch is not None and events:
+                publish_batch(list(events))
+                events.clear()
+            if not limit_reached:
+                state.set_watermark("x", scope, query_started_at)
+            if limit_reached:
+                break
+        return events
+
+    try:
+        return asyncio.run(collect())
+    except Exception as exc:
+        if _is_auth_or_quota_block(exc):
+            raise _soft_block("x", f"Twikit search failed: {exc}") from exc
+        raise RuntimeError(f"X Twikit collection failed: {exc}") from exc
+
+
+def _collect_x_events(
+    state: ProcessedState,
+    max_events: int,
+    *,
+    publish_batch=None,
+    publish_batch_size: int = 50,
+) -> list[dict]:
+    backend = _env_str("X_SEARCH_BACKEND", "playwright").lower()
+    if backend == "twikit":
+        return _collect_x_events_twikit(
+            state,
+            max_events,
+            publish_batch=publish_batch,
+            publish_batch_size=publish_batch_size,
+        )
+    if backend != "playwright":
+        raise RuntimeError("X_SEARCH_BACKEND must be either 'playwright' or 'twikit'")
     headless = _env_bool("X_HEADLESS", True)
     user_data_dir = _env_str("X_USER_DATA_DIR", "/app/x-browser-profile")
     queries = _env_json_list(
@@ -2329,8 +2721,13 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
     )
     search_retries = _env_int("X_SEARCH_RETRIES", 3)
     search_retry_seconds = _env_int("X_SEARCH_RETRY_SECONDS", 10)
+    search_filter = _env_str("X_SEARCH_FILTER", "live").lower()
+    if search_filter not in {"live", "top"}:
+        raise RuntimeError("X_SEARCH_FILTER must be either 'live' or 'top'")
+    known_stop_threshold = max(1, _env_int("X_KNOWN_STOP_THRESHOLD", 25))
     events = []
     seen_ids = set()
+    collected_events_count = 0
     discovered_statuses = 0
     limit_reached = False
     page_closed_after_posts = False
@@ -2355,8 +2752,16 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                     )
 
             for query in queries:
+                query_scope = _incremental_scope("x", query)
+                query_watermark = state.incremental_watermark("x", query_scope)
+                effective_query = _x_incremental_query(query, query_watermark)
+                query_started_at = datetime.now(timezone.utc).isoformat()
+                scanned_status_ids: set[str] = set()
+                consecutive_known = 0
+                query_frontier_reached = False
                 search_url = (
-                    f"https://x.com/search?q={quote(query, safe='')}&src=typed_query&f=live"
+                    "https://x.com/search?q="
+                    f"{quote(effective_query, safe='')}&src=typed_query&f={search_filter}"
                 )
                 query_ready = False
                 for attempt in range(1, search_retries + 1):
@@ -2408,9 +2813,26 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                             if not status_id:
                                 continue
 
-                            discovered_statuses += 1
-                            if status_id in seen_ids or state.contains("x", status_id):
+                            if status_id in scanned_status_ids:
                                 continue
+                            scanned_status_ids.add(status_id)
+
+                            discovered_statuses += 1
+                            if status_id in seen_ids or state.should_skip("x", status_id):
+                                consecutive_known += 1
+                                if (
+                                    query_watermark
+                                    and consecutive_known >= known_stop_threshold
+                                ):
+                                    query_frontier_reached = True
+                                    print(
+                                        "X incremental frontier reached after "
+                                        f"{consecutive_known} known posts",
+                                        flush=True,
+                                    )
+                                    break
+                                continue
+                            consecutive_known = 0
 
                             text_locator = article.locator('[data-testid="tweetText"]')
                             text = (
@@ -2421,11 +2843,12 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                             if not text:
                                 continue
 
-                            text = _load_x_full_tweet_text(
-                                context,
-                                tweet_url,
-                                text,
-                            )
+                            if _env_bool("X_FETCH_FULL_TEXT", True):
+                                text = _load_x_full_tweet_text(
+                                    context,
+                                    tweet_url,
+                                    text,
+                                )
                             user_locator = article.locator('div[data-testid="User-Name"]')
                             user_text = (
                                 user_locator.first.inner_text(timeout=1000)
@@ -2481,17 +2904,27 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                                         article,
                                         "bookmark",
                                     ),
-                                    "follower_count": extract_x_followers(article),
+                                    "follower_count": (
+                                        extract_x_followers(article)
+                                        if _env_bool("X_FETCH_FOLLOWER_COUNT", True)
+                                        else None
+                                    ),
                                 }
                             )
                             seen_ids.add(status_id)
-                            if max_events > 0 and len(events) >= max_events:
+                            collected_events_count += 1
+                            _publish_ready_batch(
+                                events,
+                                publish_batch,
+                                publish_batch_size,
+                            )
+                            if max_events > 0 and collected_events_count >= max_events:
                                 limit_reached = True
                                 break
                         except (PlaywrightTimeoutError, PlaywrightError):
                             continue
 
-                    if limit_reached:
+                    if limit_reached or query_frontier_reached:
                         break
 
                     try:
@@ -2506,6 +2939,16 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
                             page_closed_after_posts = True
                             break
                         raise
+
+                if (
+                    not limit_reached
+                    and not page_closed_after_posts
+                    and publish_batch is not None
+                ):
+                    if events:
+                        publish_batch(list(events))
+                        events.clear()
+                    state.set_watermark("x", query_scope, query_started_at)
 
                 if limit_reached or page_closed_after_posts:
                     break
@@ -2533,21 +2976,6 @@ def _collect_x_events(state: ProcessedState, max_events: int) -> list[dict]:
         return events
 
     return events
-
-
-def _publish_ready_batch(
-    events: list[dict],
-    publish_batch,
-    batch_size: int,
-) -> int:
-    effective_batch_size = max(1, batch_size)
-    if publish_batch is None or len(events) < effective_batch_size:
-        return 0
-
-    ready_batch = events[:effective_batch_size]
-    publish_batch(ready_batch)
-    del events[:effective_batch_size]
-    return len(ready_batch)
 
 
 def _collect_reddit_events(
@@ -2580,9 +3008,15 @@ def _collect_reddit_events(
         max_events if max_events > 0 else 0,
     )
     wait_ms = _env_int("REDDIT_WAIT_MS", 750)
+    enrich_details = _env_bool("REDDIT_ENRICH_DETAILS", True)
+    known_stop_threshold = max(1, _env_int("REDDIT_KNOWN_STOP_THRESHOLD", 25))
     events: list[dict] = []
     candidates: dict[str, dict] = {}
+    seen_event_ids: set[str] = set()
+    pending_watermarks: list[tuple[str, str]] = []
+    accepted_event_count = 0
     discovered_comments = 0
+    limit_reached = False
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
@@ -2600,7 +3034,27 @@ def _collect_reddit_events(
             _verify_reddit_authenticated_session(page)
 
         for subreddit in subreddits:
-            subreddit_info = _extract_reddit_subreddit_info(context, subreddit)
+            subreddit_scope = _incremental_scope(
+                "reddit",
+                subreddit.lower(),
+                keyword_match_mode,
+                safe_json_dumps(keywords),
+            )
+            subreddit_watermark = state.incremental_watermark(
+                "reddit",
+                subreddit_scope,
+            )
+            subreddit_cutoff = _incremental_cutoff(subreddit_watermark)
+            subreddit_started_at = datetime.now(timezone.utc).isoformat()
+            scanned_subreddit_ids: set[str] = set()
+            consecutive_known = 0
+            subreddit_frontier_reached = False
+            subreddit_complete = False
+            subreddit_info = (
+                _extract_reddit_subreddit_info(context, subreddit)
+                if _env_bool("REDDIT_COLLECT_COMMUNITY_INFO", True)
+                else {}
+            )
             listing_url: str | None = f"https://old.reddit.com/r/{subreddit}/comments/?limit=100"
             visited_pages: set[str] = set()
             scanned_comments = 0
@@ -2646,8 +3100,25 @@ def _collect_reddit_events(
                             f"for {subreddit}: HTTP {response.status}",
                         )
                     for event in fallback_events:
-                        candidates[event["event_id"]] = event
+                        event_id = event["event_id"]
+                        if event_id in seen_event_ids:
+                            continue
+                        seen_event_ids.add(event_id)
+                        accepted_event_count += 1
+                        if enrich_details:
+                            candidates[event_id] = event
+                        else:
+                            events.append(event)
+                            _publish_ready_batch(
+                                events,
+                                publish_batch,
+                                publish_batch_size,
+                            )
+                        if max_events > 0 and accepted_event_count >= max_events:
+                            limit_reached = True
+                            break
                     discovered_comments += fallback_discovered
+                    subreddit_complete = not limit_reached
                     break
                 if response.status >= 400:
                     if response.status in {401, 403, 429}:
@@ -2676,10 +3147,42 @@ def _collect_reddit_events(
                         subreddit_member_count,
                         subreddit_info,
                     )
-                    if comment_event is None or state.contains(
-                        "reddit",
-                        comment_event["event_id"],
+                    if comment_event is None:
+                        continue
+                    comment_id = comment_event["event_id"]
+                    if comment_id in scanned_subreddit_ids:
+                        continue
+                    scanned_subreddit_ids.add(comment_id)
+
+                    comment_timestamp = _parse_utc_datetime(comment_event.get("timestamp"))
+                    if (
+                        subreddit_cutoff is not None
+                        and comment_timestamp is not None
+                        and comment_timestamp <= subreddit_cutoff
                     ):
+                        subreddit_frontier_reached = True
+                        print(
+                            f"Reddit incremental time frontier reached for r/{subreddit}",
+                            flush=True,
+                        )
+                        break
+
+                    if state.should_skip("reddit", comment_id):
+                        consecutive_known += 1
+                        if (
+                            subreddit_watermark
+                            and consecutive_known >= known_stop_threshold
+                        ):
+                            subreddit_frontier_reached = True
+                            print(
+                                "Reddit incremental ID frontier reached for "
+                                f"r/{subreddit} after {consecutive_known} known comments",
+                                flush=True,
+                            )
+                            break
+                        continue
+                    consecutive_known = 0
+                    if comment_id in seen_event_ids:
                         continue
                     if not _matches_keywords(
                         comment_event["title"],
@@ -2687,14 +3190,38 @@ def _collect_reddit_events(
                         keyword_match_mode,
                     ):
                         continue
-                    candidates[comment_event["event_id"]] = comment_event
+                    seen_event_ids.add(comment_event["event_id"])
+                    accepted_event_count += 1
+                    if enrich_details:
+                        candidates[comment_event["event_id"]] = comment_event
+                    else:
+                        events.append(comment_event)
+                        _publish_ready_batch(
+                            events,
+                            publish_batch,
+                            publish_batch_size,
+                        )
+                    if max_events > 0 and accepted_event_count >= max_events:
+                        limit_reached = True
+                        break
+
+                if limit_reached or subreddit_frontier_reached:
+                    subreddit_complete = subreddit_frontier_reached
+                    break
 
                 next_link = page.locator("span.next-button a")
                 next_href = next_link.first.get_attribute("href") if next_link.count() else None
                 listing_url = urljoin(listing_url, str(next_href)) if next_href else None
+                if listing_url is None:
+                    subreddit_complete = True
                 page.wait_for_timeout(wait_ms)
 
-            if max_events > 0 and len(candidates) >= max_events:
+            if subreddit_complete and not limit_reached:
+                pending_watermarks.append((subreddit_scope, subreddit_started_at))
+
+            if limit_reached or (
+                max_events > 0 and accepted_event_count >= max_events
+            ):
                 break
 
         if discovered_comments == 0:
@@ -2703,6 +3230,16 @@ def _collect_reddit_events(
                 "Reddit listing loaded but no comments were found. "
                 "Treating this as a load/parsing failure, not an empty collection."
             )
+
+        if not enrich_details:
+            if publish_batch is not None:
+                if events:
+                    publish_batch(list(events))
+                    events.clear()
+                for scope, watermark in pending_watermarks:
+                    state.set_watermark("reddit", scope, watermark)
+            browser.close()
+            return events
 
         ordered_candidates = sorted(
             candidates.values(),
@@ -2755,13 +3292,14 @@ def _collect_reddit_events(
                 )
 
             events.append(event)
-            _publish_ready_batch(
-                events,
-                publish_batch,
-                publish_batch_size,
-            )
             page.wait_for_timeout(wait_ms)
 
+        if publish_batch is not None:
+            if events:
+                publish_batch(list(events))
+                events.clear()
+            for scope, watermark in pending_watermarks:
+                state.set_watermark("reddit", scope, watermark)
         browser.close()
     return events
 
@@ -2897,20 +3435,71 @@ def main() -> None:
                 "YOUTUBE_TRANSCRIPT_MAX_FAILURES",
                 5,
             )
+            youtube_search_backend = _env_str(
+                "YOUTUBE_SEARCH_BACKEND",
+                "api",
+            ).lower()
+            if youtube_search_backend not in {"api", "ytdlp"}:
+                raise RuntimeError(
+                    "YOUTUBE_SEARCH_BACKEND must be either 'api' or 'ytdlp'"
+                )
+            youtube_known_stop_threshold = max(
+                1,
+                _env_int("YOUTUBE_KNOWN_STOP_THRESHOLD", 25),
+            )
             search_order = _env_str("YOUTUBE_SEARCH_ORDER", "date")
             youtube_queries = _env_json_list(
                 "YOUTUBE_SEARCH_QUERIES_JSON",
                 _env_pipe_list("YOUTUBE_SEARCH_QUERIES", DEFAULT_YOUTUBE_QUERIES),
             )
             video_ids = []
+            pending_youtube_watermarks: list[tuple[str, str]] = []
+            incremental_search_active = False
             for search_query in youtube_queries:
                 for search_language in search_languages:
-                    discovered_ids = _search_youtube_video_ids(
-                        youtube,
+                    youtube_scope = _incremental_scope(
+                        "youtube",
                         search_query,
-                        search_limit,
                         search_language,
                         search_order,
+                    )
+                    youtube_watermark = state.incremental_watermark(
+                        "youtube",
+                        youtube_scope,
+                    )
+                    youtube_cutoff = _incremental_cutoff(youtube_watermark)
+                    published_after = (
+                        youtube_cutoff.isoformat().replace("+00:00", "Z")
+                        if youtube_cutoff is not None
+                        else None
+                    )
+                    if youtube_watermark:
+                        incremental_search_active = True
+                    search_started_at = datetime.now(timezone.utc).isoformat()
+                    if youtube_search_backend == "ytdlp":
+                        discovered_ids = _search_youtube_video_ids_ytdlp(
+                            search_query,
+                            search_limit,
+                            is_known=lambda video_id: state.should_skip(
+                                "youtube", video_id
+                            ),
+                            known_stop_threshold=youtube_known_stop_threshold,
+                        )
+                    else:
+                        discovered_ids = _search_youtube_video_ids(
+                            youtube,
+                            search_query,
+                            search_limit,
+                            search_language,
+                            search_order,
+                            published_after=published_after,
+                            is_known=lambda video_id: state.should_skip(
+                                "youtube", video_id
+                            ),
+                            known_stop_threshold=youtube_known_stop_threshold,
+                        )
+                    pending_youtube_watermarks.append(
+                        (youtube_scope, search_started_at)
                     )
                     for video_id in discovered_ids:
                         if video_id not in video_ids:
@@ -2922,18 +3511,28 @@ def main() -> None:
                 if len(video_ids) >= search_limit:
                     break
             if not video_ids:
-                raise RuntimeError(
-                    "YouTube search completed without any video IDs; refusing a green empty run"
-                )
+                if incremental_search_active:
+                    print("YouTube incremental search found no videos in the active window")
+                else:
+                    raise RuntimeError(
+                        "YouTube search completed without any video IDs; "
+                        "refusing a green empty run"
+                    )
             events = []
             youtube_processing_deadline = time.monotonic() + max(
                 1,
                 _env_int("YOUTUBE_COLLECTION_TIMEOUT_SECONDS", 900) - 120,
             )
             output_dir = Path(_env_str("YOUTUBE_OUTPUT_DIR", "/app/api/yt_raw_json"))
-            candidate_ids = [
-                video_id for video_id in video_ids if not state.contains("youtube", video_id)
+            all_candidate_ids = [
+                video_id
+                for video_id in video_ids
+                if not state.should_skip("youtube", video_id)
             ]
+            youtube_search_drained = not (
+                max_events > 0 and len(all_candidate_ids) > max_events
+            )
+            candidate_ids = all_candidate_ids
             if max_events > 0:
                 candidate_ids = candidate_ids[:max_events]
             metadata_by_id = {
@@ -2968,6 +3567,7 @@ def main() -> None:
             transcript_circuit_retryable = False
             for video_id in candidate_ids:
                 if time.monotonic() >= youtube_processing_deadline:
+                    youtube_search_drained = False
                     print(
                         "YouTube processing budget reached; ending the batch "
                         "before the Airflow timeout"
@@ -3057,12 +3657,35 @@ def main() -> None:
                 )
                 publish(video_events)
                 produced_event_count += len(video_events)
+            if youtube_search_drained:
+                for scope, watermark in pending_youtube_watermarks:
+                    state.set_watermark("youtube", scope, watermark)
         elif mode == "x":
-            events = _collect_x_events(state, max_events)
+            x_batch_size = max(
+                1,
+                _env_int("X_PUBLISH_BATCH_SIZE", 50),
+            )
+
+            def publish_x_batch(batch: list[dict]) -> None:
+                nonlocal produced_event_count
+                publish(batch)
+                produced_event_count += len(batch)
+                print(
+                    "Published X batch: "
+                    f"{len(batch)} events ({produced_event_count} total)",
+                    flush=True,
+                )
+
+            events = _collect_x_events(
+                state,
+                max_events,
+                publish_batch=publish_x_batch,
+                publish_batch_size=x_batch_size,
+            )
         else:
             reddit_batch_size = max(
                 1,
-                _env_int("REDDIT_PUBLISH_BATCH_SIZE", 50),
+                _env_int('REDDIT_PUBLISH_BATCH_SIZE', 50),
             )
 
             def publish_reddit_batch(batch: list[dict]) -> None:
@@ -3082,9 +3705,8 @@ def main() -> None:
                 publish_batch_size=reddit_batch_size,
             )
 
-        if mode == "x":
-            publish(events)
-            produced_event_count = len(events)
+        if mode == "x" and events:
+            publish_x_batch(events)
         elif mode == "reddit" and events:
             publish_reddit_batch(events)
         print(f"Produced {produced_event_count} new {mode} events")

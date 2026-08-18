@@ -721,12 +721,12 @@ class YouTubeMetadataMappingTests(unittest.TestCase):
 
         self.assertIn("youtube_processing_deadline = time.monotonic()", source)
         self.assertIn("publish(video_events)", source)
-        self.assertIn('if mode == "x":\n            publish(events)', source)
+        self.assertIn('if mode == "x" and events:\n            publish_x_batch(events)', source)
 
     def test_reddit_events_are_published_in_configurable_batches(self):
         source = PRODUCER_PATH.read_text(encoding="utf-8")
 
-        self.assertIn('_env_int("REDDIT_PUBLISH_BATCH_SIZE", 50)', source)
+        self.assertIn('_env_int(\'REDDIT_PUBLISH_BATCH_SIZE\', 50)', source)
         self.assertIn("publish_batch=publish_reddit_batch", source)
         self.assertIn("Published Reddit batch:", source)
 
