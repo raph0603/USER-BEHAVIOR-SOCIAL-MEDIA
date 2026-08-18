@@ -481,6 +481,10 @@ def main() -> None:
                 columns=BRONZE_EVENT_LOG_COLUMNS,
                 view_name=f"bronze_event_log_{epoch_id}",
             )
+
+            # Ensure the catalog cache is refreshed before querying the table for the projection
+            spark.catalog.refreshTable(EVENT_LOG_TABLE)
+
             if fail_after_commit:
                 print(
                     json.dumps(
