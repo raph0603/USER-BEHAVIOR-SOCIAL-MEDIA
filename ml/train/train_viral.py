@@ -68,6 +68,7 @@ from experiment_config import (
     validate_training_config,
 )
 from features.text_content import build_content_model
+from features.topics import fit_topic_features, TopicFeaturizer, N_TOPICS, TOPIC_MODEL_PATH
 from dataset_lineage import load_dataset_lineage, model_lineage_path
 from role_contract import role_feature_contract
 from virality_lineage import dataset_virality_lineage, validate_virality_compatibility
@@ -452,9 +453,23 @@ def main() -> None:
         content_backend = "tfidf_logistic_regression"
 
     X = df[features].astype(float)
-    features = features + ["content_score"]
-    X_train = X.iloc[train_idx].assign(content_score=train_score)
-    X_test = X.iloc[test_idx].assign(content_score=test_score)
+    features = features + [f"topic_{i}" for i in range(N_TOPICS)] + ["content_score"]
+
+    # NMF Outer-Train Only
+    train_text = df[TEXT].astype(str).iloc[train_idx]
+    test_text = df[TEXT].astype(str).iloc[test_idx]
+    train_topics = fit_topic_features(train_text, N_TOPICS, TOPIC_MODEL_PATH, args.seed)
+    topic_featurizer = TopicFeaturizer(TOPIC_MODEL_PATH)
+    test_topics = topic_featurizer.transform(test_text)
+
+    X_train = pd.concat(
+        [X.iloc[train_idx].reset_index(drop=True), train_topics.reset_index(drop=True)], axis=1
+    ).assign(content_score=train_score)
+
+    X_test = pd.concat(
+        [X.iloc[test_idx].reset_index(drop=True), test_topics.reset_index(drop=True)], axis=1
+    ).assign(content_score=test_score)
+
     y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
     dataset_manifest = _dataset_manifest(args.dataset_manifest, args.dataset_version)
