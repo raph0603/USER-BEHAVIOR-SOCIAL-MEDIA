@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v2.0.1...v3.0.0) (2026-08-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **evaluation:** The CLI uses grouped-CV identity schema instead of split_manifest.json
+
+### Bug Fixes
+
+* **evaluation:** align reproducibility checks with grouped cv ([ada4389](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/ada4389d8bf967691cdf9fee253ae91b90a354d6))
+
 ## [2.0.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v2.0.0...v2.0.1) (2026-08-18)
 
 
