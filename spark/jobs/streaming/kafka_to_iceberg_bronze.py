@@ -256,6 +256,20 @@ def _ensure_tables(spark: SparkSession) -> None:
         INGRESS_DLQ_TABLE,
         {column: ICEBERG_TYPES[column] for column in BRONZE_DLQ_COLUMNS},
     )
+    row_group_size = _env("BRONZE_PARQUET_ROW_GROUP_SIZE_BYTES", "8388608")
+    target_file_size = _env("BRONZE_TARGET_FILE_SIZE_BYTES", "33554432")
+    dictionary_size = _env("BRONZE_PARQUET_DICT_SIZE_BYTES", "262144")
+    spark.sql(
+        f"""
+        ALTER TABLE {CURRENT_TABLE} SET TBLPROPERTIES (
+          'write.parquet.row-group-size-bytes' = '{row_group_size}',
+          'write.parquet.dict-size-bytes' = '{dictionary_size}',
+          'write.target-file-size-bytes' = '{target_file_size}',
+          'write.distribution-mode' = 'hash',
+          'write.merge.distribution-mode' = 'hash'
+        )
+        """
+    )
 
 
 def main() -> None:
@@ -504,7 +518,17 @@ def main() -> None:
                 .join(batch_ids, ["event_id"], "inner")
                 .select(*BRONZE_COLUMNS)
             )
-            projected_rows = _merge_current_projection(committed, epoch_id=epoch_id)
+            current_projection_enabled = (
+                _env("BRONZE_CURRENT_PROJECTION_ENABLED", "true").lower() == "true"
+            )
+            if current_projection_enabled:
+                projected_rows = _merge_current_projection(committed, epoch_id=epoch_id)
+            else:
+                projected_rows = 0
+                print(
+                    f"Bronze epoch {epoch_id}: skipped the current projection; "
+                    "the immutable event log remains available for reconciliation"
+                )
 
             committed_after_projection = (
                 spark.table(EVENT_LOG_TABLE)
