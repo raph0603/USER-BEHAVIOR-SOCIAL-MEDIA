@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.29.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.28.0...v1.29.0) (2026-08-18)
+
+
+### Features
+
+* **playwright:** add watermark-based incremental collection ([3464166](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/3464166feabdd9b340c0f6a6ea06531a4579fe37))
+* **playwright:** add watermark-based incremental collection ([9c63831](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/9c63831056b2355a6181a950f361b07db201b2e7))
+
 ## [1.28.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.27.0...v1.28.0) (2026-08-18)
 
 
