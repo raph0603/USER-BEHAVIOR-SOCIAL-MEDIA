@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.29.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.29.0...v1.29.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **pipeline:** refresh catalog cache before projection join ([6823f9b](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/6823f9bd0e3fbf20c60de3f3de2a5ae0088c2f21))
+* **pipeline:** refresh catalog cache before projection join ([fd5cf83](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/fd5cf8361d28c9bc99f5529b8edbca1eb796b84b))
+
+
+### Performance Improvements
+
+* **pipeline:** tune iceberg target file sizes and dictionary limits ([6859957](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/68599578b63907f31aee6501a60da3affb251e5e))
+* **pipeline:** tune iceberg target file sizes and dictionary limits ([c1e8b7c](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/c1e8b7c52bbe59c13a764b5bf5b41baf1785ae82))
+
 ## [1.29.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.28.0...v1.29.0) (2026-08-18)
 
 
