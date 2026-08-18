@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from pyspark.sql import DataFrame, SparkSession, Window
@@ -98,6 +99,21 @@ def ensure_silver_tables(spark: SparkSession) -> None:
             "silver_run_id": "STRING",
         },
     )
+    row_group_size = os.getenv("SILVER_PARQUET_ROW_GROUP_SIZE_BYTES", "4194304")
+    target_file_size = os.getenv("SILVER_TARGET_FILE_SIZE_BYTES", "16777216")
+    dictionary_size = os.getenv("SILVER_PARQUET_DICT_SIZE_BYTES", "131072")
+    for table in (SILVER_TABLE, APPLIED_EVENTS_TABLE):
+        spark.sql(
+            f"""
+            ALTER TABLE {table} SET TBLPROPERTIES (
+              'write.parquet.row-group-size-bytes' = '{row_group_size}',
+              'write.parquet.dict-size-bytes' = '{dictionary_size}',
+              'write.target-file-size-bytes' = '{target_file_size}',
+              'write.distribution-mode' = 'hash',
+              'write.merge.distribution-mode' = 'hash'
+            )
+            """
+        )
 
 
 def prepare_silver_events(events: DataFrame) -> DataFrame:
