@@ -134,8 +134,7 @@ def stratified_source_folds(
         )
     if groups.nunique() < n_splits:
         raise ValueError(
-            f"K-fold validation needs at least {n_splits} authors; "
-            f"received {groups.nunique()}"
+            f"K-fold validation needs at least {n_splits} authors; received {groups.nunique()}"
         )
 
     splitter = StratifiedGroupKFold(
@@ -246,8 +245,7 @@ def source_weight_totals(
 
 def _print_report(report: dict) -> None:
     print(
-        "\n=== Multi-source Stage-1 "
-        f"({report['validation']['folds']}-fold source-balanced CV) ==="
+        f"\n=== Multi-source Stage-1 ({report['validation']['folds']}-fold source-balanced CV) ==="
     )
     overall = pd.DataFrame([report["metrics"]["overall"]], index=["overall"])
     per_source = pd.DataFrame.from_dict(report["metrics"]["per_source"], orient="index")
@@ -267,8 +265,7 @@ def _print_report(report: dict) -> None:
     print(
         pd.Series(
             {
-                metric: f"{fold_summary[metric]['mean']:.4f} ± "
-                f"{fold_summary[metric]['std']:.4f}"
+                metric: f"{fold_summary[metric]['mean']:.4f} ± {fold_summary[metric]['std']:.4f}"
                 for metric in ("roc_auc", "pr_auc", "brier", "f1")
             }
         )
@@ -279,6 +276,7 @@ def main() -> None:
     # Heavy ML imports stay local so the fold/weight helpers remain lightweight
     # and independently testable.
     from features.text_content import build_content_model
+    from features.topics import fit_topic_features, TopicFeaturizer, N_TOPICS, TOPIC_MODEL_PATH
     from dataset_lineage import load_dataset_lineage, model_lineage_path
     from train.train_viral import (
         apply_calibrator,
@@ -302,6 +300,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dataset-version")
     parser.add_argument("--dataset-manifest", type=Path)
+    parser.add_argument(
+        "--cv-folds-manifest", type=Path, default=ML_ROOT / "results" / "cv_folds_manifest.json"
+    )
     args = parser.parse_args()
 
     input_df = pd.read_parquet(args.data)
@@ -328,8 +329,29 @@ def main() -> None:
     groups = author_groups(df)
     strata = source_class_strata(df)
     folds = stratified_source_folds(df, n_splits=args.folds, seed=args.seed)
+
+    # Versioned folds
+    fold_assignments = {}
+    if "example_id" in df.columns:
+        for fold_number, (_, validation_idx) in enumerate(folds, start=1):
+            for idx in validation_idx:
+                fold_assignments[str(df["example_id"].iloc[idx])] = fold_number
+        args.cv_folds_manifest.parent.mkdir(parents=True, exist_ok=True)
+        args.cv_folds_manifest.write_text(
+            json.dumps(
+                {"schema_version": "cv-folds-manifest-v1", "folds": fold_assignments},
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(f"Folds manifest saved -> {args.cv_folds_manifest}")
+
     base_features = feature_columns(df, include_audience=dataset_lineage is None)
-    numeric = df[base_features].astype(float)
+    base_features.extend([f"topic_{i}" for i in range(N_TOPICS)])
+    # We will build X numeric components later because topic features are computed per-fold
+    numeric_base = df[[f for f in base_features if not f.startswith("topic_")]].astype(float)
     text = df[TEXT].astype(str)
 
     probabilities = np.full(len(df), np.nan, dtype=float)
@@ -360,16 +382,39 @@ def main() -> None:
             method="predict_proba",
         )[:, 1]
         content_model.fit(text.iloc[train_idx], y_train)
-        validation_content_score = content_model.predict_proba(
-            text.iloc[validation_idx]
-        )[:, 1]
+        validation_content_score = content_model.predict_proba(text.iloc[validation_idx])[:, 1]
 
-        X_train = numeric.iloc[train_idx].assign(
-            content_score=train_content_score
+        # NMF Outer-Train Only
+        # We don't save the intermediate NMF models, just fit & transform
+        train_topics = fit_topic_features(
+            text.iloc[train_idx],
+            N_TOPICS,
+            TOPIC_MODEL_PATH.with_name(f"temp_nmf_{fold_number}.joblib"),
+            fold_seed,
         )
-        X_validation = numeric.iloc[validation_idx].assign(
-            content_score=validation_content_score
+        topic_featurizer = TopicFeaturizer(
+            TOPIC_MODEL_PATH.with_name(f"temp_nmf_{fold_number}.joblib")
         )
+        validation_topics = topic_featurizer.transform(text.iloc[validation_idx])
+        # Clean up temp NMF models
+        TOPIC_MODEL_PATH.with_name(f"temp_nmf_{fold_number}.joblib").unlink(missing_ok=True)
+
+        X_train = pd.concat(
+            [
+                numeric_base.iloc[train_idx].reset_index(drop=True),
+                train_topics.reset_index(drop=True),
+            ],
+            axis=1,
+        ).assign(content_score=train_content_score)
+
+        X_validation = pd.concat(
+            [
+                numeric_base.iloc[validation_idx].reset_index(drop=True),
+                validation_topics.reset_index(drop=True),
+            ],
+            axis=1,
+        ).assign(content_score=validation_content_score)
+
         model = train_model(
             X_train,
             y_train,
@@ -408,10 +453,7 @@ def main() -> None:
                 ),
                 "train_source_class_counts": {
                     str(key): int(value)
-                    for key, value in strata.iloc[train_idx]
-                    .value_counts()
-                    .sort_index()
-                    .items()
+                    for key, value in strata.iloc[train_idx].value_counts().sort_index().items()
                 },
                 "validation_source_class_counts": {
                     str(key): int(value)
@@ -427,6 +469,39 @@ def main() -> None:
         raise RuntimeError("Cross-validation did not score every training row")
 
     overall_metrics = metric_summary(y, probabilities, thresholds)
+
+    # Author Bootstrap
+    def author_bootstrap_metrics(
+        y_true, proba, threshold, group_series, n_iterations=1000, seed=42
+    ):
+        rng = np.random.default_rng(seed)
+        unique_groups = group_series.unique()
+        bootstrapped = {"roc_auc": [], "pr_auc": []}
+        for _ in range(n_iterations):
+            sampled_groups = rng.choice(unique_groups, size=len(unique_groups), replace=True)
+            # Reconstruct indices by repeating rows for groups sampled multiple times
+            # A fast way is to map groups to their row indices first
+            group_to_idx = group_series.groupby(group_series).groups
+            sampled_idx = np.concatenate([group_to_idx[g] for g in sampled_groups])
+
+            y_boot = y_true.iloc[sampled_idx]
+            proba_boot = proba[sampled_idx]
+            # If a bootstrap sample only has 1 class (rare but possible), roc_auc will fail
+            if y_boot.nunique() > 1:
+                bootstrapped["roc_auc"].append(roc_auc_score(y_boot, proba_boot))
+                bootstrapped["pr_auc"].append(average_precision_score(y_boot, proba_boot))
+
+        return {
+            "roc_auc_mean": float(np.mean(bootstrapped["roc_auc"])),
+            "roc_auc_std": float(np.std(bootstrapped["roc_auc"], ddof=1)),
+            "pr_auc_mean": float(np.mean(bootstrapped["pr_auc"])),
+            "pr_auc_std": float(np.std(bootstrapped["pr_auc"], ddof=1)),
+        }
+
+    bootstrap_results = author_bootstrap_metrics(
+        y, probabilities, thresholds.mean(), groups, seed=args.seed
+    )
+
     per_source_metrics = {}
     normalized_sources = df[SOURCE].astype("string").str.lower()
     for source in sorted(normalized_sources.unique()):
@@ -453,7 +528,14 @@ def main() -> None:
         method="predict_proba",
     )[:, 1]
     final_content_model.fit(text, y)
-    X_all = numeric.assign(content_score=final_content_score)
+
+    # Final NMF model on all data
+    final_topics = fit_topic_features(text, N_TOPICS, TOPIC_MODEL_PATH, args.seed)
+
+    X_all = pd.concat(
+        [numeric_base.reset_index(drop=True), final_topics.reset_index(drop=True)], axis=1
+    ).assign(content_score=final_content_score)
+
     final_weights = source_balance_weights(df[SOURCE])
     final_model = train_model(
         X_all,
@@ -551,6 +633,7 @@ def main() -> None:
         },
         "metrics": {
             "overall": overall_metrics,
+            "bootstrap": bootstrap_results,
             "per_source": per_source_metrics,
         },
         "fold_metrics": fold_metrics,
