@@ -13,6 +13,8 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[2]
 PIPELINE_DIR = ROOT / "spark" / "jobs" / "pipeline"
 sys.path.insert(0, str(PIPELINE_DIR))
+sys.path.insert(0, str(ROOT / "ml"))
+sys.path.insert(0, str(ROOT))
 
 import dataset_manifest
 import gold_schemas
