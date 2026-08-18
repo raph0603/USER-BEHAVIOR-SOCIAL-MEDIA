@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.29.1...v2.0.0) (2026-08-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **evaluation:** The official evaluation protocol no longer uses a single GroupShuffleSplit. It now enforces a 5-fold StratifiedGroupKFold on author_hash and persists out-of-fold evaluation metrics.
+
+### Features
+
+* **evaluation:** make grouped cross-validation the official protocol ([62359c4](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/62359c443a82337d9ab4325694ebf483fa42198d))
+
 ## [1.29.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.29.0...v1.29.1) (2026-08-18)
 
 
