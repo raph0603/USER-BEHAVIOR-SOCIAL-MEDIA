@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v2.0.0...v2.0.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **evaluation:** harden virality lineage and uncertainty metrics ([9faf0ba](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/commit/9faf0ba1f1d40339e37391b67b9fac15f374f130))
+
 ## [2.0.0](https://github.com/raph0603/USER-BEHAVIOR-SOCIAL-MEDIA/compare/v1.29.1...v2.0.0) (2026-08-18)
 
 
