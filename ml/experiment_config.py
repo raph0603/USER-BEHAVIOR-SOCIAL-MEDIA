@@ -62,7 +62,7 @@ XGBOOST_MODEL = {
 
 PLATT_CALIBRATION = {
     "method": "logistic_regression_on_oof_logit",
-    "fold_strategy": "group_k_fold",
+    "fold_strategy": "stratified_group_k_fold",
     "folds": CALIBRATION_FOLDS,
     "logit_clip": [1e-6, 1 - 1e-6],
     "logistic_regression": {"solver": "lbfgs", "max_iter": 100},
