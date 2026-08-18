@@ -93,6 +93,27 @@ def _manifest_filters(dataset_manifest: Mapping[str, Any] | None) -> dict[str, A
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _virality_contract_fingerprint(
+    dataset_manifest: Mapping[str, Any] | None,
+) -> str | None:
+    """Resolve the frozen virality fingerprint from the official manifest layout."""
+
+    if not dataset_manifest:
+        return None
+
+    labeling = dataset_manifest.get("labeling")
+    nested = labeling.get("virality_contract_fingerprint") if isinstance(labeling, Mapping) else None
+    legacy_root = dataset_manifest.get("virality_contract_fingerprint")
+
+    if nested and legacy_root and str(nested) != str(legacy_root):
+        raise ValueError(
+            "Dataset manifest has conflicting virality contract fingerprints "
+            "between labeling and the legacy root field"
+        )
+    value = nested or legacy_root
+    return str(value) if value else None
+
+
 def resolved_training_config(
     *,
     seed: int,
@@ -149,9 +170,7 @@ def resolved_training_config(
                 "min_text_chars",
             )
         },
-        "virality_contract_fingerprint": (
-            dataset_manifest.get("virality_contract_fingerprint") if dataset_manifest else None
-        ),
+        "virality_contract_fingerprint": _virality_contract_fingerprint(dataset_manifest),
         "audience_policy": deepcopy(AUDIENCE_POLICY),
         "auxiliary_artifact_sha256": dict(sorted((auxiliary_artifacts or {}).items())),
     }
